@@ -35,8 +35,6 @@ const Map<String, String> kManuallyPinnedDependencies = <String, String>{
   // Keep pinned to latest until 1.0.0.
   'material_color_utilities': '0.5.0',
   // https://github.com/flutter/flutter/issues/111304
-  'url_launcher_android': '6.0.17',
-  // https://github.com/flutter/flutter/issues/115660
   'archive': '3.3.2',
 };
 
