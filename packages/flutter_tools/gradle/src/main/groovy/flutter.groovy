@@ -62,7 +62,7 @@ class FlutterExtension {
      */
     public final String ndkVersion = "23.1.7779620"
 
-    public final int javaVersion = 8
+    public int javaVersion = 8
 
     /**
      * Specifies the relative directory to the Flutter project directory.
