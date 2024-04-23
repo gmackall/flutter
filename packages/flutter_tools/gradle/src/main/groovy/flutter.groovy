@@ -337,7 +337,7 @@ class FlutterPlugin implements Plugin<Project> {
         // See https://github.com/flutter/flutter/issues/121541#issuecomment-1920363687.
         if (project.hasProperty("javaVersion")) {
             extension.javaVersion = project.getProperty("javaVersion") as int
-            println(javaVersion)
+            println(extension.javaVersion)
         }
         final Boolean shouldSkipDependencyChecks = project.hasProperty("skipDependencyChecks") && project.getProperty("skipDependencyChecks");
         if (!shouldSkipDependencyChecks) {
