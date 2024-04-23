@@ -370,6 +370,10 @@ class AndroidGradleBuilder implements AndroidBuilder {
     if (!buildInfo.androidGradleDaemon) {
       command.add('--no-daemon');
     }
+    final int? javaMajorVersion = _java?.version?.major;
+    if (javaMajorVersion != null) {
+      command.add('-PjavaVersion=$javaMajorVersion}');
+    }
     if (buildInfo.androidSkipBuildDependencyValidation) {
       command.add('-PskipDependencyChecks=true');
     }

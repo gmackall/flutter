@@ -62,6 +62,8 @@ class FlutterExtension {
      */
     public final String ndkVersion = "23.1.7779620"
 
+    public final int javaVersion = 8
+
     /**
      * Specifies the relative directory to the Flutter project directory.
      * In an app project, this is ../.. since the app's Gradle build file is under android/app.
@@ -128,8 +130,8 @@ buildscript {
  */
 android {
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        //sourceCompatibility JavaVersion.VERSION_1_8
+        //targetCompatibility JavaVersion.VERSION_1_8
     }
 }
 
@@ -333,6 +335,10 @@ class FlutterPlugin implements Plugin<Project> {
         // -> Kotlin migration, we should remove this complexity and perform the checks inside
         // of the main Flutter Gradle Plugin.
         // See https://github.com/flutter/flutter/issues/121541#issuecomment-1920363687.
+        if (project.hasProperty("javaVersion")) {
+            javaVersion = project.getProperty("javaVersion")
+            println(javaVersion)
+        }
         final Boolean shouldSkipDependencyChecks = project.hasProperty("skipDependencyChecks") && project.getProperty("skipDependencyChecks");
         if (!shouldSkipDependencyChecks) {
             try {
