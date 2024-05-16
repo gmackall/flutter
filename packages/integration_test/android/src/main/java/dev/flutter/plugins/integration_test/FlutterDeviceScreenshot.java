@@ -98,9 +98,8 @@ class FlutterDeviceScreenshot {
    *
    * @param activity typically {@code FlutterActivity}.
    */
-  static void convertFlutterSurfaceToImage(@NonNull Activity activity) {
-    final FlutterView flutterView = getFlutterView(activity);
-    if (flutterView != null && !flutterSurfaceConvertedToImage) {
+  private static void convertFlutterSurfaceToImage(@NonNull Activity activity, @NonNull FlutterView flutterView) {
+    if (!flutterSurfaceConvertedToImage) {
       flutterView.convertToImageView();
       flutterSurfaceConvertedToImage = true;
     }
@@ -112,9 +111,8 @@ class FlutterDeviceScreenshot {
    *
    * @param activity typically {@code FlutterActivity}.
    */
-  static void revertFlutterImage(@NonNull Activity activity) {
-    final FlutterView flutterView = getFlutterView(activity);
-    if (flutterView != null && flutterSurfaceConvertedToImage) {
+  private static void revertFlutterImage(@NonNull Activity activity, @NonNull FlutterView flutterView) {
+    if (flutterSurfaceConvertedToImage) {
       flutterView.revertImageView(() -> {
         flutterSurfaceConvertedToImage = false;
       });
@@ -142,10 +140,7 @@ class FlutterDeviceScreenshot {
       result.error("Could not copy the pixels", "FlutterView is null", null);
       return;
     }
-    if (!flutterSurfaceConvertedToImage) {
-      result.error("Could not copy the pixels", "Flutter surface must be converted to image first", null);
-      return;
-    }
+    convertFlutterSurfaceToImage(activity, flutterView);
 
     // Ask the framework to schedule a new frame.
     methodChannel.invokeMethod("scheduleFrame", null);
@@ -159,6 +154,7 @@ class FlutterDeviceScreenshot {
       mainHandler = new Handler(Looper.getMainLooper());
     }
     takeScreenshot(backgroundHandler, mainHandler, flutterView, result);
+    revertFlutterImage(activity, flutterView);
   }
 
   /**

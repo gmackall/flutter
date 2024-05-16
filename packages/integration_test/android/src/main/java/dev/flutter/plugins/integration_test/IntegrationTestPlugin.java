@@ -80,7 +80,7 @@ public class IntegrationTestPlugin implements MethodCallHandler, FlutterPlugin, 
           result.error("Could not convert to image", "Activity not initialized", null);
           return;
         }
-        FlutterDeviceScreenshot.convertFlutterSurfaceToImage(flutterActivity);
+        // no op
         result.success(null);
         return;
       case "revertFlutterImage":
@@ -88,7 +88,7 @@ public class IntegrationTestPlugin implements MethodCallHandler, FlutterPlugin, 
           result.error("Could not revert Flutter image", "Activity not initialized", null);
           return;
         }
-        FlutterDeviceScreenshot.revertFlutterImage(flutterActivity);
+        // no op
         result.success(null);
         return;
       case "captureScreenshot":
