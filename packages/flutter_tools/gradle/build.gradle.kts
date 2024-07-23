@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 plugins {
+    `java`
     `java-gradle-plugin`
     `groovy`
 }
