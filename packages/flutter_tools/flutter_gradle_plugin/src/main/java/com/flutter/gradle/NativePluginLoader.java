@@ -13,6 +13,9 @@ import groovy.json.JsonSlurper;
 
 class NativePluginLoader {
 
+    // Gradle requires an explicit empty constructor.
+    public NativePluginLoader() {}
+
     // This string must match _kFlutterPluginsHasNativeBuildKey defined in
     // packages/flutter_tools/lib/src/flutter_plugins.dart.
     static final String nativeBuildKey = "native_build";

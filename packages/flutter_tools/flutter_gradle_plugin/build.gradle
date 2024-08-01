@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.flutter"
-version = "1.0-SNAPSHOT"
+version = "1.0.0"
 
 dependencies {
     // When bumping, also update:
@@ -20,6 +20,14 @@ gradlePlugin {
         myJavaPlugin {
             id = 'com.flutter.gradle.simple-plugin'
             implementationClass = 'com.flutter.gradle.MyJavaPlugin'
+        }
+        flutterGradlePluginJava {
+            id = 'com.flutter.gradle.flutter-gradle-plugin-java'
+            implementationClass = 'com.flutter.gradle.FlutterPlugin'
+        }
+        create("flutterAppPluginLoaderPlugin") {
+            id = "com.flutter.gradle.flutter-plugin-loader-java"
+            implementationClass = "com.flutter.gradle.FlutterAppPluginLoaderPlugin"
         }
     }
 }
