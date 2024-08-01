@@ -1,40 +1,13 @@
 plugins {
-    id 'java'
     id 'java-gradle-plugin'
-    id 'maven-publish'
 }
-dependencies {
-    implementation gradleApi()
-}
-
-//apply plugin: 'maven'
 
 repositories {
     mavenCentral()
 }
 
-dependencies {
-    testImplementation "junit:junit:4.11"
-}
-
 group = "com.flutter"
 version = "1.0-SNAPSHOT"
-//
-//uploadArchives {
-//    repositories {
-//        mavenDeployer {
-//            repository(url: uri("../repo"))
-//        }
-//    }
-//}
-
-//publishing {
-//    repositories {
-//        maven {
-//            url = uri("./maven-repo")
-//        }
-//    }
-//}
 
 gradlePlugin {
     plugins {
