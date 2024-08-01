@@ -15,6 +15,10 @@ import org.gradle.api.GradleException;
  * * https://docs.gradle.org/8.0.2/userguide/custom_plugins.html#sec:getting_input_from_the_build
  */
 public class FlutterExtension {
+
+    // Gradle requires an explicit empty constructor.
+    public FlutterExtension() {}
+
     /**
      * Returns flutterVersionCode as an integer with error handling.
      */

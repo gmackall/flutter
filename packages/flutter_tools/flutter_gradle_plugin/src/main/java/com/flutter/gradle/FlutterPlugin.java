@@ -26,6 +26,7 @@ import org.gradle.api.UnknownDomainObjectException;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
 import org.gradle.api.file.ConfigurableFileTree;
 import org.gradle.api.file.CopySpec;
+import org.gradle.api.plugins.ExtraPropertiesExtension;
 import org.gradle.api.tasks.Copy;
 import org.gradle.api.tasks.TaskProvider;
 import org.gradle.api.tasks.bundling.Jar;
@@ -185,7 +186,7 @@ public class FlutterPlugin implements Plugin<Project> {
 
         String repository = useLocalEngine()
                 ? (String) project.property(propLocalEngineRepo)
-                : "$hostedRepository/${engineRealm}download.flutter.io";
+                : hostedRepository + "/" + engineRealm + "download.flutter.io";
 
         rootProject.allprojects(
                 project1 -> project1.getRepositories().maven(
@@ -738,7 +739,7 @@ public class FlutterPlugin implements Plugin<Project> {
         // embedding.
         if (!isFlutterAppProject() || getPluginList(project).isEmpty()) {
             addApiDependencies(project, buildType.getName(),
-                    "io.flutter:flutter_embedding_$flutterBuildMode:$engineVersion");
+                    "io.flutter:flutter_embedding_" + flutterBuildMode + ":" + engineVersion);
         }
         List<String> platforms = getTargetPlatforms();
         // Debug mode includes x86 and x64, which are commonly used in emulators.
@@ -1113,7 +1114,8 @@ public class FlutterPlugin implements Plugin<Project> {
     private List<Map<String, Object>> getPluginList(Project project) {
         if (pluginList == null) {
             // Access the 'nativePluginLoader' extension and call 'getPlugins'
-            NativePluginLoader nativePluginLoader = (NativePluginLoader) project.getExtensions().getByName("nativePluginLoader");
+            NativePluginLoader nativePluginLoader = (NativePluginLoader) project.getGradle().getExtensions().getByType(ExtraPropertiesExtension.class).get("nativePluginLoader");
+            //NativePluginLoader nativePluginLoader = (NativePluginLoader) project.getExtensions().getByName("nativePluginLoader");
             pluginList = nativePluginLoader.getPlugins(getFlutterSourceDirectory());
         }
         return pluginList;
