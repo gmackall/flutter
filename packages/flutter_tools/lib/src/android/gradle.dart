@@ -562,6 +562,8 @@ class AndroidGradleBuilder implements AndroidBuilder {
 
     // Generate sha1 for every generated APKs.
     for (final File apkFile in apkFilesPaths.map(apkDirectory.childFile)) {
+      _logger.printError("HI GRAY");
+      _logger.printError("${apkFile.path}");
       if (!apkFile.existsSync()) {
         _exitWithExpectedFileNotFound(
           project: project,
