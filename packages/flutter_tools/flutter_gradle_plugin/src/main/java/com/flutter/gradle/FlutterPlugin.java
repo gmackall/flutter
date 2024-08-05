@@ -4,6 +4,7 @@ import com.android.build.OutputFile;
 import com.android.build.VariantOutput;
 import com.android.build.api.dsl.ApplicationExtension;
 import com.android.build.api.dsl.BuildType;
+import com.android.build.api.dsl.CommonExtension;
 import com.android.build.api.variant.ApplicationVariant;
 import com.android.build.gradle.AppExtension;
 import com.android.build.gradle.BaseExtension;
@@ -12,6 +13,8 @@ import com.android.build.gradle.api.ApkVariantOutput;
 import com.android.build.gradle.api.BaseVariant;
 import com.android.build.gradle.api.BaseVariantOutput;
 import com.android.build.gradle.internal.dsl.AbiSplitOptions;
+import com.android.build.gradle.internal.dsl.BaseAppModuleExtension;
+import com.android.build.gradle.tasks.ProcessAndroidResources;
 
 import org.apache.tools.ant.taskdefs.condition.Os;
 import org.gradle.api.Action;
@@ -30,7 +33,14 @@ import org.gradle.api.plugins.ExtraPropertiesExtension;
 import org.gradle.api.tasks.Copy;
 import org.gradle.api.tasks.TaskProvider;
 import org.gradle.api.tasks.bundling.Jar;
+import org.gradle.internal.impldep.com.fasterxml.jackson.databind.ObjectMapper;
+import org.gradle.internal.impldep.com.fasterxml.jackson.databind.SerializationFeature;
 import org.gradle.internal.os.OperatingSystem;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -43,14 +53,21 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
 
 import groovy.lang.Closure;
 import groovy.lang.Tuple2;
@@ -236,14 +253,19 @@ public class FlutterPlugin implements Plugin<Project> {
             });
         }
 
-        // TODO(GMACKALL): how to convert this section?
-//        final String propDeferredComponentNames = "deferred-component-names"
-//        if (project.hasProperty(propDeferredComponentNames)) {
-//            String[] componentNames = project.property(propDeferredComponentNames).split(",").collect {":${it}"}
-//            project.android {
-//                dynamicFeatures = componentNames
-//            }
-//        }
+        final String propDeferredComponentNames = "deferred-component-names";
+        if (project.hasProperty(propDeferredComponentNames)) {
+            Set<String> componentNames = Arrays.stream(((String) Objects.requireNonNull(project.property(propDeferredComponentNames)))
+                    .split(","))
+                    .map(it -> ":" + it)
+                    .collect(Collectors.toSet());
+
+            // TODO(gmackall): this class is marked as internal. There isn't a way to do what we
+            //                 doing in the Groovy version of the FGP without accessing this
+            //                 internal class, but reconsider if we need to do this.
+            BaseAppModuleExtension androidExtension = project.getExtensions().getByType(BaseAppModuleExtension.class);
+            androidExtension.setDynamicFeatures(componentNames);
+        }
 
 
         List<String> targetPlatforms = getTargetPlatforms();
@@ -416,7 +438,8 @@ public class FlutterPlugin implements Plugin<Project> {
         } else {
             configuration = variantName + "Compile";
         }
-        //TODO(gmackall) we were passing Null to @Nonnull before, so keep doing it for now. But this should def be fixed?
+        //TODO(gmackall) We were passing Null to @Nonnull before, so keep doing it after converting
+        //               from Groovy to Java. But this should def be fixed?
         project.getDependencies().add(configuration, dependency, config);
     }
 
@@ -465,7 +488,7 @@ public class FlutterPlugin implements Plugin<Project> {
         });
     }
 
-    // TODO(gmackall): this portion ----------------------------------------------------------------------------------------
+    // TODO(gmackall): Evaulaute how gemeni did here :) 
     // Add a task that can be called on Flutter projects that outputs app link related project
     // settings into a json file.
     //
@@ -482,227 +505,157 @@ public class FlutterPlugin implements Plugin<Project> {
     //   ]
     // }
     //
-    // The output file is parsed and used by devtool.
-//    private static void addTasksForOutputsAppLinkSettings(Project project) {
-//        project.android.applicationVariants.all { variant ->
-//                // Warning: The name of this task is used by AndroidBuilder.outputsAppLinkSettings
-//                project.tasks.register("output${variant.name.capitalize()}AppLinkSettings") {
-//            description "stores app links settings for the given build variant of this Android project into a json file."
-//            variant.outputs.all { output ->
-//                    // Deeplinks are defined in AndroidManifest.xml and is only available after
-//                    // `processResourcesProvider`.
-//                    Object processResources = output.hasProperty(propProcessResourcesProvider) ?
-//                    output.processResourcesProvider.get() : output.processResources
-//                dependsOn processResources.name
-//            }
-//            doLast {
-//                AppLinkSettings appLinkSettings = new AppLinkSettings()
-//                appLinkSettings.applicationId = variant.applicationId
-//                appLinkSettings.deeplinks = [] as Set<Deeplink>
-//                        variant.outputs.all { output ->
-//                        Object processResources = output.hasProperty(propProcessResourcesProvider) ?
-//                        output.processResourcesProvider.get() : output.processResources
-//                    def manifest = new XmlParser().parse(processResources.manifestFile)
-//                    manifest.application.activity.each { activity ->
-//                            activity."meta-data".each { metadata ->
-//                        boolean nameAttribute = metadata.attributes().find { it.key == 'android:name' }?.value == 'flutter_deeplinking_enabled'
-//                        boolean valueAttribute = metadata.attributes().find { it.key == 'android:value' }?.value == 'true'
-//                        if (nameAttribute && valueAttribute) {
-//                            appLinkSettings.deeplinkingFlagEnabled = true
-//                        }
-//                    }
-//                        activity."intent-filter".each { appLinkIntent ->
-//                                // Print out the host attributes in data tags.
-//                                Set<String> schemes = [] as Set<String>
-//                                Set<String> hosts = [] as Set<String>
-//                                Set<String> paths = [] as Set<String>
-//                                IntentFilterCheck intentFilterCheck = new IntentFilterCheck()
-//
-//                            if (appLinkIntent.attributes().find { it.key == 'android:autoVerify' }?.value == 'true') {
-//                                intentFilterCheck.hasAutoVerify = true
-//                            }
-//                            appLinkIntent.'action'.each { action ->
-//                                if (action.attributes().find { it.key == 'android:name' }?.value == 'android.intent.action.VIEW') {
-//                                    intentFilterCheck.hasActionView = true
-//                                }
-//                            }
-//                            appLinkIntent.'category'.each { category ->
-//                                if (category.attributes().find { it.key == 'android:name' }?.value == 'android.intent.category.DEFAULT') {
-//                                    intentFilterCheck.hasDefaultCategory = true
-//                                }
-//                                if (category.attributes().find { it.key == 'android:name' }?.value == 'android.intent.category.BROWSABLE') {
-//                                    intentFilterCheck.hasBrowsableCategory = true
-//                                }
-//                            }
-//                            appLinkIntent.data.each { data ->
-//                                    data.attributes().each { entry ->
-//                                if (entry.key instanceof QName) {
-//                                    switch (entry.key.getLocalPart()) {
-//                                        case "scheme":
-//                                            schemes.add(entry.value)
-//                                            break
-//                                        case "host":
-//                                            hosts.add(entry.value)
-//                                            break
-//                                        case "pathAdvancedPattern":
-//                                        case "pathPattern":
-//                                        case "path":
-//                                            paths.add(entry.value)
-//                                            break
-//                                        case "pathPrefix":
-//                                            paths.add("${entry.value}.*")
-//                                            break
-//                                        case "pathSuffix":
-//                                            paths.add(".*${entry.value}")
-//                                            break
-//                                    }
-//                                }
-//                            }
-//                            }
-//                            if(!hosts.isEmpty() || !paths.isEmpty()){
-//                                if(schemes.isEmpty()){schemes.add(null)}
-//                                if(hosts.isEmpty()){hosts.add(null)}
-//                                if(paths.isEmpty()){paths.add('.*')}
-//                                schemes.each { scheme ->
-//                                        hosts.each { host ->
-//                                        paths.each { path ->
-//                                        appLinkSettings.deeplinks.add(new Deeplink(scheme: scheme, host: host, path: path, intentFilterCheck: intentFilterCheck))
-//                                }
-//                                }
-//                                }
-//                            }
-//                        }
-//                    }
-//                }
-//                JsonGenerator generator = new JsonGenerator.Options().build()
-//                new File(project.getProperty("outputPath")).write(generator.toJson(appLinkSettings))
-//            }
-//        }
-//        }
-//    }
+    private static void addTasksForOutputsAppLinkSettings(Project project) {
+        AppExtension androidExtension = (AppExtension) project.getExtensions().getByName("android");
+        androidExtension.getApplicationVariants().all(variant -> {
+            // Warning: The name of this task is used by AndroidBuilder.outputsAppLinkSettings
+            project.getTasks().register("output" + capitalizeWord(variant.getName()) + "AppLinkSettings", task -> {
+                task.setDescription("stores app links settings for the given build variant of this Android project into a json file.");
 
-//    private static void addTasksForOutputsAppLinkSettings3(Project project) {
-//        AppExtension androidExtension = (AppExtension) project.getExtensions().getByName("android");
-//        androidExtension.getApplicationVariants().forEach(variant -> {
-//            String taskName = "output" + capitalizeWord(variant.getName()) + "AppLinkSettings";
-//
-//            project.getTasks().register(taskName, task -> {
-//                task.setDescription("stores app links settings for the given build variant of this Android project into a json file.");
-//
-//                variant.getOutputs().all((Action<BaseVariantOutput>) output -> {
-//                    // Handle potential differences in accessing 'processResources'
-//                    TaskProvider<?> processResourcesProvider = null;
-//                    try {
-//                        // Try accessing 'processResourcesProvider' (available in newer AGP versions)
-//                        Field processResourcesProviderField = BaseVariantOutput.class.getDeclaredField("processResourcesProvider");
-//                        processResourcesProviderField.setAccessible(true);
-//                        processResourcesProvider = (TaskProvider<?>) processResourcesProviderField.get(output);
-//                    } catch (NoSuchFieldException | IllegalAccessException e) {
-//                        // 'processResourcesProvider' not available, fallback to 'processResources'
-//                    }
-//
-//                    Object processResources = (processResourcesProvider != null) ? processResourcesProvider.get() : output.getProcessResources();
-//                    task.dependsOn(processResources);
-//                });
-//
-//                task.doLast(task1 -> {
-//                    AppLinkSettings appLinkSettings = new AppLinkSettings();
-//                    appLinkSettings.setApplicationId(variant.getApplicationId());
-//                    appLinkSettings.setDeeplinks(Collections.emptySet());
-//
-//                    variant.getOutputs().all(output -> {
-//                        // Access 'processResources' (same logic as above)
-//                        TaskProvider<?> processResourcesProvider = null;
-//                        try {
-//                            Field processResourcesProviderField = BaseVariantOutput.class.getDeclaredField("processResourcesProvider");
-//                            processResourcesProviderField.setAccessible(true);
-//                            processResourcesProvider = (TaskProvider<?>) processResourcesProviderField.get(output);
-//                        } catch (NoSuchFieldException | IllegalAccessException e) {
-//                            // 'processResourcesProvider' not available, fallback to 'processResources'
-//                        }
-//
-//                        Object processResources = (processResourcesProvider != null) ? processResourcesProvider.get() : output.getProcessResources();
-//                        assert processResourcesProvider != null;
-//                        processResourcesProvider.configure();
-//                        try {
-//                            // Parse AndroidManifest.xml (replace with your preferred XML parsing library)
-//                            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-//                            DocumentBuilder builder = factory.newDocumentBuilder();
-//
-//                            Document doc = builder.parse(processResources.getManifestFile());
-//
-//
-//                            // Traverse the manifest (adapt based on your XML parsing library)
-//                            NodeList applicationNodes = doc.getElementsByTagName("application");
-//                            if (applicationNodes.getLength() > 0) {
-//                                Node applicationNode = (Node) applicationNodes.item(0);
-//                                List<Node> activityNodes = applicationNode.children();
-//                                for (int i = 0; i < activityNodes.size(); i++) {
-//                                    Node activityNode = activityNodes.get(i);
-//                                    if (activityNode.name().equals("activity")) {
-//                                        // ... (rest of the manifest traversal logic, similar to Groovy code)
-//                                    }
-//                                }
-//                            }
-//
-//                        } catch (ParserConfigurationException | SAXException | IOException e) {
-//                            // Handle exceptions appropriately
-//                            e.printStackTrace();
-//                        }
-//                    });
-//
-//                    // Generate JSON output (replace with your preferred JSON library)
-//                    ObjectMapper objectMapper = new ObjectMapper();
-//                    try {
-//                        objectMapper.writeValue(new File((String) project.property("outputPath")), appLinkSettings);
-//                    } catch (IOException e) {
-//                        // Handle exceptions appropriately
-//                        e.printStackTrace();
-//                    }
-//                });
-//            });
-//        });
-//    }
+                variant.getOutputs().all(output -> {
+                    // Deeplinks are defined in AndroidManifest.xml and is only available after
+                    // `processResourcesProvider`.
+                    task.dependsOn(output.getProcessResourcesProvider().get());
+                });
 
-    // TODO(gmackall): the depth gets pretty intense here. Can we refactor to helpers?
-//    private static void addTasksForOutputsAppLinkSettings2(Project project) {
-//        AppExtension androidExtension = (AppExtension) project.getExtensions().getByName("android");
-//        androidExtension.getApplicationVariants().forEach(variant -> {
-//            String taskNameForVariant = "output" + capitalizeWord(variant.getName()) + "AppLinkSettings";
-//            project.getTasks().register(taskNameForVariant, task -> {
-//                task.setDescription("stores app links settings for the given build variant of this Android project into a json file.");
-//                variant.getOutputs().forEach(output -> {
-//                    // TODO(gmackall): handle null case? it's annotated non-null, but we were handling before?
-//                    TaskProvider<ProcessAndroidResources> processResources = output.getProcessResourcesProvider();
-//                    task.dependsOn(processResources);
-//                });
-//                task.doLast(task1 -> {
-//                    AppLinkSettings appLinkSettings = new AppLinkSettings();
-//                    appLinkSettings.setApplicationId(variant.getApplicationId());
-//                    appLinkSettings.setDeeplinks(Collections.emptySet());
-//                    variant.getOutputs().forEach(output -> {
-//                        TaskProvider<ProcessAndroidResources> processResources = output.getProcessResourcesProvider();
-//                        // Parse AndroidManifest.xml (replace with your preferred XML parsing library)
-//                        processResources.configure(processAndroidResources -> {
-//                            File manifestFile = processAndroidResources.getManifestFile();
-//                            try {
-//                                groovy.xml.XmlParser parser = new groovy.xml.XmlParser();
-//                                Node node = parser.parse(manifestFile);
-//                                node.get()
-//
-//                            } catch (ParserConfigurationException e) {
-//                                throw new RuntimeException(e);
-//                            } catch (IOException e) {
-//                                throw new RuntimeException(e);
-//                            } catch (SAXException e) {
-//                                throw new RuntimeException(e);
-//                            }
-//                        });
-//                    });
-//                });
-//            });
-//        });
-//    }
+                task.doLast(taskAction -> {
+                    AppLinkSettings appLinkSettings = new AppLinkSettings();
+                    appLinkSettings.setApplicationId(variant.getApplicationId());
+                    appLinkSettings.setDeeplinks(new HashSet<>());
+
+                    variant.getOutputs().all(output -> {
+                        ProcessAndroidResources processResources = output.getProcessResourcesProvider().get();
+
+                        try {
+                            // Parse the Manifest file
+                            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+                            DocumentBuilder builder = factory.newDocumentBuilder();
+                            Document manifest = builder.parse(new File(processResources.getManifestFile().getAbsolutePath()));
+                            // Get the application element
+                            Element application = (Element) manifest.getElementsByTagName("application").item(0);
+                            // Iterate over activity elements
+                            NodeList activityList = application.getElementsByTagName("activity");
+                            for (int i = 0; i < activityList.getLength(); i++) {
+                                Element activity = (Element) activityList.item(i);
+
+                                // Process metadata elements
+                                NodeList metadataList = activity.getElementsByTagName("meta-data");
+                                for (int j = 0; j < metadataList.getLength(); j++) {
+                                    Element metadata = (Element) metadataList.item(j);
+                                    NamedNodeMap attributes = metadata.getAttributes();
+
+                                    boolean nameAttribute = attributes.getNamedItem("android:name").getNodeValue().equals("flutter_deeplinking_enabled");
+                                    boolean valueAttribute = attributes.getNamedItem("android:value").getNodeValue().equals("true");
+
+                                    if (nameAttribute && valueAttribute) {
+                                        appLinkSettings.setDeeplinkingFlagEnabled(true);
+                                    }
+                                }
+
+                                // Step 3
+                                NodeList intentFilterList = activity.getElementsByTagName("intent-filter");
+                                for (int k = 0; k < intentFilterList.getLength(); k++) {
+                                    Element appLinkIntent = (Element) intentFilterList.item(k);
+
+                                    Set<String> schemes = new HashSet<>();
+                                    Set<String> hosts = new HashSet<>();
+                                    Set<String> paths = new HashSet<>();
+                                    IntentFilterCheck intentFilterCheck = new IntentFilterCheck();
+
+                                    if (appLinkIntent.getAttributes().getNamedItem("android:autoVerify") != null &&
+                                            appLinkIntent.getAttributes().getNamedItem("android:autoVerify").getNodeValue().equals("true")) {
+                                        intentFilterCheck.setHasAutoVerify(true);
+                                    }
+
+                                    NodeList actionList = appLinkIntent.getElementsByTagName("action");
+                                    for (int l = 0; l < actionList.getLength(); l++) {
+                                        Element action = (Element) actionList.item(l);
+                                        if (action.getAttributes().getNamedItem("android:name").getNodeValue().equals("android.intent.action.VIEW")) {
+                                            intentFilterCheck.setHasActionView(true);
+                                        }
+                                    }
+
+                                    NodeList categoryList = appLinkIntent.getElementsByTagName("category");
+                                    for (int m = 0; m < categoryList.getLength(); m++) {
+                                        Element category = (Element) categoryList.item(m);
+                                        String categoryName = category.getAttributes().getNamedItem("android:name").getNodeValue();
+                                        if (categoryName.equals("android.intent.category.DEFAULT")) {
+                                            intentFilterCheck.setHasDefaultCategory(true);
+                                        } else if (categoryName.equals("android.intent.category.BROWSABLE")) {
+                                            intentFilterCheck.setHasBrowsableCategory(true);
+                                        }
+                                    }
+
+                                    NodeList dataList = appLinkIntent.getElementsByTagName("data");
+                                    for (int n = 0; n < dataList.getLength(); n++) {
+                                        Element data = (Element) dataList.item(n);
+                                        NamedNodeMap dataAttributes = data.getAttributes();
+                                        for (int p = 0; p < dataAttributes.getLength(); p++) {
+                                            Node entry = dataAttributes.item(p);
+                                            if (entry.getNodeName().startsWith("android:")) {
+                                                String localPart = entry.getNodeName().substring("android:".length());
+                                                switch (localPart) {
+                                                    case "scheme":
+                                                        schemes.add(entry.getNodeValue());
+                                                        break;
+                                                    case "host":
+                                                        hosts.add(entry.getNodeValue());
+                                                        break;
+                                                    case "pathAdvancedPattern":
+                                                    case "pathPattern":
+                                                    case "path":
+                                                        paths.add(entry.getNodeValue());
+                                                        break;
+                                                    case "pathPrefix":
+                                                        paths.add(entry.getNodeValue() + ".*");
+                                                        break;
+                                                    case "pathSuffix":
+                                                        paths.add(".*" + entry.getNodeValue());
+                                                        break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (!hosts.isEmpty() || !paths.isEmpty()) {
+                                        if (schemes.isEmpty()) {
+                                            schemes.add(null);
+                                        }
+                                        if (hosts.isEmpty()) {
+                                            hosts.add(null);
+                                        }
+                                        if (paths.isEmpty()) {
+                                            paths.add(".*");
+                                        }
+
+                                        for (String scheme : schemes) {
+                                            for (String host : hosts) {
+                                                for (String path : paths) {
+                                                    appLinkSettings.getDeeplinks().add(new Deeplink(scheme, host, path, intentFilterCheck));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Generate JSON output
+                                // TODO(gmackall): Do we need to serialize as a string and then write?
+                                //                 Can we just write the json?
+                                ObjectMapper objectMapper = new ObjectMapper();
+                                objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+                                String jsonOutput = objectMapper.writeValueAsString(appLinkSettings);
+                                // TODO(gmackall): provide a default here, or force non null.
+                                File outputFile = new File((String) project.property("outputPath"));
+                                outputFile.setWritable(true);
+                                Files.writeString(outputFile.toPath(), jsonOutput);
+                            }
+                        } catch (Exception e) {
+                            throw new GradleException("Error parsing AndroidManifest.xml", e);
+                        }
+                    });
+                });
+            });
+        });
+    }
 
     /**
      * Returns a Flutter build mode suitable for the specified Android buildType.
@@ -1442,8 +1395,7 @@ public class FlutterPlugin implements Plugin<Project> {
         addTaskForJavaVersion(project);
         if (isFlutterAppProject()) {
             addTaskForPrintBuildVariants(project);
-            // TODO(GMACKALL): this part
-            //addTasksForOutputsAppLinkSettings(project);
+            addTasksForOutputsAppLinkSettings(project);
         }
         List<String> targetPlatforms = getTargetPlatforms();
 

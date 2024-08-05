@@ -1,6 +1,13 @@
 package com.flutter.gradle;
 
 public class Deeplink {
+    public Deeplink(String scheme, String host, String path, IntentFilterCheck intentFilterCheck) {
+        this.scheme = scheme;
+        this.host = host;
+        this.path = path;
+        this.intentFilterCheck = intentFilterCheck;
+    }
+
     public boolean equals(Object o) {
         if (o == null) {
             // TODO(gmackall): Leaving this as is for this PR as I want to keep the scope to the
