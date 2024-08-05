@@ -532,6 +532,7 @@ class AndroidProject extends FlutterProjectPlatform {
     if (plugin.existsSync()) {
       return false;
     }
+    return true;
     try {
       for (final String line in appGradleFile.readAsLinesSync()) {
         // This syntax corresponds to applying the Flutter Gradle Plugin with a
