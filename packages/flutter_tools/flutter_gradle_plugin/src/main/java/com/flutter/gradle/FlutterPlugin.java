@@ -1479,8 +1479,8 @@ public class FlutterPlugin implements Plugin<Project> {
             // Create packJniLibsTask
             Jar packJniLibsTask = project.getTasks().create("packJniLibs" + FLUTTER_BUILD_PREFIX + baseVariant.getName().substring(0, 1).toUpperCase() + baseVariant.getName().substring(1), Jar.class);
             //TODO(gmackall): fix?
-            //packJniLibsTask.setDestinationDir(libJar.getParentFile());
-            //packJniLibsTask.setArchiveFileName(libJar.getName());
+            packJniLibsTask.getDestinationDirectory().set(libJar.getParentFile());
+            packJniLibsTask.getArchiveFileName().set(libJar.getName());
             packJniLibsTask.dependsOn(compileTask);
 
             for (String targetPlatform : targetPlatforms) {
@@ -1490,12 +1490,7 @@ public class FlutterPlugin implements Plugin<Project> {
                 };
                 ConfigurableFileTree abiFiles = project.fileTree(compileTask.getIntermediateDir() + "/" + abi);
                 abiFiles.include("*.so");
-                packJniLibsTask.from(abiFiles, new Action<CopySpec>() {
-                    @Override
-                    public void execute(CopySpec copySpec) {
-                        copySpec.rename(transformer);
-                    }
-                });
+                packJniLibsTask.from(abiFiles, copySpec -> copySpec.rename(transformer));
 
                 // Copy native assets
                 String buildDir = getFlutterSourceDirectory() + "/build";
@@ -1509,9 +1504,10 @@ public class FlutterPlugin implements Plugin<Project> {
             addApiDependencies(project, baseVariant.getName(), project.files(packJniLibsTask));
 
             // Create copyFlutterAssetsTask
-            Copy copyFlutterAssetsTask = project.getTasks().create("copyFlutterAssets" + baseVariant.getName().substring(0, 1).toUpperCase() + baseVariant.getName().substring(1), Copy.class);
+            Copy copyFlutterAssetsTask = project.getTasks().create("copyFlutterAssets" + capitalizeWord(baseVariant.getName()), Copy.class);
             copyFlutterAssetsTask.dependsOn(compileTask);
             copyFlutterAssetsTask.with(compileTask.getAssets());
+            copyFlutterAssetsTask.setDestinationDir(libJar.getParentFile());
 
             // Set file permissions based on Gradle version
             String currentGradleVersion = project.getGradle().getGradleVersion();
@@ -1531,25 +1527,40 @@ public class FlutterPlugin implements Plugin<Project> {
             }
 
             // Handle 'mergeAssets' or 'mergeAssetsProvider' based on AGP version
-//            Task mergeAssets = null;
-//            try {
-//                // Try accessing 'mergeAssetsProvider' (available in newer AGP versions)
-//                Field mergeAssetsProviderField = ApplicationVariant.class.getDeclaredField("mergeAssetsProvider");
-//                mergeAssetsProviderField.setAccessible(true);
-//                TaskProvider<?> mergeAssetsProvider = (TaskProvider<?>) mergeAssetsProviderField.get(baseVariant);
-//                mergeAssets = mergeAssetsProvider.get();
-//            } catch (NoSuchFieldException | IllegalAccessException e) {
-//                // 'mergeAssetsProvider' not available, fallback to 'mergeAssets'
-//                try {
-//                    Field mergeAssetsField = ApplicationVariant.class.getDeclaredField("mergeAssets");
-//                    mergeAssetsField.setAccessible(true);
-//                    mergeAssets = (Task) mergeAssetsField.get(baseVariant);
-//                } catch (NoSuchFieldException | IllegalAccessException ex) {
-//                    throw new GradleException("Error accessing mergeAssets: " + ex.getMessage(), ex);
-//                }
-//            }
-//            copyFlutterAssetsTask.dependsOn(mergeAssets);
+            Task mergeAssets = baseVariant.getMergeAssetsProvider().get();
+            copyFlutterAssetsTask.dependsOn(mergeAssets);
+            System.out.println(mergeAssets.getName());
+//            Task cleanMergeAssets = project.getTasks().findByName("clean" + capitalizeWord(mergeAssets.getName()));
+//            copyFlutterAssetsTask.dependsOn(cleanMergeAssets);
+//            copyFlutterAssetsTask.mustRunAfter(cleanMergeAssets);
             // TODO(gmackall): more here (check original file).
+
+            if (!isUsedAsSubproject) {
+                BaseVariantOutput variantOutput = baseVariant.getOutputs().stream().findFirst().get();
+                variantOutput.getProcessResourcesProvider().get().dependsOn(copyFlutterAssetsTask);
+            }
+            // The following tasks use the output of copyFlutterAssetsTask,
+            // so it's necessary to declare it as an dependency since Gradle 8.
+            // See https://docs.gradle.org/8.1/userguide/validation_problems.html#implicit_dependency.
+            Task compressAssetsTask = project.getTasks().findByName("compress" + capitalizeWord(baseVariant.getName()) + "Assets");
+            if (compressAssetsTask != null) {
+                compressAssetsTask.dependsOn(copyFlutterAssetsTask);
+            }
+
+            Task bundleAarTask = project.getTasks().findByName("bundle" + capitalizeWord(baseVariant.getName()) + "Aar");
+            if (bundleAarTask != null) {
+                bundleAarTask.dependsOn(copyFlutterAssetsTask);
+            }
+
+            Task bundleAarTaskWithLint = project.getTasks().findByName("bundle" + capitalizeWord(baseVariant.getName()) + "LocalLintAar");
+            if (bundleAarTaskWithLint != null) {
+                bundleAarTaskWithLint.dependsOn(copyFlutterAssetsTask);
+            }
+
+            Task collectDependencies = project.getTasks().findByName("collect" + capitalizeWord(baseVariant.getName()) + "Dependencies");
+            if (collectDependencies != null) {
+                collectDependencies.dependsOn(copyFlutterAssetsTask);
+            }
 
             return copyFlutterAssetsTask;
         };
