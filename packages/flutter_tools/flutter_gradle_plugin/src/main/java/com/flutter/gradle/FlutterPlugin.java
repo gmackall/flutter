@@ -5,7 +5,6 @@ import com.android.build.OutputFile;
 import com.android.build.VariantOutput;
 import com.android.build.api.dsl.ApplicationExtension;
 import com.android.build.api.dsl.BuildType;
-import com.android.build.api.dsl.CommonExtension;
 import com.android.build.api.variant.ApplicationVariant;
 import com.android.build.gradle.AppExtension;
 import com.android.build.gradle.BaseExtension;
@@ -29,12 +28,9 @@ import org.gradle.api.Transformer;
 import org.gradle.api.UnknownDomainObjectException;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
 import org.gradle.api.file.ConfigurableFileTree;
-import org.gradle.api.file.CopySpec;
 import org.gradle.api.file.Directory;
-import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.plugins.ExtraPropertiesExtension;
 import org.gradle.api.tasks.Copy;
-import org.gradle.api.tasks.TaskProvider;
 import org.gradle.api.tasks.bundling.Jar;
 import org.gradle.internal.impldep.com.fasterxml.jackson.databind.ObjectMapper;
 import org.gradle.internal.impldep.com.fasterxml.jackson.databind.SerializationFeature;
@@ -49,14 +45,12 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -1521,7 +1515,6 @@ public class FlutterPlugin implements Plugin<Project> {
             if (isUsedAsSubproject) {
                 copyFlutterAssetsTask.dependsOn(packageAssets);
                 copyFlutterAssetsTask.dependsOn(cleanPackageAssets);
-                // TODO(gmackall): This isn't right I don't think.
                 copyFlutterAssetsTask.into(packageAssets.getPath());
                 return copyFlutterAssetsTask;
             }
@@ -1529,11 +1522,6 @@ public class FlutterPlugin implements Plugin<Project> {
             // Handle 'mergeAssets' or 'mergeAssetsProvider' based on AGP version
             Task mergeAssets = baseVariant.getMergeAssetsProvider().get();
             copyFlutterAssetsTask.dependsOn(mergeAssets);
-            System.out.println(mergeAssets.getName());
-//            Task cleanMergeAssets = project.getTasks().findByName("clean" + capitalizeWord(mergeAssets.getName()));
-//            copyFlutterAssetsTask.dependsOn(cleanMergeAssets);
-//            copyFlutterAssetsTask.mustRunAfter(cleanMergeAssets);
-            // TODO(gmackall): more here (check original file).
 
             if (!isUsedAsSubproject) {
                 BaseVariantOutput variantOutput = baseVariant.getOutputs().stream().findFirst().get();
