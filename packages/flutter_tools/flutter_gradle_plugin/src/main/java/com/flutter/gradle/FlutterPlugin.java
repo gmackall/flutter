@@ -1581,7 +1581,7 @@ public class FlutterPlugin implements Plugin<Project> {
                 //   * `flavor-name` is the flavor used to build the app in lower case if the assemble task is called.
                 //   * `build-mode` can be `release|debug|profile`.
                 System.out.println("HI GRAY getting closer");
-                variant.getOutputs().forEach( output -> {
+                variant.getOutputs().all( output -> {
                     assembleTask.doLast( task1 -> {
                         // `packageApplication` became `packageApplicationProvider` in AGP 3.3.0.
                         Directory outputDirectory = variant.getPackageApplicationProvider()

@@ -51,13 +51,13 @@ public abstract class BaseFlutterTask extends DefaultTask {
         } else if (deferredComponents) {
             List<String> l = new ArrayList<>();
             for (String s : targetPlatformValues) {
-                l.add("android_aot_deferred_components_bundle_" + buildMode + "_" + s + ")");
+                l.add("android_aot_deferred_components_bundle_" + buildMode + "_" + s);
             }
             ruleNames = l;
         } else {
             List<String> l = new ArrayList<>();
             for (String s : targetPlatformValues) {
-                l.add("android_aot_bundle_" + buildMode + "_" + s + ")");
+                l.add("android_aot_bundle_" + buildMode + "_" + s);
             }
             ruleNames = l;
         }
