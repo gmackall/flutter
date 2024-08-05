@@ -675,6 +675,15 @@ public class FlutterPlugin implements Plugin<Project> {
         return "release";
     }
 
+    private static String buildModeFor(com.android.builder.model.BuildType buildType) {
+        if (buildType.getName().equals("profile")) {
+            return "profile";
+        } else if (buildType.isJniDebuggable()) { //TODO(gmackall): this is probably a wrong replacement, find what we can do here.
+            return "debug";
+        }
+        return "release";
+    }
+
     /**
      * Adds the dependencies required by the Flutter project.
      * This includes:
@@ -1423,7 +1432,7 @@ public class FlutterPlugin implements Plugin<Project> {
             Task cleanPackageAssets = project.getTasks().findByPath(":flutter:cleanPackage" + capitalizeWord(baseVariant.getName()) + "Assets");
             boolean isUsedAsSubproject = (packageAssets != null && cleanPackageAssets != null && !isBuildingAar);
 
-            String variantBuildMode = buildModeFor((BuildType) baseVariant.getBuildType());
+            String variantBuildMode = buildModeFor(baseVariant.getBuildType());
             String flavorValue = baseVariant.getFlavorName();
             String taskName = toCamelCase(Arrays.asList("compile", FLUTTER_BUILD_PREFIX, baseVariant.getName()));
 
@@ -1507,8 +1516,8 @@ public class FlutterPlugin implements Plugin<Project> {
             // Set file permissions based on Gradle version
             String currentGradleVersion = project.getGradle().getGradleVersion();
             if (compareVersionStrings(currentGradleVersion, "8.3") >= 0) {
-                copyFlutterAssetsTask.getDestinationDir().setReadable(true);
-                copyFlutterAssetsTask.getDestinationDir().setWritable(true);
+                //copyFlutterAssetsTask.getDestinationDir().setReadable(true);
+                //copyFlutterAssetsTask.getDestinationDir().setWritable(true);
             } else {
                 copyFlutterAssetsTask.setFileMode(0644);
             }
@@ -1522,36 +1531,41 @@ public class FlutterPlugin implements Plugin<Project> {
             }
 
             // Handle 'mergeAssets' or 'mergeAssetsProvider' based on AGP version
-            Task mergeAssets = null;
-            try {
-                // Try accessing 'mergeAssetsProvider' (available in newer AGP versions)
-                Field mergeAssetsProviderField = ApplicationVariant.class.getDeclaredField("mergeAssetsProvider");
-                mergeAssetsProviderField.setAccessible(true);
-                TaskProvider<?> mergeAssetsProvider = (TaskProvider<?>) mergeAssetsProviderField.get(baseVariant);
-                mergeAssets = mergeAssetsProvider.get();
-            } catch (NoSuchFieldException | IllegalAccessException e) {
-                // 'mergeAssetsProvider' not available, fallback to 'mergeAssets'
-                try {
-                    Field mergeAssetsField = ApplicationVariant.class.getDeclaredField("mergeAssets");
-                    mergeAssetsField.setAccessible(true);
-                    mergeAssets = (Task) mergeAssetsField.get(baseVariant);
-                } catch (NoSuchFieldException | IllegalAccessException ex) {
-                    throw new GradleException("Error accessing mergeAssets: " + ex.getMessage(), ex);
-                }
-            }
-            copyFlutterAssetsTask.dependsOn(mergeAssets);
+//            Task mergeAssets = null;
+//            try {
+//                // Try accessing 'mergeAssetsProvider' (available in newer AGP versions)
+//                Field mergeAssetsProviderField = ApplicationVariant.class.getDeclaredField("mergeAssetsProvider");
+//                mergeAssetsProviderField.setAccessible(true);
+//                TaskProvider<?> mergeAssetsProvider = (TaskProvider<?>) mergeAssetsProviderField.get(baseVariant);
+//                mergeAssets = mergeAssetsProvider.get();
+//            } catch (NoSuchFieldException | IllegalAccessException e) {
+//                // 'mergeAssetsProvider' not available, fallback to 'mergeAssets'
+//                try {
+//                    Field mergeAssetsField = ApplicationVariant.class.getDeclaredField("mergeAssets");
+//                    mergeAssetsField.setAccessible(true);
+//                    mergeAssets = (Task) mergeAssetsField.get(baseVariant);
+//                } catch (NoSuchFieldException | IllegalAccessException ex) {
+//                    throw new GradleException("Error accessing mergeAssets: " + ex.getMessage(), ex);
+//                }
+//            }
+//            copyFlutterAssetsTask.dependsOn(mergeAssets);
             // TODO(gmackall): more here (check original file).
 
             return copyFlutterAssetsTask;
         };
 
+        System.out.println("HI GRAY BEFOR EPLACE1 ");
         if (isFlutterAppProject()) {
             AppExtension androidExtension = project.getExtensions().getByType(AppExtension.class);
-            androidExtension.getApplicationVariants().forEach(variant -> {
+            System.out.println("HI GRAY BEFOR EPLACE2 " + androidExtension.getApplicationVariants().size());
+            androidExtension.getApplicationVariants().all(variant -> {
+                System.out.println("HI GRAY BEFOR EPLACE3");
                 Task assembleTask = getAssembleTask(variant);
                 if (!shouldConfigureFlutterTask(assembleTask)) {
+                    System.out.println("HI GRAY early case");
                     return;
                 }
+                System.out.println("HI GRAY BEFOR EPLACE4 ");
                 Task copyFlutterAssetsTask = addFlutterDeps.apply(variant);
                 Optional<BaseVariantOutput> variantOutput = variant.getOutputs().stream().findFirst();
                 // ------------------------------------------------------------
@@ -1566,6 +1580,7 @@ public class FlutterPlugin implements Plugin<Project> {
                 //   * `abi` can be `armeabi-v7a|arm64-v8a|x86|x86_64` only if the flag `split-per-abi` is set.
                 //   * `flavor-name` is the flavor used to build the app in lower case if the assemble task is called.
                 //   * `build-mode` can be `release|debug|profile`.
+                System.out.println("HI GRAY getting closer");
                 variant.getOutputs().forEach( output -> {
                     assembleTask.doLast( task1 -> {
                         // `packageApplication` became `packageApplicationProvider` in AGP 3.3.0.
@@ -1591,7 +1606,7 @@ public class FlutterPlugin implements Plugin<Project> {
                             filename += "-" + variant.getFlavorName().toLowerCase();
                         }
                         // TODO(gmackall): fix this suspect cast
-                        filename += "-" + buildModeFor((BuildType) variant.getBuildType());
+                        filename += "-" + buildModeFor(variant.getBuildType());
                         String finalFilename = filename;
                         project.copy(copySpec ->  {
                             copySpec.from(new File(outputDirectoryStr + "/" + output.getOutputFile().getName()));
