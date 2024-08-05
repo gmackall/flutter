@@ -1,5 +1,6 @@
 package com.flutter.gradle;
 
+import com.android.build.FilterData;
 import com.android.build.OutputFile;
 import com.android.build.VariantOutput;
 import com.android.build.api.dsl.ApplicationExtension;
@@ -29,6 +30,8 @@ import org.gradle.api.UnknownDomainObjectException;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
 import org.gradle.api.file.ConfigurableFileTree;
 import org.gradle.api.file.CopySpec;
+import org.gradle.api.file.Directory;
+import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.plugins.ExtraPropertiesExtension;
 import org.gradle.api.tasks.Copy;
 import org.gradle.api.tasks.TaskProvider;
@@ -552,7 +555,6 @@ public class FlutterPlugin implements Plugin<Project> {
                                     }
                                 }
 
-                                // Step 3
                                 NodeList intentFilterList = activity.getElementsByTagName("intent-filter");
                                 for (int k = 0; k < intentFilterList.getLength(); k++) {
                                     Element appLinkIntent = (Element) intentFilterList.item(k);
@@ -1068,7 +1070,6 @@ public class FlutterPlugin implements Plugin<Project> {
         if (pluginList == null) {
             // Access the 'nativePluginLoader' extension and call 'getPlugins'
             NativePluginLoader nativePluginLoader = (NativePluginLoader) project.getGradle().getExtensions().getByType(ExtraPropertiesExtension.class).get("nativePluginLoader");
-            //NativePluginLoader nativePluginLoader = (NativePluginLoader) project.getExtensions().getByName("nativePluginLoader");
             pluginList = nativePluginLoader.getPlugins(getFlutterSourceDirectory());
         }
         return pluginList;
@@ -1418,8 +1419,8 @@ public class FlutterPlugin implements Plugin<Project> {
             boolean isBuildingAar = project.hasProperty("is-plugin");
 
             // Check if Flutter module is used as a subproject
-            Task packageAssets = project.getTasks().findByPath(":flutter:package" + baseVariant.getName().substring(0, 1).toUpperCase() + baseVariant.getName().substring(1) + "Assets");
-            Task cleanPackageAssets = project.getTasks().findByPath(":flutter:cleanPackage" + baseVariant.getName().substring(0, 1).toUpperCase() + baseVariant.getName().substring(1) + "Assets");
+            Task packageAssets = project.getTasks().findByPath(":flutter:package" + capitalizeWord(baseVariant.getName()) + "Assets");
+            Task cleanPackageAssets = project.getTasks().findByPath(":flutter:cleanPackage" + capitalizeWord(baseVariant.getName()) + "Assets");
             boolean isUsedAsSubproject = (packageAssets != null && cleanPackageAssets != null && !isBuildingAar);
 
             String variantBuildMode = buildModeFor((BuildType) baseVariant.getBuildType());
@@ -1508,8 +1509,6 @@ public class FlutterPlugin implements Plugin<Project> {
             if (compareVersionStrings(currentGradleVersion, "8.3") >= 0) {
                 copyFlutterAssetsTask.getDestinationDir().setReadable(true);
                 copyFlutterAssetsTask.getDestinationDir().setWritable(true);
-                //copyFlutterAssetsTask.getFilePermissions().getUser().setRead(true);
-                //copyFlutterAssetsTask.getFilePermissions().getUser().setWrite(true);
             } else {
                 copyFlutterAssetsTask.setFileMode(0644);
             }
@@ -1517,7 +1516,8 @@ public class FlutterPlugin implements Plugin<Project> {
             if (isUsedAsSubproject) {
                 copyFlutterAssetsTask.dependsOn(packageAssets);
                 copyFlutterAssetsTask.dependsOn(cleanPackageAssets);
-                //copyFlutterAssetsTask.into(packageAssets.getOutputDir());
+                // TODO(gmackall): This isn't right I don't think.
+                copyFlutterAssetsTask.into(packageAssets.getPath());
                 return copyFlutterAssetsTask;
             }
 
@@ -1539,6 +1539,8 @@ public class FlutterPlugin implements Plugin<Project> {
                     throw new GradleException("Error accessing mergeAssets: " + ex.getMessage(), ex);
                 }
             }
+            copyFlutterAssetsTask.dependsOn(mergeAssets);
+            // TODO(gmackall): more here (check original file).
 
             return copyFlutterAssetsTask;
         };
@@ -1552,49 +1554,57 @@ public class FlutterPlugin implements Plugin<Project> {
                 }
                 Task copyFlutterAssetsTask = addFlutterDeps.apply(variant);
                 Optional<BaseVariantOutput> variantOutput = variant.getOutputs().stream().findFirst();
-//                def processResources = variantOutput.hasProperty(propProcessResourcesProvider) ?
-//                        variantOutput.processResourcesProvider.get() : variantOutput.processResources
-//                processResources.dependsOn(copyFlutterAssetsTask)
-//
-//                // Copy the output APKs into a known location, so `flutter run` or `flutter build apk`
-//                // can discover them. By default, this is `<app-dir>/build/app/outputs/flutter-apk/<filename>.apk`.
-//                //
-//                // The filename consists of `app<-abi>?<-flavor-name>?-<build-mode>.apk`.
-//                // Where:
-//                //   * `abi` can be `armeabi-v7a|arm64-v8a|x86|x86_64` only if the flag `split-per-abi` is set.
-//                //   * `flavor-name` is the flavor used to build the app in lower case if the assemble task is called.
-//                //   * `build-mode` can be `release|debug|profile`.
-//                variant.outputs.all { output ->
-//                        assembleTask.doLast {
-//                    // `packageApplication` became `packageApplicationProvider` in AGP 3.3.0.
-//                    def outputDirectory = variant.hasProperty("packageApplicationProvider")
-//                            ? variant.packageApplicationProvider.get().outputDirectory
-//                            : variant.packageApplication.outputDirectory
-//                    //  `outputDirectory` is a `DirectoryProperty` in AGP 4.1.
-//                    String outputDirectoryStr = outputDirectory.metaClass.respondsTo(outputDirectory, "get")
-//                            ? outputDirectory.get()
-//                            : outputDirectory
-//                    String filename = "app"
-//                    String abi = output.getFilter(OutputFile.ABI)
-//                    if (abi != null && !abi.isEmpty()) {
-//                        filename += "-${abi}"
-//                    }
-//                    if (variant.flavorName != null && !variant.flavorName.isEmpty()) {
-//                        filename += "-${variant.flavorName.toLowerCase()}"
-//                    }
-//                    filename += "-${buildModeFor(variant.buildType)}"
-//                    project.copy {
-//                        from new File("$outputDirectoryStr/${output.outputFileName}")
-//                        into new File("${project.buildDir}/outputs/flutter-apk")
-//                        rename {
-//                            return "${filename}.apk"
-//                        }
-//                    }
-//                }
-//                }
-//                // Copy the native assets created by build.dart and placed here by flutter assemble.
-//                String nativeAssetsDir = "${project.buildDir}/../native_assets/android/jniLibs/lib/"
-//                project.android.sourceSets.main.jniLibs.srcDir(nativeAssetsDir)
+                // ------------------------------------------------------------
+                ProcessAndroidResources processResources = variantOutput.get().getProcessResources();
+                processResources.dependsOn(copyFlutterAssetsTask);
+
+                // Copy the output APKs into a known location, so `flutter run` or `flutter build apk`
+                // can discover them. By default, this is `<app-dir>/build/app/outputs/flutter-apk/<filename>.apk`.
+                //
+                // The filename consists of `app<-abi>?<-flavor-name>?-<build-mode>.apk`.
+                // Where:
+                //   * `abi` can be `armeabi-v7a|arm64-v8a|x86|x86_64` only if the flag `split-per-abi` is set.
+                //   * `flavor-name` is the flavor used to build the app in lower case if the assemble task is called.
+                //   * `build-mode` can be `release|debug|profile`.
+                variant.getOutputs().forEach( output -> {
+                    assembleTask.doLast( task1 -> {
+                        // `packageApplication` became `packageApplicationProvider` in AGP 3.3.0.
+                        Directory outputDirectory = variant.getPackageApplicationProvider()
+                                .get()
+                                .getOutputDirectory()
+                                .get();
+                        //  `outputDirectory` is a `DirectoryProperty` in AGP 4.1.
+//                        String outputDirectoryStr = outputDirectory.metaClass.respondsTo(outputDirectory, "get")
+//                                ? outputDirectory.get()
+//                                : outputDirectory;
+                        String outputDirectoryStr = outputDirectory.toString();
+                        String filename = "app";
+                        List<FilterData> filterDataList = output.getFilters().stream().filter(filterData -> {
+                            return filterData.getFilterType().equals(OutputFile.ABI);
+                        }).toList();
+                        String abi = filterDataList.isEmpty() ? null : filterDataList.get(0).getIdentifier();
+                        //String abi = output.getFilter(OutputFile.ABI);
+                        if (abi != null && !abi.isEmpty()) {
+                            filename += "-" + abi;
+                        }
+                        if (variant.getFlavorName() != null && !variant.getFlavorName().isEmpty()) {
+                            filename += "-" + variant.getFlavorName().toLowerCase();
+                        }
+                        // TODO(gmackall): fix this suspect cast
+                        filename += "-" + buildModeFor((BuildType) variant.getBuildType());
+                        String finalFilename = filename;
+                        project.copy(copySpec ->  {
+                            copySpec.from(new File(outputDirectoryStr + "/" + output.getOutputFile().getName()));
+                            copySpec.into(new File(project.getBuildDir() + "/outputs/flutter-apk"));
+                            copySpec.rename( ignored -> finalFilename + ".apk");
+                        });
+                    });
+                });
+                // Copy the native assets created by build.dart and placed here by flutter assemble.
+                String nativeAssetsDir = project.getBuildDir() + "/../native_assets/android/jniLibs/lib/";
+                androidExtension.getSourceSets().getByName("main").getJniLibs().srcDir(nativeAssetsDir);
+                //project.android.sourceSets.main.jniLibs.srcDir(nativeAssetsDir)
+                // ------------------------------------------------------------
             });
             configurePlugins(project);
             detectLowCompileSdkVersionOrNdkVersion();
