@@ -32,10 +32,17 @@ android {
             manifest.srcFile 'AndroidManifest.xml'
             java.srcDirs './'
             java.include './io.flutter/**'
+            jniLibs.srcDirs 'src/main/jniLibs'
             test {
                 java.srcDir './test'
                 java.include './test/io.flutter/**'
             }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"  // Specify the path to your CMakeLists.txt file
         }
     }
 
