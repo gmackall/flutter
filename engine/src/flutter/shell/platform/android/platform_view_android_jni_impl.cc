@@ -2122,8 +2122,6 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
               break;
           }
         }
-        // TODO(gmackall) call the java method here after defining and jni
-        // plumbing
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_clippath_method, androidPath);
       }
