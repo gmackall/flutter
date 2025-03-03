@@ -12,15 +12,15 @@ set(BASE_DIR ${CMAKE_SOURCE_DIR}/../../../..)
 
 # Include directories
 include_directories(
-        ${BASE_DIR}/flutter/third_party/android_embedding_dependencies/include
-        ${BASE_DIR}/flutter/third_party/android_embedding_dependencies/lib
-        ${BASE_DIR}/flutter/shell/platform/android  # Add this line
+		${BASE_DIR}/
+		${BASE_DIR}/flutter/
+		${BASE_DIR}/flutter/third_party/skia/
 )
 
 # Add source files
 file(GLOB_RECURSE SOURCE_FILES
-    ${CMAKE_SOURCE_DIR}/flutter/shell/platform/android/**/*.cc
-    ${CMAKE_SOURCE_DIR}/flutter/shell/platform/android/**/*.h
+    ${BASE_DIR}/flutter/shell/platform/**/*.cc
+    ${BASE_DIR}/flutter/shell/platform/**/*.h
 )
 
 # Add the executable

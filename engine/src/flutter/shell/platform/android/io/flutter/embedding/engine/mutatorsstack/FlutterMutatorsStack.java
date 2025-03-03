@@ -220,6 +220,12 @@ public class FlutterMutatorsStack {
     finalOpacity *= opacity;
   }
 
+  public void pushClipPath(Path path) {
+    FlutterMutator mutator = new FlutterMutator(path);
+    mutators.add(mutator);
+    finalClippingPaths.add(path);
+  }
+
   /**
    * Get a list of all the raw mutators. The 0 index of the returned list is the top of the stack.
    */
