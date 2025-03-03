@@ -1211,63 +1211,53 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
-  // 2. Get the Android Path class
+  // Android path class and methods
   path_class = env->FindClass("android/graphics/Path");
   if (path_class == nullptr) {
-    // Handle error (e.g., throw an exception)
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find android.graphics.Path class");
     return false;
   }
 
-  // 3. Create a new Android Path object
   path_constructor = env->GetMethodID(path_class, "<init>", "()V");
   if (path_constructor == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find Path constructor");
     return false;
   }
 
-  // methods
   path_move_to_method = env->GetMethodID(path_class, "moveTo", "(FF)V");
   if (path_move_to_method == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find moveTo method");
     return false;
   }
   path_line_to_method = env->GetMethodID(path_class, "lineTo", "(FF)V");
   if (path_line_to_method == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find lineTo method");
     return false;
   }
   path_quad_to_method = env->GetMethodID(path_class, "quadTo", "(FFFF)V");
   if (path_quad_to_method == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find quadTo method");
     return false;
   }
   path_cubic_to_method = env->GetMethodID(path_class, "cubicTo", "(FFFFFF)V");
   if (path_cubic_to_method == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find cubicTo method");
     return false;
   }
   path_conic_to_method = env->GetMethodID(path_class, "conicTo", "(FFFFF)V");
   if (path_conic_to_method == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find conicTo method");
     return false;
   }
   path_close_method = env->GetMethodID(path_class, "close", "()V");
   if (path_close_method == nullptr) {
-    // Handle error
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find close method");
     return false;
