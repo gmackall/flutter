@@ -163,7 +163,7 @@ static jmethodID g_mutators_stack_push_opacity_method = nullptr;
 static jmethodID g_mutators_stack_push_clippath_method = nullptr;
 
 // android.graphics.Path class and methods
-static jclass path_class = nullptr;
+static fml::jni::ScopedJavaGlobalRef<jclass>* path_class = nullptr;
 static jmethodID path_constructor = nullptr;
 static jmethodID path_move_to_method = nullptr;
 static jmethodID path_line_to_method = nullptr;
@@ -1212,51 +1212,55 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
   }
 
   // Android path class and methods
-  path_class = env->FindClass("android/graphics/Path");
-  if (path_class == nullptr) {
+  path_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
+      env, env->FindClass("android/graphics/Path"));
+  if (path_class->is_null()) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find android.graphics.Path class");
     return false;
   }
 
-  path_constructor = env->GetMethodID(path_class, "<init>", "()V");
+  path_constructor = env->GetMethodID(path_class->obj(), "<init>", "()V");
   if (path_constructor == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find Path constructor");
     return false;
   }
 
-  path_move_to_method = env->GetMethodID(path_class, "moveTo", "(FF)V");
+  path_move_to_method = env->GetMethodID(path_class->obj(), "moveTo", "(FF)V");
   if (path_move_to_method == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find moveTo method");
     return false;
   }
-  path_line_to_method = env->GetMethodID(path_class, "lineTo", "(FF)V");
+  path_line_to_method = env->GetMethodID(path_class->obj(), "lineTo", "(FF)V");
   if (path_line_to_method == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find lineTo method");
     return false;
   }
-  path_quad_to_method = env->GetMethodID(path_class, "quadTo", "(FFFF)V");
+  path_quad_to_method =
+      env->GetMethodID(path_class->obj(), "quadTo", "(FFFF)V");
   if (path_quad_to_method == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find quadTo method");
     return false;
   }
-  path_cubic_to_method = env->GetMethodID(path_class, "cubicTo", "(FFFFFF)V");
+  path_cubic_to_method =
+      env->GetMethodID(path_class->obj(), "cubicTo", "(FFFFFF)V");
   if (path_cubic_to_method == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find cubicTo method");
     return false;
   }
-  path_conic_to_method = env->GetMethodID(path_class, "conicTo", "(FFFFF)V");
+  path_conic_to_method =
+      env->GetMethodID(path_class->obj(), "conicTo", "(FFFFF)V");
   if (path_conic_to_method == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find conicTo method");
     return false;
   }
-  path_close_method = env->GetMethodID(path_class, "close", "()V");
+  path_close_method = env->GetMethodID(path_class->obj(), "close", "()V");
   if (path_close_method == nullptr) {
     env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
                   "Could not find close method");
@@ -2066,10 +2070,12 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       // TODO(cyanglaz): Implement other mutators.
       // https://github.com/flutter/flutter/issues/58426
       case kClipPath: {
+        FML_LOG(ERROR) << "hi gray HI GRAY HI GRAY, in clippath";
         const SkPath& path = (*iter)->GetPath();
 
         // Define and populate an Android Path with data from the Skia SkPath
-        jobject androidPath = env->NewObject(path_class, path_constructor);
+        jobject androidPath =
+            env->NewObject(path_class->obj(), path_constructor);
 
         SkPath::Iter pathIter(path, false);
         SkPoint points[4];
