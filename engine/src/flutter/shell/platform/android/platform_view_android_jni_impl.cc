@@ -2073,6 +2073,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         FML_LOG(ERROR) << "hi gray HI GRAY HI GRAY, in clippath";
         const SkPath& path = (*iter)->GetPath();
 
+
         // Define and populate an Android Path with data from the Skia SkPath
         jobject androidPath =
             env->NewObject(path_class->obj(), path_constructor);
@@ -2084,11 +2085,13 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         while ((verb = pathIter.next(points)) != SkPath::kDone_Verb) {
           switch (verb) {
             case SkPath::kMove_Verb: {
+                FML_LOG(ERROR) << "hi gray HI GRAY in case SkPath::kMove_Verb";
               env->CallVoidMethod(androidPath, path_move_to_method,
                                   points[0].fX, points[0].fY);
               break;
             }
             case SkPath::kLine_Verb: {
+                FML_LOG(ERROR) << "hi gray HI GRAY in case SkPath::kLine_Verb";
               env->CallVoidMethod(androidPath, path_line_to_method,
                                   points[1].fX, points[1].fY);
               break;
@@ -2111,6 +2114,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
                                   points[2].fY, pathIter.conicWeight());
               break;
             case SkPath::kClose_Verb: {
+                FML_LOG(ERROR) << "hi gray HI GRAY in case SkPath::kLine_Verb";
               env->CallVoidMethod(androidPath, path_close_method);
               break;
             }
