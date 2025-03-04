@@ -4,20 +4,16 @@
 
 package io.flutter.embedding.engine.mutatorsstack;
 
-import io.flutter.Log;
-import io.flutter.plugin.platform.PlatformViewsController2;
-
-import android.app.appsearch.PropertyPath;
 import android.graphics.Matrix;
 import android.graphics.Path;
 import android.graphics.PathIterator;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Build;
-
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import io.flutter.Log;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -230,30 +226,34 @@ public class FlutterMutatorsStack {
   public void pushClipPath(Path path) {
     FlutterMutator mutator = new FlutterMutator(path);
     mutators.add(mutator);
-      if (Build.VERSION.SDK_INT >= io.flutter.Build.API_LEVELS.API_34) {
-        Log.e("HI GRAY", "printing out path contents");
-          PathIterator iter = path.getPathIterator();
-          while (iter.hasNext()) {
-            PathIterator.Segment segment = iter.next();
-            Log.e("HI GRAY", "segment type: " + segment.getVerb());
-            if (segment.getVerb() == PathIterator.VERB_MOVE) {
-              Log.e("HI GRAY", "point(s): (" + segment.getPoints()[0] + "," + segment.getPoints()[1] + ")");
-            } else if (segment.getVerb() == PathIterator.VERB_LINE) {
-              Log.e("HI GRAY", "point(s): (" + segment.getPoints()[0]
-                      + ","
-                      + segment.getPoints()[1]
-                      + ") ("
-                      + segment.getPoints()[2]
-                      + ","
-                      + segment.getPoints()[3]
-                      + ")"
-              );
-            }
-          }
-        //path.setLastPoint(lastpoint[0], lastpoint[1]);
+    if (Build.VERSION.SDK_INT >= io.flutter.Build.API_LEVELS.API_34) {
+      Log.e("HI GRAY", "printing out path contents");
+      PathIterator iter = path.getPathIterator();
+      while (iter.hasNext()) {
+        PathIterator.Segment segment = iter.next();
+        Log.e("HI GRAY", "segment type: " + segment.getVerb());
+        if (segment.getVerb() == PathIterator.VERB_MOVE) {
+          Log.e(
+              "HI GRAY",
+              "point(s): (" + segment.getPoints()[0] + "," + segment.getPoints()[1] + ")");
+        } else if (segment.getVerb() == PathIterator.VERB_LINE) {
+          Log.e(
+              "HI GRAY",
+              "point(s): ("
+                  + segment.getPoints()[0]
+                  + ","
+                  + segment.getPoints()[1]
+                  + ") ("
+                  + segment.getPoints()[2]
+                  + ","
+                  + segment.getPoints()[3]
+                  + ")");
+        }
       }
+      // path.setLastPoint(lastpoint[0], lastpoint[1]);
+    }
     finalClippingPaths.add(path);
-      //Log.e("HI GRAY", path.toString());
+    // Log.e("HI GRAY", path.toString());
   }
 
   /**
