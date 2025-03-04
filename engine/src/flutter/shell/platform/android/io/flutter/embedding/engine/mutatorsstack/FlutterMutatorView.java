@@ -16,7 +16,6 @@ import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
-import io.flutter.Log;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.util.ViewUtils;
 
@@ -118,11 +117,7 @@ public class FlutterMutatorView extends FrameLayout {
       // We need to apply all the mutators to the view, which includes the mutation that leads to
       // the final offset. We should reverse this final offset, both as a translate mutation and to
       // all the clipping paths
-      Log.e("HI GRAY", "screen density is " + screenDensity);
       Path pathCopy = new Path(path);
-      Matrix blah = new Matrix();
-      blah.preScale(screenDensity, screenDensity);
-      pathCopy.transform(blah);
       pathCopy.offset(-left, -top);
       canvas.clipPath(pathCopy);
     }
