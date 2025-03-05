@@ -366,17 +366,22 @@ Path DlPath::ConvertToImpellerPath(const SkPath& path, const DlPoint& shift) {
           builder.LineTo(ToDlPoint(data.points[2]));
         }
         break;
-      case SkPath::kCubic_Verb:
-        builder.CubicCurveTo(ToDlPoint(data.points[1]),
-                             ToDlPoint(data.points[2]),
-                             ToDlPoint(data.points[3]));
+      case ComponentType::kConic:
+        builder.ConicTo(ToDlPoint(data.points[1]),
+                      ToDlPoint(data.points[2]),
+                      data.points[3][0].x);
         break;
-      case SkPath::kClose_Verb:
-        builder.Close();
-        break;
-      case SkPath::kDone_Verb:
-        break;
-    }
+    case ComponentType::kCubic:
+      builder.CubicCurveTo(ToDlPoint(data.points[1]),
+                           ToDlPoint(data.points[2]),
+                           ToDlPoint(data.points[3]));
+      break;
+    case ComponentType::kClose_Verb:
+      builder.Close();
+      break;
+    case ComponentType::kDone_Verb:
+      break;
+          }
   } while (verb != SkPath::Verb::kDone_Verb);
 
   DlRect bounds = ToDlRect(path.getBounds());

@@ -99,6 +99,15 @@ class PathBuilder {
   PathBuilder& AddQuadraticCurve(const Point& p1,
                                  const Point& cp,
                                  const Point& p2);
+  
+  PathBuilder& ConicCurveTo(Point controlPoint,
+                                        Point point,
+                                        Scalar weight, bool relative = false);
+
+  PathBuilder& AddConicCurve(const Point& p1,
+                                       const Point& cp,
+                                       const Point& p2,
+                                       Scalar weight);
 
   /// @brief Move to point `p1`, then insert a conic curve from `p1` to `p2`
   /// with the control point `cp` and weight `weight`.

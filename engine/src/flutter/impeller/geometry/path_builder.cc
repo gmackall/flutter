@@ -226,6 +226,15 @@ PathBuilder& PathBuilder::LineTo(Point point, bool relative) {
   return *this;
 }
 
+void PathBuilder::ConicTo(const Point& control_point,
+                           const Point& destination_point,
+                           Scalar weight) {
+  FML_DCHECK(valid_);
+  components_.push_back(std::make_unique<ConicPathComponent>(
+      last_position_, control_point, destination_point, Point{weight}));
+  last_position_ = destination_point;
+}
+
 PathBuilder& PathBuilder::HorizontalLineTo(Scalar x, bool relative) {
   Point endpoint =
       relative ? Point{current_.x + x, current_.y} : Point{x, current_.y};
@@ -559,17 +568,15 @@ void PathBuilder::AddConicComponent(const Point& p1,
   }
 }
 
-void PathBuilder::AddCubicComponent(const Point& p1,
-                                    const Point& cp1,
-                                    const Point& cp2,
-                                    const Point& p2) {
-  auto& points = prototype_.points;
-  points.push_back(p1);
-  points.push_back(cp1);
-  points.push_back(cp2);
-  points.push_back(p2);
-  prototype_.components.push_back(Path::ComponentType::kCubic);
-  prototype_.bounds.reset();
+void PathBuilder::ConicTo(const Point& control_point,
+                           const Point& destination_point,
+                           Scalar weight) {
+  FML_DCHECK(valid_);
+  components_.push_back(
+      std::make_unique<ConicPathComponent>(last_position_, control_point,
+                                            destination_point,
+                                            Point{weight}));
+  last_position_ = destination_point;
 }
 
 void PathBuilder::SetContourClosed(bool is_closed) {
