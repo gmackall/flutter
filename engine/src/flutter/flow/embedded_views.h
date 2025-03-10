@@ -156,7 +156,7 @@ class MutatorsStack {
   void PushTransform(const DlMatrix& matrix);
   void PushOpacity(const uint8_t& alpha);
   void PushImageFilter(const std::shared_ptr<DlImageFilter>& filter,
-                          const DlRect& filter_rect);
+                       const DlRect& filter_rect);
   // `filter_rect` is in global coordinates.
   void PushBackdropFilter(const std::shared_ptr<DlImageFilter>& filter,
                           const DlRect& filter_rect);

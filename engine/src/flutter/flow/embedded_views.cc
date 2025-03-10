@@ -90,9 +90,7 @@ void MutatorsStack::PushOpacity(const uint8_t& alpha) {
 
 void MutatorsStack::PushImageFilter(
     const std::shared_ptr<DlImageFilter>& filter,
-    const DlRect& filter_rect) {
-      
-    }
+    const DlRect& filter_rect) {}
 
 void MutatorsStack::PushBackdropFilter(
     const std::shared_ptr<DlImageFilter>& filter,

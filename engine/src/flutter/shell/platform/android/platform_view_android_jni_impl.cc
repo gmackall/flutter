@@ -2212,8 +2212,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       case MutatorType::kBackdropFilter:
         break;
       case MutatorType::kImageFilter: {
-          FML_LOG(ERROR) << (*iter)->GetMatrix()
-        break;
+        FML_LOG(ERROR) << (*iter)->GetMatrix() break;
       }
     }
     ++iter;
