@@ -295,7 +295,9 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
   }
 
   // There is no ImageFilter mutator currently
-  // void update_mutators(MutatorsStack* mutators_stack) const override;
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    
+  }
 
  private:
   const DlRect bounds_;

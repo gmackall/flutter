@@ -176,6 +176,7 @@ struct PlatformView {
           break;
         }
         case MutatorType::kOpacity:
+        case MutatorType::kImageFilter:
         case MutatorType::kBackdropFilter:
           break;
       }

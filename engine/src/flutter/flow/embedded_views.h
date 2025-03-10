@@ -37,6 +37,7 @@ enum class MutatorType {
   kClipPath,
   kTransform,
   kOpacity,
+  kImageFilter,
   kBackdropFilter
 };
 
@@ -118,6 +119,7 @@ class Mutator {
         return true;
       case MutatorType::kOpacity:
       case MutatorType::kTransform:
+      case MutatorType::kImageFilter:
       case MutatorType::kBackdropFilter:
         return false;
     }
@@ -153,6 +155,8 @@ class MutatorsStack {
   void PushClipPath(const DlPath& path);
   void PushTransform(const DlMatrix& matrix);
   void PushOpacity(const uint8_t& alpha);
+  void PushImageFilter(const std::shared_ptr<DlImageFilter>& filter,
+                          const DlRect& filter_rect);
   // `filter_rect` is in global coordinates.
   void PushBackdropFilter(const std::shared_ptr<DlImageFilter>& filter,
                           const DlRect& filter_rect);

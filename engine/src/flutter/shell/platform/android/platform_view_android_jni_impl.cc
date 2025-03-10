@@ -1711,6 +1711,7 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
       // https://github.com/flutter/flutter/issues/58426
       case MutatorType::kClipPath:
       case MutatorType::kOpacity:
+      case MutatorType::kImageFilter:
       case MutatorType::kBackdropFilter:
         break;
     }
@@ -2210,6 +2211,10 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       // https://github.com/flutter/flutter/issues/58426
       case MutatorType::kBackdropFilter:
         break;
+      case MutatorType::kImageFilter: {
+          FML_LOG(ERROR) << (*iter)->GetMatrix()
+        break;
+      }
     }
     ++iter;
   }

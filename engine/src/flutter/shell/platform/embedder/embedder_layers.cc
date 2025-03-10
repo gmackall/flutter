@@ -186,6 +186,8 @@ void EmbedderLayers::PushPlatformViewLayer(
                     .get());
           }
         } break;
+        case MutatorType::kImageFilter:
+          break;
         case MutatorType::kBackdropFilter:
           break;
       }
