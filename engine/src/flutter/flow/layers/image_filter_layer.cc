@@ -58,7 +58,7 @@ void ImageFilterLayer::Preroll(PrerollContext* context) {
   Layer::AutoPrerollSaveLayerState save =
       Layer::AutoPrerollSaveLayerState::Create(context);
 
-FML_LOG(ERROR) << "Hi gray line check 2";
+  FML_LOG(ERROR) << "Hi gray line check 2";
 #if !SLIMPELLER
   AutoCache cache = AutoCache(layer_raster_cache_item_.get(), context,
                               context->state_stack.matrix());
@@ -66,9 +66,8 @@ FML_LOG(ERROR) << "Hi gray line check 2";
 
   DlRect child_bounds;
 
-  //mutator.applyImageFilter(DlRect(), filter_);
+  // mutator.applyImageFilter(DlRect(), filter_);
   PrerollChildren(context, &child_bounds);
-  
 
   if (!filter_) {
     FML_LOG(ERROR) << "Hi gray, early return in image_filter_layer.cc";
@@ -77,21 +76,21 @@ FML_LOG(ERROR) << "Hi gray line check 2";
     return;
   }
 
-FML_LOG(ERROR) << "Hi gray line check 3";
+  FML_LOG(ERROR) << "Hi gray line check 3";
   // Our saveLayer would apply any outstanding opacity or any outstanding
   // color filter after it applies our image filter. So we can apply either
   // of those attributes with our saveLayer.
   context->renderable_state_flags =
       (LayerStateStack::kCallerCanApplyOpacity |
        LayerStateStack::kCallerCanApplyColorFilter);
-       FML_LOG(ERROR) << "Hi gray line check 4";
+  FML_LOG(ERROR) << "Hi gray line check 4";
 
   const DlIRect filter_in_bounds = DlIRect::RoundOut(child_bounds);
   DlIRect filter_out_bounds;
   filter_->map_device_bounds(filter_in_bounds, DlMatrix(), filter_out_bounds);
   child_bounds = DlRect::Make(filter_out_bounds).Shift(offset_);
   FML_LOG(ERROR) << "Hi gray line check 5";
-  //mutator.applyImageFilter(child_bounds, filter_);
+  // mutator.applyImageFilter(child_bounds, filter_);
 
   set_paint_bounds(child_bounds);
 

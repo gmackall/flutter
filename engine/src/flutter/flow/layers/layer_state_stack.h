@@ -391,7 +391,8 @@ class LayerStateStack {
     virtual void apply(LayerStateStack* stack) const = 0;
     virtual void reapply(LayerStateStack* stack) const { apply(stack); }
     virtual void restore(LayerStateStack* stack) const {}
-    virtual void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const {}
+    virtual void update_mutators(MutatorsStack* mutators_stack,
+                                 DlMatrix& embedded_views_matrix) const {}
 
    protected:
     StateEntry() = default;

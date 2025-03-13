@@ -256,7 +256,7 @@ class EmbeddedViewParams {
   // `filter_rect` is in global coordinates.
   void PushImageFilter(const std::shared_ptr<DlImageFilter>& filter,
                        const SkRect& filter_rect) {
-                        FML_LOG(ERROR) << "Hi gray, in a place we didn't expect";
+    FML_LOG(ERROR) << "Hi gray, in a place we didn't expect";
     mutators_stack_.PushBackdropFilter(filter, ToDlRect(filter_rect));
   }
 
