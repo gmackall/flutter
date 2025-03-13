@@ -294,6 +294,7 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
     FML_LOG(ERROR) << "Hi gray, applying the ImageFilterEntry";
     // stack->outstanding_.save_layer_bounds = bounds_;
     // stack->outstanding_.image_filter = filter_;
+    
     if (filter_->asMatrix() != nullptr) {
       stack->delegate_->transform(filter_->asMatrix()->matrix());
     }
@@ -310,7 +311,6 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
     if (filter_->asMatrix() != nullptr) {
       mutators_stack->PushTransform(filter_->asMatrix()->matrix());
     }
-    //mutators_stack->PushBackdropFilter(filter_, bounds_);
   }
 
  private:
