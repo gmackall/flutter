@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "flutter/flow/layers/platform_view_layer.h"
+#include "flutter/display_list/effects/image_filters/dl_matrix_image_filter.h"
 
 #include "flutter/display_list/skia/dl_sk_canvas.h"
 
@@ -25,6 +26,15 @@ void PlatformViewLayer::Preroll(PrerollContext* context) {
   set_subtree_has_platform_view(true);
   MutatorsStack mutators;
   context->state_stack.fill(&mutators);
+  // const DlMatrix tempMatrixGray = context->state_stack.matrix();
+  // const DlMatrix* matrixGray = &tempMatrixGray;
+  // if (context->state_stack.outstanding_image_filter()->asMatrix() != nullptr) {
+  //   const DlMatrix tempMatrixMult = context->state_stack.outstanding_image_filter()->asMatrix()->matrix() * context->state_stack.matrix();
+  //   matrixGray = &tempMatrixMult;
+  // } 
+
+  // context->state_stack.matrix() gets the matrix from the delegate, i.e. context->state_stack->delegate.matrix()
+  FML_LOG(ERROR) << "Hi gray, in preroll for the pv";
   std::unique_ptr<EmbeddedViewParams> params =
       std::make_unique<EmbeddedViewParams>(
           ToSkMatrix(context->state_stack.matrix()), ToSkSize(size_), mutators);

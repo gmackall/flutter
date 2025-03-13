@@ -2046,6 +2046,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
   while (iter != mutators_stack.End()) {
     switch ((*iter)->GetType()) {
       case MutatorType::kTransform: {
+        FML_LOG(ERROR) << "hi gray, transform getting applied correctly";
         const DlMatrix& matrix = (*iter)->GetMatrix();
         DlScalar matrix_array[9]{
             matrix.m[0], matrix.m[4], matrix.m[12],  //

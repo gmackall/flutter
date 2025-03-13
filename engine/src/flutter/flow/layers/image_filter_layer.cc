@@ -50,12 +50,15 @@ void ImageFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
 }
 
 void ImageFilterLayer::Preroll(PrerollContext* context) {
+  FML_LOG(ERROR) << "Hi gray line check 1";
   auto mutator = context->state_stack.save();
   mutator.translate(offset_);
+  mutator.applyImageFilter(child_paint_bounds(), filter_);
 
   Layer::AutoPrerollSaveLayerState save =
       Layer::AutoPrerollSaveLayerState::Create(context);
 
+FML_LOG(ERROR) << "Hi gray line check 2";
 #if !SLIMPELLER
   AutoCache cache = AutoCache(layer_raster_cache_item_.get(), context,
                               context->state_stack.matrix());
@@ -63,25 +66,32 @@ void ImageFilterLayer::Preroll(PrerollContext* context) {
 
   DlRect child_bounds;
 
+  //mutator.applyImageFilter(DlRect(), filter_);
   PrerollChildren(context, &child_bounds);
+  
 
   if (!filter_) {
+    FML_LOG(ERROR) << "Hi gray, early return in image_filter_layer.cc";
     child_bounds = child_bounds.Shift(offset_);
     set_paint_bounds(child_bounds);
     return;
   }
 
+FML_LOG(ERROR) << "Hi gray line check 3";
   // Our saveLayer would apply any outstanding opacity or any outstanding
   // color filter after it applies our image filter. So we can apply either
   // of those attributes with our saveLayer.
   context->renderable_state_flags =
       (LayerStateStack::kCallerCanApplyOpacity |
        LayerStateStack::kCallerCanApplyColorFilter);
+       FML_LOG(ERROR) << "Hi gray line check 4";
 
   const DlIRect filter_in_bounds = DlIRect::RoundOut(child_bounds);
   DlIRect filter_out_bounds;
   filter_->map_device_bounds(filter_in_bounds, DlMatrix(), filter_out_bounds);
   child_bounds = DlRect::Make(filter_out_bounds).Shift(offset_);
+  FML_LOG(ERROR) << "Hi gray line check 5";
+  //mutator.applyImageFilter(child_bounds, filter_);
 
   set_paint_bounds(child_bounds);
 
@@ -129,7 +139,9 @@ void ImageFilterLayer::Paint(PaintContext& context) const {
     mutator.integralTransform();
   }
 
+  FML_LOG(ERROR) << "Hi gray, outside of if check in image_filter_layer.cc";
   if (context.raster_cache && layer_raster_cache_item_->IsCacheChildren()) {
+    FML_LOG(ERROR) << "Hi gray, inside of if check in image_filter_layer.cc";
     // If we render the children from cache then we need the special
     // transformed version of the filter so we must process it into the
     // cache paint object manually.
@@ -144,6 +156,7 @@ void ImageFilterLayer::Paint(PaintContext& context) const {
 #endif  //  !SLIMPELLER
 
   // Now apply the image filter and then try rendering the children.
+  FML_LOG(ERROR) << "Hi gray, applying applyImageFilter";
   mutator.applyImageFilter(child_paint_bounds(), filter_);
 
   PaintChildren(context);

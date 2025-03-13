@@ -56,33 +56,19 @@ class _ComplicatedClipPathWrappedMainAppState extends State<_ComplicatedClipPath
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      home: ClipPath(
-        clipper: _triangleOrEmpty,
-        child: ClipPath(
-          clipper: CubicWaveClipper(),
-          child: ClipOval(
-            child: Stack(
-              alignment: Alignment.center,
-              children: <Widget>[
-                TextButton(
-                  key: const ValueKey<String>('ToggleTriangleClipping'),
-                  onPressed: _toggleTriangleClipper,
-                  child: const SizedBox(
-                    width: 500,
-                    height: 500,
-                    child: ColoredBox(color: Colors.green),
-                  ),
+      home: SingleChildScrollView(
+        child: Column(
+          children: <Widget>[
+            for (int i = 0; i < 10; i++) // Generate 10 items for scrolling.
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Container(
+                  height: 100,
+                  color: Colors.red,
+                  child: const _HybridCompositionAndroidPlatformView(viewType: 'box_platform_view'),
                 ),
-                const SizedBox(
-                  width: 400,
-                  height: 400,
-                  child: _HybridCompositionAndroidPlatformView(
-                    viewType: 'changing_color_button_platform_view',
-                  ),
-                ),
-              ],
-            ),
-          ),
+              ),
+          ],
         ),
       ),
     );

@@ -134,6 +134,7 @@ class LayerStateStack {
   class AutoRestore {
    public:
     ~AutoRestore() {
+      FML_LOG(ERROR) << "hi gray, restoring to count " << stack_restore_count_;
       layer_state_stack_->restore_to_count(stack_restore_count_);
     }
 
