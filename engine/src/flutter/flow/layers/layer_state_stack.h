@@ -129,7 +129,7 @@ class LayerStateStack {
 
   // Fills the supplied MatatorsStack object with the mutations recorded
   // by this LayerStateStack in the order encountered.
-  void fill(MutatorsStack* mutators);
+  void fill(MutatorsStack* mutators, DlMatrix& matrix);
 
   class AutoRestore {
    public:
@@ -280,7 +280,7 @@ class LayerStateStack {
   DlRect local_cull_rect() const { return delegate_->local_cull_rect(); }
 
   // The transform from the local coordinates to the device coordinates
-  // in 4x4 DlMatrix representation. This matrix provides all information
+  // in 4x4 DlMatrix representation. This q provides all information
   // needed to compute bounds for a 2D rendering primitive, and it will
   // accurately concatenate with other 4x4 matrices without losing information.
   const DlMatrix matrix() const { return delegate_->matrix(); }
@@ -391,7 +391,7 @@ class LayerStateStack {
     virtual void apply(LayerStateStack* stack) const = 0;
     virtual void reapply(LayerStateStack* stack) const { apply(stack); }
     virtual void restore(LayerStateStack* stack) const {}
-    virtual void update_mutators(MutatorsStack* mutators_stack) const {}
+    virtual void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const {}
 
    protected:
     StateEntry() = default;

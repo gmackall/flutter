@@ -22,25 +22,19 @@ void PlatformViewLayer::Preroll(PrerollContext* context) {
                        "does not support embedding";
     return;
   }
-  context->has_platform_view = true;
+context->has_platform_view = true;
   set_subtree_has_platform_view(true);
   MutatorsStack mutators;
-  context->state_stack.fill(&mutators);
-  // const DlMatrix tempMatrixGray = context->state_stack.matrix();
-  // const DlMatrix* matrixGray = &tempMatrixGray;
-  // if (context->state_stack.outstanding_image_filter()->asMatrix() != nullptr) {
-  //   const DlMatrix tempMatrixMult = context->state_stack.outstanding_image_filter()->asMatrix()->matrix() * context->state_stack.matrix();
-  //   matrixGray = &tempMatrixMult;
-  // } 
+  DlMatrix dlMatrix = DlMatrix() * context->state_stack.matrix();
+  context->state_stack.fill(&mutators, dlMatrix);
 
   // context->state_stack.matrix() gets the matrix from the delegate, i.e. context->state_stack->delegate.matrix()
-  FML_LOG(ERROR) << "Hi gray, in preroll for the pv";
   std::unique_ptr<EmbeddedViewParams> params =
-      std::make_unique<EmbeddedViewParams>(
-          ToSkMatrix(context->state_stack.matrix()), ToSkSize(size_), mutators);
+      std::make_unique<EmbeddedViewParams>(ToSkMatrix(dlMatrix), ToSkSize(size_), mutators);
   context->view_embedder->PrerollCompositeEmbeddedView(view_id_,
                                                        std::move(params));
   context->view_embedder->PushVisitedPlatformView(view_id_);
+  
 }
 
 void PlatformViewLayer::Paint(PaintContext& context) const {

@@ -266,7 +266,7 @@ class OpacityEntry : public LayerStateStack::StateEntry {
     stack->outstanding_.save_layer_bounds = old_bounds_;
     stack->outstanding_.opacity = old_opacity_;
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     mutators_stack->PushOpacity(DlColor::toAlpha(opacity_));
   }
 
@@ -292,24 +292,26 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
 
   void apply(LayerStateStack* stack) const override {
     FML_LOG(ERROR) << "Hi gray, applying the ImageFilterEntry";
-    // stack->outstanding_.save_layer_bounds = bounds_;
-    // stack->outstanding_.image_filter = filter_;
+    stack->outstanding_.save_layer_bounds = bounds_;
+    stack->outstanding_.image_filter = filter_;
     
-    if (filter_->asMatrix() != nullptr) {
-      stack->delegate_->transform(filter_->asMatrix()->matrix());
-    }
+    // if (filter_->asMatrix() != nullptr) {
+    //   stack->delegate_->transform(filter_->asMatrix()->matrix());
+    // }
   }
   void restore(LayerStateStack* stack) const override {
-    // stack->outstanding_.save_layer_bounds = old_bounds_;
-    // stack->outstanding_.image_filter = old_filter_;
+    stack->outstanding_.save_layer_bounds = old_bounds_;
+    stack->outstanding_.image_filter = old_filter_;
 
   }
 
   // There is no ImageFilter mutator currently
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     FML_LOG(ERROR) << "Hi gray, updating the mutators with a PushTransform";
     if (filter_->asMatrix() != nullptr) {
       mutators_stack->PushTransform(filter_->asMatrix()->matrix());
+      FML_LOG(ERROR) << "Hi gray, multiplying";
+      embedded_views_matrix = embedded_views_matrix * filter_->asMatrix()->matrix();
     }
   }
 
@@ -343,7 +345,7 @@ class ColorFilterEntry : public LayerStateStack::StateEntry {
   }
 
   // There is no ColorFilter mutator currently
-  void update_mutators(MutatorsStack* mutators_stack) const override {}
+  //void update_mutators(MutatorsStack* mutators_stack) const override {}
 
  private:
   const DlRect bounds_;
@@ -397,8 +399,9 @@ class TranslateEntry : public LayerStateStack::StateEntry {
   void apply(LayerStateStack* stack) const override {
     stack->delegate_->translate(translation_.x, translation_.y);
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     mutators_stack->PushTransform(DlMatrix::MakeTranslation(translation_));
+    //embedded_views_matrix.Translate({translation_.x, translation_.y});
   }
 
  private:
@@ -414,8 +417,9 @@ class TransformMatrixEntry : public LayerStateStack::StateEntry {
   void apply(LayerStateStack* stack) const override {
     stack->delegate_->transform(matrix_);
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     mutators_stack->PushTransform(matrix_);
+    //embedded_views_matrix = embedded_views_matrix * matrix_;
   }
 
  private:
@@ -444,7 +448,8 @@ class ClipRectEntry : public LayerStateStack::StateEntry {
   void apply(LayerStateStack* stack) const override {
     stack->delegate_->clipRect(clip_rect_, DlClipOp::kIntersect, is_aa_);
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
+    //todo gmackall
     mutators_stack->PushClipRect(clip_rect_);
   }
 
@@ -463,7 +468,7 @@ class ClipRRectEntry : public LayerStateStack::StateEntry {
   void apply(LayerStateStack* stack) const override {
     stack->delegate_->clipRRect(clip_rrect_, DlClipOp::kIntersect, is_aa_);
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     mutators_stack->PushClipRRect(clip_rrect_);
   }
 
@@ -484,7 +489,7 @@ class ClipRSuperellipseEntry : public LayerStateStack::StateEntry {
     stack->delegate_->clipRSuperellipse(clip_rsuperellipse_,
                                         DlClipOp::kIntersect, is_aa_);
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     mutators_stack->PushClipRSE(clip_rsuperellipse_);
   }
 
@@ -504,7 +509,7 @@ class ClipPathEntry : public LayerStateStack::StateEntry {
   void apply(LayerStateStack* stack) const override {
     stack->delegate_->clipPath(clip_path_, DlClipOp::kIntersect, is_aa_);
   }
-  void update_mutators(MutatorsStack* mutators_stack) const override {
+  void update_mutators(MutatorsStack* mutators_stack, DlMatrix& embedded_views_matrix) const override {
     mutators_stack->PushClipPath(clip_path_);
   }
 
@@ -683,10 +688,10 @@ void LayerStateStack::reapply_all() {
   FML_DCHECK(attributes == outstanding_);
 }
 
-void LayerStateStack::fill(MutatorsStack* mutators) {
+void LayerStateStack::fill(MutatorsStack* mutators, DlMatrix& matrix) {
   FML_LOG(ERROR) << "Hi gray, call to fill with state stack size " << state_stack_.size();
   for (auto& state : state_stack_) {
-    state->update_mutators(mutators);
+    state->update_mutators(mutators, matrix);
   }
 }
 
