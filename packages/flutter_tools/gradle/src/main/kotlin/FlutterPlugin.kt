@@ -43,6 +43,7 @@ class FlutterPlugin : Plugin<Project> {
     private var pluginHandler: PluginHandler? = null
 
     override fun apply(project: Project) {
+        println("HI GRAYYYYYYYYYYYYYYY")
         this.project = project
 
         val rootProject = project.rootProject
