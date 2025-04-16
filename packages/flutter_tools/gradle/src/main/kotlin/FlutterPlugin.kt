@@ -12,6 +12,7 @@ import com.android.build.gradle.tasks.PackageAndroidArtifact
 import com.android.build.gradle.tasks.ProcessAndroidResources
 import com.flutter.gradle.FlutterPluginUtils.readPropertiesIfExist
 import com.flutter.gradle.plugins.PluginHandler
+import com.flutter.gradle.shared.NativePluginLoaderConverted
 import com.flutter.gradle.tasks.FlutterTask
 import org.gradle.api.GradleException
 import org.gradle.api.Plugin
@@ -42,8 +43,56 @@ class FlutterPlugin : Plugin<Project> {
     private var engineRealm: String? = null
     private var pluginHandler: PluginHandler? = null
 
+    private fun moduleHandling(projectToHandle: Project) {
+        val modulePath: String =
+            projectToHandle
+                .project(":flutter")
+                .projectDir.parentFile.absolutePath
+        val moduleProjectRoot =
+            projectToHandle
+                .project(":flutter")
+                .projectDir.parentFile.parentFile
+
+        println("hi gray $modulePath")
+
+        val nativePluginList: List<Map<String, Any>> = NativePluginLoaderConverted.getPlugins(moduleProjectRoot)
+        val nativePluginNameSet: Set<String> =
+            nativePluginList.mapNotNull { it["name"] as? String }.toSet()
+        println("hi gray list is " + nativePluginNameSet)
+
+        nativePluginList.forEach { androidPlugin ->
+            val pluginDirectory = File(androidPlugin["path"] as String, "android")
+            check(
+                pluginDirectory.exists()
+            ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
+            val pluginName = androidPlugin["name"] as String
+            projectToHandle.gradle.settingsEvaluated {
+                include(":$pluginName")
+                project(":$pluginName").projectDir = pluginDirectory
+            }
+        }
+
+        projectToHandle.gradle.projectsLoaded {
+            this.rootProject.beforeEvaluate {
+                this.subprojects {
+                    if (nativePluginNameSet.contains(this.name)) {
+                        val androidPluginBuildOutputDir =
+                            File(modulePath + File.separator + "plugins_build_output" + File.separator + this.name)
+                        if (!androidPluginBuildOutputDir.exists()) {
+                            androidPluginBuildOutputDir.mkdirs()
+                        }
+                        this.layout.buildDirectory.fileValue(androidPluginBuildOutputDir)
+                    }
+                }
+//                todo figure this out
+//                val mainModuleName = projectToHandle.findProperty("blah")
+            }
+        }
+    }
+
     override fun apply(project: Project) {
         println("HI GRAYYYYYYYYYYYYYYY")
+        // moduleHandling(project)
         this.project = project
 
         val rootProject = project.rootProject
@@ -344,7 +393,8 @@ class FlutterPlugin : Plugin<Project> {
                 // TODO(gmackall): Migrate to AGPs variant api.
                 //    https://github.com/flutter/flutter/issues/166550
                 @Suppress("DEPRECATION")
-                val variantOutput: com.android.build.gradle.api.BaseVariantOutput = variant.outputs.first()
+                val variantOutput: com.android.build.gradle.api.BaseVariantOutput =
+                    variant.outputs.first()
                 val processResources: ProcessAndroidResources =
                     try {
                         variantOutput.processResourcesProvider.get()
@@ -486,7 +536,13 @@ class FlutterPlugin : Plugin<Project> {
                     val mergeAssets =
                         projectToAddTasksTo
                             .tasks
-                            .findByPath(":$hostAppProjectName:merge${FlutterPluginUtils.capitalize(appProjectVariant.name)}Assets")
+                            .findByPath(
+                                ":$hostAppProjectName:merge${
+                                    FlutterPluginUtils.capitalize(
+                                        appProjectVariant.name
+                                    )
+                                }Assets"
+                            )
                     check(mergeAssets != null)
                     mergeAssets.dependsOn(copyFlutterAssetsTask)
                 }
@@ -570,7 +626,8 @@ class FlutterPlugin : Plugin<Project> {
             val deferredComponentsValue: Boolean =
                 project.findProperty("deferred-components")?.toString()?.toBoolean() ?: false
             val validateDeferredComponentsValue: Boolean =
-                project.findProperty("validate-deferred-components")?.toString()?.toBoolean() ?: true
+                project.findProperty("validate-deferred-components")?.toString()?.toBoolean()
+                    ?: true
 
             if (FlutterPluginUtils.shouldProjectSplitPerAbi(project)) {
                 variant.outputs.forEach { output ->
@@ -739,7 +796,8 @@ class FlutterPlugin : Plugin<Project> {
                 // TODO(gmackall): Migrate to AGPs variant api.
                 //    https://github.com/flutter/flutter/issues/166550
                 @Suppress("DEPRECATION")
-                val variantOutput: com.android.build.gradle.api.BaseVariantOutput = variant.outputs.first()
+                val variantOutput: com.android.build.gradle.api.BaseVariantOutput =
+                    variant.outputs.first()
                 val processResources =
                     try {
                         variantOutput.processResourcesProvider.get()

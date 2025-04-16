@@ -7,3 +7,4 @@ dependencyResolutionManagement {
 }
 
 include(":modules")
+include(":shared")

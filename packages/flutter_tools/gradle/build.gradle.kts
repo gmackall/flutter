@@ -31,6 +31,10 @@ gradlePlugin {
             id = "dev.flutter.flutter-plugin-loader"
             implementationClass = "com.flutter.gradle.FlutterAppPluginLoaderPlugin"
         }
+//        create("flutterModulePluginLoaderPlugin") {
+//            id = "dev.flutter.flutter-module-plugin-loader"
+//            implementationClass = "com.flutter.gradle.ModulePluginLoaderAlt"
+//        }
     }
 }
 
@@ -49,6 +53,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
 }
 
 dependencies {
+    implementation(project(":shared"))
     // Versions available https://mvnrepository.com/artifact/androidx.annotation/annotation-jvm.
     // Version release notes https://developer.android.com/jetpack/androidx/releases/annotation
     compileOnly("androidx.annotation:annotation-jvm:1.9.1")

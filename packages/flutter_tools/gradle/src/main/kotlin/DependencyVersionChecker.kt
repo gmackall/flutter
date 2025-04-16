@@ -211,7 +211,7 @@ object DependencyVersionChecker {
     @VisibleForTesting internal fun getKGPVersion(project: Project): Version? {
         val kotlinVersionProperty = "kotlin_version"
         val firstKotlinVersionFieldName = "pluginVersion"
-        val secondKotlinVersionFieldName = "kotlinPluginVersion"
+        val secondKotlinVersionFieldName = FlutterPluginUtils.lowercase("kotlinPluginVersion")
         // This property corresponds to application of the Kotlin Gradle plugin in the
         // top-level build.gradle file.
         if (project.hasProperty(kotlinVersionProperty)) {

@@ -5,3 +5,7 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
+
+include(":shared")
+println("settings dir + " + settingsDir.absolutePath)
+project(":shared").projectDir = File(settingsDir, "../shared/")

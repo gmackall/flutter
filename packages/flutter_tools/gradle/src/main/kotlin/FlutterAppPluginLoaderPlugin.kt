@@ -25,6 +25,7 @@ private const val FLUTTER_SDK_PATH = "flutterSdkPath"
 @Suppress("unused") // This class is used by packages/flutter_tools/gradle/build.gradle.kts.
 class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
     override fun apply(settings: Settings) {
+        println("hi gray in flutter app plugin loader")
         val flutterProjectRoot: File = settings.settingsDir.parentFile
 
         if (!settings.extraProperties.has(FLUTTER_SDK_PATH)) {
