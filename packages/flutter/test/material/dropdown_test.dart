@@ -14,10 +14,10 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -1347,6 +1347,7 @@ void main() {
       tester.getSemantics(find.text('test')),
       matchesSemantics(
         isButton: true,
+        hasExpandedState: true,
         label: 'test',
         hasTapAction: true,
         hasFocusAction: true,
@@ -1363,6 +1364,7 @@ void main() {
       tester.getSemantics(find.text('three')),
       matchesSemantics(
         isButton: true,
+        hasExpandedState: true,
         label: 'three',
         hasTapAction: true,
         hasFocusAction: true,
@@ -1390,6 +1392,7 @@ void main() {
               textDirection: TextDirection.ltr,
               children: <TestSemantics>[
                 TestSemantics(
+                  role: SemanticsRole.menu,
                   flags: <SemanticsFlag>[SemanticsFlag.scopesRoute, SemanticsFlag.namesRoute],
                   label: 'Popup menu',
                   children: <TestSemantics>[
@@ -1399,6 +1402,7 @@ void main() {
                           flags: <SemanticsFlag>[SemanticsFlag.hasImplicitScrolling],
                           children: <TestSemantics>[
                             TestSemantics(
+                              role: SemanticsRole.menuItem,
                               label: 'one',
                               textDirection: TextDirection.ltr,
                               flags: <SemanticsFlag>[
@@ -1413,6 +1417,7 @@ void main() {
                               ],
                             ),
                             TestSemantics(
+                              role: SemanticsRole.menuItem,
                               label: 'two',
                               textDirection: TextDirection.ltr,
                               flags: <SemanticsFlag>[
@@ -1426,6 +1431,7 @@ void main() {
                               ],
                             ),
                             TestSemantics(
+                              role: SemanticsRole.menuItem,
                               label: 'three',
                               textDirection: TextDirection.ltr,
                               flags: <SemanticsFlag>[
@@ -1439,6 +1445,7 @@ void main() {
                               ],
                             ),
                             TestSemantics(
+                              role: SemanticsRole.menuItem,
                               label: 'four',
                               textDirection: TextDirection.ltr,
                               flags: <SemanticsFlag>[
@@ -4380,5 +4387,66 @@ void main() {
     // dropdowns with padding should be that much larger than with no padding
     expect(noPaddingSize.height, equals(paddedSize.height - padVertical * 2));
     expect(noPaddingSize.width, equals(paddedSize.width - padHorizontal * 2));
+  });
+
+  testWidgets('Dropdown closes when barrier is tapped by default', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DropdownButton<String>(
+            value: 'first',
+            items: const <DropdownMenuItem<String>>[
+              DropdownMenuItem<String>(enabled: false, child: Text('disabled')),
+              DropdownMenuItem<String>(value: 'first', child: Text('first')),
+              DropdownMenuItem<String>(value: 'second', child: Text('second')),
+            ],
+            onChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    // Open dropdown.
+    await tester.tap(find.text('first').hitTestable());
+    await tester.pumpAndSettle();
+
+    // Tap on the barrier.
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pumpAndSettle();
+
+    // The dropdown should be closed, i.e., there should be no widget with 'second' text.
+    expect(find.text('second'), findsNothing);
+  });
+
+  testWidgets('Dropdown does not close when barrier dismissible set to false', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DropdownButton<String>(
+            value: 'first',
+            barrierDismissible: false,
+            items: const <DropdownMenuItem<String>>[
+              DropdownMenuItem<String>(enabled: false, child: Text('disabled')),
+              DropdownMenuItem<String>(value: 'first', child: Text('first')),
+              DropdownMenuItem<String>(value: 'second', child: Text('second')),
+            ],
+            onChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    // Open dropdown.
+    await tester.tap(find.text('first').hitTestable());
+    await tester.pumpAndSettle();
+
+    // Tap on the barrier.
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pumpAndSettle();
+
+    // The dropdown should still be open, i.e., there should be one widget with 'second' text.
+    expect(find.text('second'), findsOneWidget);
   });
 }

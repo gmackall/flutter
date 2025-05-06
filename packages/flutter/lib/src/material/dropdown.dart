@@ -11,6 +11,7 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
@@ -130,7 +131,7 @@ class _DropdownMenuItemButton<T> extends StatefulWidget {
 }
 
 class _DropdownMenuItemButtonState<T> extends State<_DropdownMenuItemButton<T>> {
-  CurvedAnimation? _opacityAnimation;
+  late CurvedAnimation _opacityAnimation;
 
   @override
   void initState() {
@@ -145,12 +146,12 @@ class _DropdownMenuItemButtonState<T> extends State<_DropdownMenuItemButton<T>> 
         oldWidget.route.animation != widget.route.animation ||
         oldWidget.route.selectedIndex != widget.route.selectedIndex ||
         widget.route.items.length != oldWidget.route.items.length) {
+      _opacityAnimation.dispose();
       _setOpacityAnimation();
     }
   }
 
   void _setOpacityAnimation() {
-    _opacityAnimation?.dispose();
     final double unit = 0.5 / (widget.route.items.length + 1.5);
     if (widget.itemIndex == widget.route.selectedIndex) {
       _opacityAnimation = CurvedAnimation(
@@ -204,7 +205,7 @@ class _DropdownMenuItemButtonState<T> extends State<_DropdownMenuItemButton<T>> 
 
   @override
   void dispose() {
-    _opacityAnimation?.dispose();
+    _opacityAnimation.dispose();
     super.dispose();
   }
 
@@ -226,11 +227,11 @@ class _DropdownMenuItemButtonState<T> extends State<_DropdownMenuItemButton<T>> 
         child: child,
       );
     }
-    child = FadeTransition(opacity: _opacityAnimation!, child: child);
+    child = FadeTransition(opacity: _opacityAnimation, child: child);
     if (kIsWeb && dropdownMenuItem.enabled) {
       child = Shortcuts(shortcuts: _webShortcuts, child: child);
     }
-    return child;
+    return Semantics(role: SemanticsRole.menuItem, child: child);
   }
 }
 
@@ -332,6 +333,7 @@ class _DropdownMenuState<T> extends State<_DropdownMenu<T>> {
           getSelectedItemOffset: () => route.getItemOffset(route.selectedIndex),
         ),
         child: Semantics(
+          role: SemanticsRole.menu,
           scopesRoute: true,
           namesRoute: true,
           explicitChildNodes: true,
@@ -479,6 +481,7 @@ class _DropdownRoute<T> extends PopupRoute<_DropdownRouteResult<T>> {
     this.menuMaxHeight,
     required this.enableFeedback,
     this.borderRadius,
+    this.barrierDismissible = true,
   }) : itemHeights = List<double>.filled(items.length, itemHeight ?? kMinInteractiveDimension);
 
   final List<_MenuItem<T>> items;
@@ -501,7 +504,7 @@ class _DropdownRoute<T> extends PopupRoute<_DropdownRouteResult<T>> {
   Duration get transitionDuration => _kDropdownMenuDuration;
 
   @override
-  bool get barrierDismissible => true;
+  final bool barrierDismissible;
 
   @override
   Color? get barrierColor => null;
@@ -995,6 +998,7 @@ class DropdownButton<T> extends StatefulWidget {
     this.alignment = AlignmentDirectional.centerStart,
     this.borderRadius,
     this.padding,
+    this.barrierDismissible = true,
     // When adding new arguments, consider adding similar arguments to
     // DropdownButtonFormField.
   }) : assert(
@@ -1043,6 +1047,7 @@ class DropdownButton<T> extends StatefulWidget {
     this.alignment = AlignmentDirectional.centerStart,
     this.borderRadius,
     this.padding,
+    this.barrierDismissible = true,
     required InputDecoration inputDecoration,
     required bool isEmpty,
   }) : assert(
@@ -1286,6 +1291,11 @@ class DropdownButton<T> extends StatefulWidget {
   /// Defines the corner radii of the menu's rounded rectangle shape.
   final BorderRadius? borderRadius;
 
+  /// Determines whether tapping outside the dropdown will close it.
+  ///
+  /// Defaults to `true`.
+  final bool barrierDismissible;
+
   final InputDecoration? _inputDecoration;
 
   final bool _isEmpty;
@@ -1303,6 +1313,7 @@ class _DropdownButtonState<T> extends State<DropdownButton<T>> with WidgetsBindi
   late Map<Type, Action<Intent>> _actionMap;
   bool _isHovering = false;
   bool _hasPrimaryFocus = false;
+  bool _isMenuExpanded = false;
 
   // Only used if needed to create _internalNode.
   FocusNode _createFocusNode() {
@@ -1346,6 +1357,7 @@ class _DropdownButtonState<T> extends State<DropdownButton<T>> with WidgetsBindi
 
   void _removeDropdownRoute() {
     _dropdownRoute?._dismiss();
+    _isMenuExpanded = false;
     _dropdownRoute = null;
     _lastOrientation = null;
   }
@@ -1431,6 +1443,7 @@ class _DropdownButtonState<T> extends State<DropdownButton<T>> with WidgetsBindi
       menuMaxHeight: widget.menuMaxHeight,
       enableFeedback: widget.enableFeedback ?? true,
       borderRadius: widget.borderRadius,
+      barrierDismissible: widget.barrierDismissible,
     );
 
     focusNode?.requestFocus();
@@ -1443,6 +1456,7 @@ class _DropdownButtonState<T> extends State<DropdownButton<T>> with WidgetsBindi
     });
 
     widget.onTap?.call();
+    _isMenuExpanded = true;
   }
 
   // When isDense is true, reduce the height of this button from _kMenuItemHeight to
@@ -1460,7 +1474,7 @@ class _DropdownButtonState<T> extends State<DropdownButton<T>> with WidgetsBindi
 
   Color get _iconColor {
     // These colors are not defined in the Material Design spec.
-    final Brightness brightness = Theme.of(context).brightness;
+    final Brightness brightness = Theme.brightnessOf(context);
     if (_enabled) {
       return widget.iconEnabledColor ??
           switch (brightness) {
@@ -1671,6 +1685,7 @@ class _DropdownButtonState<T> extends State<DropdownButton<T>> with WidgetsBindi
         hintIndex != null || (_selectedIndex != null && widget.selectedItemBuilder == null);
     return Semantics(
       button: !childHasButtonSemantic,
+      expanded: _isMenuExpanded,
       child: Actions(actions: _actionMap, child: result),
     );
   }
@@ -1725,12 +1740,14 @@ class DropdownButtonFormField<T> extends FormField<T> {
     super.onSaved,
     super.validator,
     super.errorBuilder,
+    super.forceErrorText,
     AutovalidateMode? autovalidateMode,
     double? menuMaxHeight,
     bool? enableFeedback,
     AlignmentGeometry alignment = AlignmentDirectional.centerStart,
     BorderRadius? borderRadius,
     EdgeInsetsGeometry? padding,
+    this.barrierDismissible = true,
     // When adding new arguments, consider adding similar arguments to
     // DropdownButton.
   }) : assert(
@@ -1789,40 +1806,37 @@ class DropdownButtonFormField<T> extends FormField<T> {
            return Focus(
              canRequestFocus: false,
              skipTraversal: true,
-             child: Builder(
-               builder: (BuildContext context) {
-                 return DropdownButtonHideUnderline(
-                   child: DropdownButton<T>._formField(
-                     items: items,
-                     selectedItemBuilder: selectedItemBuilder,
-                     value: state.value,
-                     hint: effectiveHint,
-                     disabledHint: effectiveDisabledHint,
-                     onChanged: onChanged == null ? null : state.didChange,
-                     onTap: onTap,
-                     elevation: elevation,
-                     style: style,
-                     icon: icon,
-                     iconDisabledColor: iconDisabledColor,
-                     iconEnabledColor: iconEnabledColor,
-                     iconSize: iconSize,
-                     isDense: isDense,
-                     isExpanded: isExpanded,
-                     itemHeight: itemHeight,
-                     focusColor: focusColor,
-                     focusNode: focusNode,
-                     autofocus: autofocus,
-                     dropdownColor: dropdownColor,
-                     menuMaxHeight: menuMaxHeight,
-                     enableFeedback: enableFeedback,
-                     alignment: alignment,
-                     borderRadius: borderRadius,
-                     inputDecoration: effectiveDecoration,
-                     isEmpty: isEmpty,
-                     padding: padding,
-                   ),
-                 );
-               },
+             child: DropdownButtonHideUnderline(
+               child: DropdownButton<T>._formField(
+                 items: items,
+                 selectedItemBuilder: selectedItemBuilder,
+                 value: state.value,
+                 hint: effectiveHint,
+                 disabledHint: effectiveDisabledHint,
+                 onChanged: onChanged == null ? null : state.didChange,
+                 onTap: onTap,
+                 elevation: elevation,
+                 style: style,
+                 icon: icon,
+                 iconDisabledColor: iconDisabledColor,
+                 iconEnabledColor: iconEnabledColor,
+                 iconSize: iconSize,
+                 isDense: isDense,
+                 isExpanded: isExpanded,
+                 itemHeight: itemHeight,
+                 focusColor: focusColor,
+                 focusNode: focusNode,
+                 autofocus: autofocus,
+                 dropdownColor: dropdownColor,
+                 menuMaxHeight: menuMaxHeight,
+                 enableFeedback: enableFeedback,
+                 alignment: alignment,
+                 borderRadius: borderRadius,
+                 inputDecoration: effectiveDecoration,
+                 isEmpty: isEmpty,
+                 padding: padding,
+                 barrierDismissible: barrierDismissible,
+               ),
              ),
            );
          },
@@ -1839,6 +1853,11 @@ class DropdownButtonFormField<T> extends FormField<T> {
   /// If not specified, an [InputDecorator] with the `focusColor` set to the
   /// supplied `focusColor` (if any) will be used.
   final InputDecoration decoration;
+
+  /// Determines whether tapping outside the dropdown will close it.
+  ///
+  /// Defaults to `true`.
+  final bool barrierDismissible;
 
   @override
   FormFieldState<T> createState() => _DropdownButtonFormFieldState<T>();

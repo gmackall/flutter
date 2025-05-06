@@ -8,7 +8,7 @@
 @Tags(<String>['reduced-test-set'])
 library;
 
-import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle, Color;
+import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle, Color, SemanticsInputType;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
@@ -25,8 +25,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../widgets/clipboard_utils.dart';
-import '../widgets/editable_text_utils.dart'
-    show OverflowWidgetTextEditingController, isContextMenuProvidedByPlatform;
+import '../widgets/editable_text_utils.dart';
 import '../widgets/live_text_utils.dart';
 import '../widgets/semantics_tester.dart';
 import '../widgets/text_selection_toolbar_utils.dart';
@@ -237,10 +236,6 @@ void main() {
     expect(endpoints.length, 1);
     return endpoints[0].point;
   }
-
-  // Web has a less threshold for downstream/upstream text position.
-  Offset textOffsetToPosition(WidgetTester tester, int offset) =>
-      textOffsetToBottomLeftPosition(tester, offset) + const Offset(kIsWeb ? 1 : 0, -2);
 
   setUp(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -571,6 +566,7 @@ void main() {
                         children: <TestSemantics>[
                           TestSemantics(
                             id: 4,
+                            inputType: ui.SemanticsInputType.text,
                             flags: <SemanticsFlag>[
                               SemanticsFlag.isTextField,
                               SemanticsFlag.hasEnabledState,
@@ -678,10 +674,10 @@ void main() {
 
       await tester.pumpWidget(
         CupertinoApp(
-          theme: const CupertinoThemeData(primaryColor: Colors.red),
+          theme: const CupertinoThemeData(selectionHandleColor: Colors.red),
           home: Center(
             child: CupertinoTheme(
-              data: const CupertinoThemeData(primaryColor: expectedSelectionHandleColor),
+              data: const CupertinoThemeData(selectionHandleColor: expectedSelectionHandleColor),
               child: CupertinoTextField(controller: controller),
             ),
           ),
@@ -8840,6 +8836,44 @@ void main() {
       },
       skip: kIsWeb, // [intended] on web the browser handles the context menu.
     );
+
+    testWidgets(
+      'iOS uses the system context menu by default if supported',
+      (WidgetTester tester) async {
+        tester.platformDispatcher.supportsShowingSystemContextMenu = true;
+        addTearDown(() {
+          tester.platformDispatcher.resetSupportsShowingSystemContextMenu();
+          tester.view.reset();
+        });
+
+        final TextEditingController controller = TextEditingController(text: 'one two three');
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          // Don't wrap with the global View so that the change to
+          // platformDispatcher is read.
+          wrapWithView: false,
+          View(
+            view: tester.view,
+            child: CupertinoApp(home: CupertinoTextField(controller: controller)),
+          ),
+        );
+
+        // No context menu shown.
+        expect(find.byType(CupertinoAdaptiveTextSelectionToolbar), findsNothing);
+        expect(find.byType(SystemContextMenu), findsNothing);
+
+        // Double tap to select the first word and show the menu.
+        await tester.tapAt(textOffsetToPosition(tester, 1));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tapAt(textOffsetToPosition(tester, 1));
+        await tester.pump(SelectionOverlay.fadeDuration);
+
+        expect(find.byType(CupertinoAdaptiveTextSelectionToolbar), findsNothing);
+        expect(find.byType(SystemContextMenu), findsOneWidget);
+      },
+      skip: kIsWeb, // [intended] on web the browser handles the context menu.
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
   });
 
   group('magnifier', () {
@@ -9729,6 +9763,7 @@ void main() {
                       children: <TestSemantics>[
                         TestSemantics(
                           id: 4,
+                          inputType: ui.SemanticsInputType.text,
                           flags: <SemanticsFlag>[
                             SemanticsFlag.isTextField,
                             SemanticsFlag.hasEnabledState,
@@ -9795,6 +9830,7 @@ void main() {
                         children: <TestSemantics>[
                           TestSemantics(
                             id: 4,
+                            inputType: ui.SemanticsInputType.text,
                             flags: <SemanticsFlag>[
                               SemanticsFlag.isTextField,
                               SemanticsFlag.hasEnabledState,

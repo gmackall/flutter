@@ -17,6 +17,7 @@ import 'package:flutter_tools/src/base/platform.dart';
 import 'package:flutter_tools/src/base/terminal.dart';
 import 'package:flutter_tools/src/base/time.dart';
 import 'package:flutter_tools/src/build_info.dart';
+import 'package:flutter_tools/src/build_system/build_system.dart';
 import 'package:flutter_tools/src/build_system/tools/shader_compiler.dart';
 import 'package:flutter_tools/src/compile.dart';
 import 'package:flutter_tools/src/dart/pub.dart';
@@ -46,6 +47,7 @@ import '../src/fake_pub_deps.dart';
 import '../src/fake_vm_services.dart';
 import '../src/fakes.dart' as test_fakes;
 import '../src/package_config.dart';
+import '../src/test_build_system.dart';
 
 const List<VmServiceExpectation> kAttachLogExpectations = <VmServiceExpectation>[
   FakeVmServiceRequest(method: 'streamListen', args: <String, Object>{'streamId': 'Stdout'}),
@@ -73,6 +75,11 @@ const List<VmServiceExpectation> kAttachIsolateExpectations = <VmServiceExpectat
 const List<VmServiceExpectation> kAttachExpectations = <VmServiceExpectation>[
   ...kAttachLogExpectations,
   ...kAttachIsolateExpectations,
+];
+
+const List<String> kDdcLibraryBundleFlags = <String>[
+  '--dartdevc-module-format=ddc',
+  '--dartdevc-canary',
 ];
 
 void main() {
@@ -725,13 +732,29 @@ name: my_app
         flutterDevice,
         logger: logger,
         systemClock: SystemClock.fixed(DateTime(2001)),
+        debuggingOptions: DebuggingOptions.enabled(
+          const BuildInfo(
+            BuildMode.debug,
+            null,
+            trackWidgetCreation: true,
+            treeShakeIcons: false,
+            packageConfigPath: '.dart_tool/package_config.json',
+            // Hot reload only supported with these flags for now.
+            extraFrontEndOptions: kDdcLibraryBundleFlags,
+          ),
+        ),
       );
       fakeVmServiceHost = FakeVmServiceHost(
         requests: <VmServiceExpectation>[
           ...kAttachExpectations,
           const FakeVmServiceRequest(
-            method: kHotRestartServiceName,
-            jsonResponse: <String, Object>{'type': 'Success'},
+            method: kReloadSourcesServiceName,
+            args: <String, Object>{'isolateId': ''},
+            jsonResponse: <String, Object>{'type': 'ReloadReport', 'success': true},
+          ),
+          const FakeVmServiceRequest(
+            method: 'ext.flutter.reassemble',
+            jsonResponse: <String, Object>{'type': 'ReloadReport', 'success': true},
           ),
           const FakeVmServiceRequest(
             method: 'streamListen',
@@ -769,7 +792,7 @@ name: my_app
 
       final OperationResult result = await residentWebRunner.restart();
 
-      expect(logger.statusText, contains('Restarted application in'));
+      expect(logger.statusText, contains('Reloaded application in'));
       expect(result.code, 0);
       expect(webDevFS.mainUri.toString(), contains('entrypoint.dart'));
 
@@ -777,24 +800,26 @@ name: my_app
         fakeAnalytics.sentEvents,
         contains(
           Event.hotRunnerInfo(
-            label: 'restart',
+            label: 'reload',
             targetPlatform: 'web-javascript',
             sdkName: '',
             emulator: false,
-            fullRestart: true,
+            fullRestart: false,
             overallTimeInMs: 0,
+            syncedBytes: 0,
+            invalidatedSourcesCount: 0,
+            transferTimeInMs: 0,
+            compileTimeInMs: 0,
+            findInvalidatedTimeInMs: 0,
+            scannedSourcesCount: 0,
+            reassembleTimeInMs: 0,
+            reloadVMTimeInMs: 0,
           ),
         ),
       );
       expect(
         fakeAnalytics.sentEvents,
-        contains(
-          Event.timing(
-            workflow: 'hot',
-            variableName: 'web-incremental-restart',
-            elapsedMilliseconds: 0,
-          ),
-        ),
+        contains(Event.timing(workflow: 'hot', variableName: 'reload', elapsedMilliseconds: 0)),
       );
     },
     overrides: <Type, Generator>{
@@ -807,20 +832,31 @@ name: my_app
   );
 
   testUsingContext(
-    'Can hot restart after attaching',
+    'Hot reload reject reports correct analytics',
     () async {
       final BufferLogger logger = BufferLogger.test();
       final ResidentRunner residentWebRunner = setUpResidentRunner(
         flutterDevice,
         logger: logger,
         systemClock: SystemClock.fixed(DateTime(2001)),
+        debuggingOptions: DebuggingOptions.enabled(
+          const BuildInfo(
+            BuildMode.debug,
+            null,
+            trackWidgetCreation: true,
+            treeShakeIcons: false,
+            packageConfigPath: '.dart_tool/package_config.json',
+            // Hot reload only supported with these flags for now.
+            extraFrontEndOptions: kDdcLibraryBundleFlags,
+          ),
+        ),
       );
       fakeVmServiceHost = FakeVmServiceHost(
         requests: <VmServiceExpectation>[
           ...kAttachExpectations,
           const FakeVmServiceRequest(
-            method: kHotRestartServiceName,
-            jsonResponse: <String, Object>{'type': 'Success'},
+            method: 'streamListen',
+            args: <String, Object>{'streamId': 'Isolate'},
           ),
         ],
       );
@@ -848,39 +884,25 @@ name: my_app
       final Completer<DebugConnectionInfo> connectionInfoCompleter =
           Completer<DebugConnectionInfo>();
       unawaited(residentWebRunner.run(connectionInfoCompleter: connectionInfoCompleter));
-      await connectionInfoCompleter.future;
-      final OperationResult result = await residentWebRunner.restart(fullRestart: true);
+      final DebugConnectionInfo debugConnectionInfo = await connectionInfoCompleter.future;
 
-      // Ensure that generated entrypoint is generated correctly.
-      expect(webDevFS.mainUri, isNotNull);
-      final String entrypointContents = fileSystem.file(webDevFS.mainUri).readAsStringSync();
-      expect(entrypointContents, contains('// Flutter web bootstrap script'));
-      expect(entrypointContents, contains("import 'dart:ui_web' as ui_web;"));
-      expect(entrypointContents, contains('await ui_web.bootstrapEngine('));
+      expect(debugConnectionInfo, isNotNull);
 
-      expect(logger.statusText, contains('Restarted application in'));
-      expect(result.code, 0);
+      webDevFS.report = UpdateFSReport(hotReloadRejected: true);
+      final OperationResult result = await residentWebRunner.restart();
+
+      expect(result.code, 1);
+      expect(webDevFS.mainUri.toString(), contains('entrypoint.dart'));
 
       expect(
         fakeAnalytics.sentEvents,
         contains(
           Event.hotRunnerInfo(
-            label: 'restart',
+            label: 'reload-reject',
             targetPlatform: 'web-javascript',
             sdkName: '',
             emulator: false,
-            fullRestart: true,
-            overallTimeInMs: 0,
-          ),
-        ),
-      );
-      expect(
-        fakeAnalytics.sentEvents,
-        contains(
-          Event.timing(
-            workflow: 'hot',
-            variableName: 'web-incremental-restart',
-            elapsedMilliseconds: 0,
+            fullRestart: false,
           ),
         ),
       );
@@ -893,6 +915,202 @@ name: my_app
       Pub: FakePubWithPrimedDeps.new,
     },
   );
+
+  // Regression test for https://github.com/flutter/flutter/issues/167887.
+  testUsingContext(
+    'WASM builds report analysis without crashing',
+    () async {
+      final BufferLogger logger = BufferLogger.test();
+      final ResidentRunner residentWebRunner = setUpResidentRunner(
+        flutterDevice,
+        logger: logger,
+        systemClock: SystemClock.fixed(DateTime(2001)),
+        debuggingOptions: DebuggingOptions.enabled(
+          const BuildInfo(
+            BuildMode.debug,
+            null,
+            trackWidgetCreation: true,
+            treeShakeIcons: false,
+            packageConfigPath: '.dart_tool/package_config.json',
+            // Hot reload only supported with these flags for now.
+            extraFrontEndOptions: kDdcLibraryBundleFlags,
+          ),
+          webUseWasm: true,
+        ),
+      );
+      fakeVmServiceHost = FakeVmServiceHost(
+        requests: <VmServiceExpectation>[
+          ...kAttachExpectations,
+          const FakeVmServiceRequest(
+            method: kReloadSourcesServiceName,
+            args: <String, Object>{'isolateId': ''},
+            jsonResponse: <String, Object>{'type': 'ReloadReport', 'success': true},
+          ),
+          const FakeVmServiceRequest(
+            method: 'ext.flutter.reassemble',
+            jsonResponse: <String, Object>{'type': 'ReloadReport', 'success': true},
+          ),
+          const FakeVmServiceRequest(
+            method: 'streamListen',
+            args: <String, Object>{'streamId': 'Isolate'},
+          ),
+        ],
+      );
+      setupMocks();
+      final TestChromiumLauncher chromiumLauncher = TestChromiumLauncher();
+      final FakeProcess process = FakeProcess();
+      final Chromium chrome = Chromium(
+        1,
+        chromeConnection,
+        chromiumLauncher: chromiumLauncher,
+        process: process,
+        logger: logger,
+      );
+      chromiumLauncher.setInstance(chrome);
+
+      flutterDevice.device = GoogleChromeDevice(
+        fileSystem: fileSystem,
+        chromiumLauncher: chromiumLauncher,
+        logger: BufferLogger.test(),
+        platform: FakePlatform(),
+        processManager: FakeProcessManager.any(),
+      );
+      webDevFS.report = UpdateFSReport(success: true);
+
+      final Completer<DebugConnectionInfo> connectionInfoCompleter =
+          Completer<DebugConnectionInfo>();
+      unawaited(residentWebRunner.run(connectionInfoCompleter: connectionInfoCompleter));
+      final DebugConnectionInfo debugConnectionInfo = await connectionInfoCompleter.future;
+
+      expect(debugConnectionInfo, isNotNull);
+
+      final OperationResult result = await residentWebRunner.restart();
+      expect(logger.statusText, contains('Reloaded application in'));
+      expect(result.code, 0);
+    },
+    overrides: <Type, Generator>{
+      Analytics: () => fakeAnalytics,
+      BuildSystem: () => TestBuildSystem.all(BuildResult(success: true)),
+      FileSystem: () => fileSystem,
+      ProcessManager: () => processManager,
+      FeatureFlags: enableExplicitPackageDependencies,
+      Pub: FakePubWithPrimedDeps.new,
+    },
+  );
+
+  // Hot restart is available with and without the DDC library bundle format.
+  // Test one extra config where `fullRestart` is false without the DDC library
+  // bundle format - we should do a hot restart in this case because hot reload
+  // is not available.
+  for (final (List<String> flags, bool fullRestart) in <(List<String>, bool)>[
+    (kDdcLibraryBundleFlags, true),
+    (<String>[], true),
+    (<String>[], false),
+  ]) {
+    testUsingContext(
+      'Can hot restart after attaching with flags: $flags fullRestart: $fullRestart',
+      () async {
+        final BufferLogger logger = BufferLogger.test();
+        final ResidentRunner residentWebRunner = setUpResidentRunner(
+          flutterDevice,
+          logger: logger,
+          systemClock: SystemClock.fixed(DateTime(2001)),
+          debuggingOptions: DebuggingOptions.enabled(
+            BuildInfo(
+              BuildMode.debug,
+              null,
+              trackWidgetCreation: true,
+              treeShakeIcons: false,
+              packageConfigPath: '.dart_tool/package_config.json',
+              extraFrontEndOptions: flags,
+            ),
+          ),
+        );
+        fakeVmServiceHost = FakeVmServiceHost(
+          requests: <VmServiceExpectation>[
+            ...kAttachExpectations,
+            const FakeVmServiceRequest(
+              method: kHotRestartServiceName,
+              jsonResponse: <String, Object>{'type': 'Success'},
+            ),
+          ],
+        );
+        setupMocks();
+        final TestChromiumLauncher chromiumLauncher = TestChromiumLauncher();
+        final FakeProcess process = FakeProcess();
+        final Chromium chrome = Chromium(
+          1,
+          chromeConnection,
+          chromiumLauncher: chromiumLauncher,
+          process: process,
+          logger: logger,
+        );
+        chromiumLauncher.setInstance(chrome);
+
+        flutterDevice.device = GoogleChromeDevice(
+          fileSystem: fileSystem,
+          chromiumLauncher: chromiumLauncher,
+          logger: BufferLogger.test(),
+          platform: FakePlatform(),
+          processManager: FakeProcessManager.any(),
+        );
+        webDevFS.report = UpdateFSReport(success: true);
+
+        final Completer<DebugConnectionInfo> connectionInfoCompleter =
+            Completer<DebugConnectionInfo>();
+        unawaited(residentWebRunner.run(connectionInfoCompleter: connectionInfoCompleter));
+        await connectionInfoCompleter.future;
+        final OperationResult result = await residentWebRunner.restart(fullRestart: fullRestart);
+
+        // Ensure that generated entrypoint is generated correctly.
+        expect(webDevFS.mainUri, isNotNull);
+        final String entrypointContents = fileSystem.file(webDevFS.mainUri).readAsStringSync();
+        expect(entrypointContents, contains('// Flutter web bootstrap script'));
+        expect(entrypointContents, contains("import 'dart:ui_web' as ui_web;"));
+        expect(entrypointContents, contains('await ui_web.bootstrapEngine('));
+
+        expect(logger.statusText, contains('Restarted application in'));
+        expect(result.code, 0);
+
+        expect(
+          fakeAnalytics.sentEvents,
+          contains(
+            Event.hotRunnerInfo(
+              label: 'restart',
+              targetPlatform: 'web-javascript',
+              sdkName: '',
+              emulator: false,
+              fullRestart: true,
+              overallTimeInMs: 0,
+              syncedBytes: 0,
+              invalidatedSourcesCount: 0,
+              transferTimeInMs: 0,
+              compileTimeInMs: 0,
+              findInvalidatedTimeInMs: 0,
+              scannedSourcesCount: 0,
+            ),
+          ),
+        );
+        expect(
+          fakeAnalytics.sentEvents,
+          contains(
+            Event.timing(
+              workflow: 'hot',
+              variableName: 'web-incremental-restart',
+              elapsedMilliseconds: 0,
+            ),
+          ),
+        );
+      },
+      overrides: <Type, Generator>{
+        Analytics: () => fakeAnalytics,
+        FileSystem: () => fileSystem,
+        ProcessManager: () => processManager,
+        FeatureFlags: enableExplicitPackageDependencies,
+        Pub: FakePubWithPrimedDeps.new,
+      },
+    );
+  }
 
   testUsingContext(
     'Can hot restart after attaching with web-server device',
@@ -1130,7 +1348,8 @@ name: my_app
             trackWidgetCreation: true,
             treeShakeIcons: false,
             packageConfigPath: '.dart_tool/package_config.json',
-            extraFrontEndOptions: <String>['--dartdevc-module-format=ddc', '--dartdevc-canary'],
+            // Hot reload only supported with these flags for now.
+            extraFrontEndOptions: kDdcLibraryBundleFlags,
           ),
         ),
       );
@@ -1860,6 +2079,11 @@ class FakeChromeTab extends Fake implements ChromeTab {
 class FakeWipConnection extends Fake implements WipConnection {
   @override
   final WipDebugger debugger = FakeWipDebugger();
+
+  @override
+  Future<WipResponse> sendCommand(String method, [Map<String, dynamic>? params]) async {
+    return WipResponse(<String, dynamic>{'id': 0, 'result': <String, dynamic>{}});
+  }
 }
 
 /// A test implementation of the [ChromiumLauncher] that launches a fixed instance.

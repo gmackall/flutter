@@ -14,7 +14,7 @@
 library;
 
 import 'dart:math' as math;
-import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle;
+import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle, SemanticsInputType;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
@@ -723,6 +723,8 @@ void main() {
                               SemanticsAction.didGainAccessibilityFocus,
                               SemanticsAction.didLoseAccessibilityFocus,
                             ],
+                            inputType: ui.SemanticsInputType.text,
+                            currentValueLength: 0,
                             textDirection: TextDirection.ltr,
                           ),
                         ],
@@ -1963,6 +1965,8 @@ void main() {
                 SemanticsAction.moveCursorBackwardByWord,
               ],
               value: 'abcdefghi',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 9,
               textDirection: TextDirection.ltr,
               textSelection: const TextSelection.collapsed(offset: 9),
             ),
@@ -5312,6 +5316,8 @@ void main() {
               textDirection: TextDirection.ltr,
               value: 'some text',
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 9,
               flags: <SemanticsFlag>[
                 SemanticsFlag.isTextField,
                 SemanticsFlag.hasEnabledState,
@@ -5529,12 +5535,12 @@ void main() {
       ),
     );
     final double iconRight = tester.getTopRight(find.byType(Icon)).dx;
-    // Per https://material.io/go/design-text-fields#text-fields-layout
-    // There's a 16 dps gap between the right edge of the icon and the text field's
-    // container, and the 12dps more padding between the left edge of the container
-    // and the left edge of the input and label.
-    expect(iconRight + 28.0, equals(tester.getTopLeft(find.text('label')).dx));
-    expect(iconRight + 28.0, equals(tester.getTopLeft(find.byType(EditableText)).dx));
+    // There's a 16 pixels gap between the right edge of the icon and the text field's
+    // container, and, per https://material.io/go/design-text-fields#text-fields-layout,
+    // 16 pixels more padding between the left edge of the container and the left edge
+    // of the input and label.
+    expect(iconRight + 16.0 + 16.0, equals(tester.getTopLeft(find.text('label')).dx));
+    expect(iconRight + 16.0 + 16.0, equals(tester.getTopLeft(find.byType(EditableText)).dx));
   });
 
   testWidgets('Collapsed hint text placement', (WidgetTester tester) async {
@@ -6350,7 +6356,6 @@ void main() {
     final TextEditingController textController = _textEditingController();
     final ThemeData theme = ThemeData.from(
       colorScheme: const ColorScheme.light().copyWith(error: Colors.deepPurpleAccent),
-      useMaterial3: true,
     );
     await tester.pumpWidget(
       boilerplate(
@@ -6573,6 +6578,8 @@ void main() {
     expect(
       semantics,
       includesNodeWith(
+        inputType: ui.SemanticsInputType.text,
+        currentValueLength: 0,
         flags: <SemanticsFlag>[
           SemanticsFlag.isTextField,
           SemanticsFlag.hasEnabledState,
@@ -6779,7 +6786,7 @@ void main() {
       text: 'Atwater Peel Sherbrooke Bonaventure',
     );
 
-    final ThemeData theme = ThemeData.light(useMaterial3: true);
+    final ThemeData theme = ThemeData();
 
     await tester.pumpWidget(
       MaterialApp(
@@ -6938,7 +6945,7 @@ void main() {
       text: 'Atwater Peel Sherbrooke Bonaventure',
     );
 
-    final ThemeData theme = ThemeData.light(useMaterial3: true);
+    final ThemeData theme = ThemeData();
 
     Widget buildFrame(bool enabled) {
       return MaterialApp(
@@ -6981,13 +6988,14 @@ void main() {
     expect(
       semantics,
       includesNodeWith(
+        inputType: ui.SemanticsInputType.text,
+        currentValueLength: 0,
         flags: <SemanticsFlag>[
           SemanticsFlag.isTextField,
           SemanticsFlag.hasEnabledState,
           SemanticsFlag.isEnabled,
         ],
         maxValueLength: 10,
-        currentValueLength: 0,
       ),
     );
 
@@ -7005,6 +7013,7 @@ void main() {
     expect(
       semantics,
       includesNodeWith(
+        inputType: ui.SemanticsInputType.text,
         flags: <SemanticsFlag>[
           SemanticsFlag.isTextField,
           SemanticsFlag.hasEnabledState,
@@ -7033,6 +7042,8 @@ void main() {
     expect(
       semantics,
       includesNodeWith(
+        inputType: ui.SemanticsInputType.text,
+        currentValueLength: 0,
         flags: <SemanticsFlag>[
           SemanticsFlag.isTextField,
           SemanticsFlag.hasEnabledState,
@@ -7995,6 +8006,8 @@ void main() {
             TestSemantics.rootChild(
               id: 1,
               textDirection: TextDirection.ltr,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 0,
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               flags: <SemanticsFlag>[
                 SemanticsFlag.isTextField,
@@ -8021,6 +8034,8 @@ void main() {
               id: 1,
               textDirection: TextDirection.ltr,
               value: 'Guten Tag',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 9,
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               flags: <SemanticsFlag>[
                 SemanticsFlag.isTextField,
@@ -8047,6 +8062,8 @@ void main() {
               id: 1,
               textDirection: TextDirection.ltr,
               value: 'Guten Tag',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 9,
               textSelection: const TextSelection.collapsed(offset: 9),
               actions: <SemanticsAction>[
                 SemanticsAction.tap,
@@ -8084,6 +8101,8 @@ void main() {
               textDirection: TextDirection.ltr,
               textSelection: const TextSelection.collapsed(offset: 4),
               value: 'Guten Tag',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 9,
               actions: <SemanticsAction>[
                 SemanticsAction.tap,
                 SemanticsAction.focus,
@@ -8123,6 +8142,8 @@ void main() {
               textDirection: TextDirection.ltr,
               textSelection: const TextSelection.collapsed(offset: 0),
               value: 'Schönen Feierabend',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 18,
               actions: <SemanticsAction>[
                 SemanticsAction.tap,
                 SemanticsAction.focus,
@@ -8169,6 +8190,7 @@ void main() {
           SemanticsFlag.isEnabled,
         ],
         value: 'Hello',
+        inputType: ui.SemanticsInputType.text,
       ),
     );
 
@@ -8180,6 +8202,7 @@ void main() {
       includesNodeWith(
         actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
         textDirection: TextDirection.ltr,
+        inputType: ui.SemanticsInputType.text,
         flags: <SemanticsFlag>[
           SemanticsFlag.isTextField,
           SemanticsFlag.hasEnabledState,
@@ -8203,6 +8226,7 @@ void main() {
           SemanticsFlag.isEnabled,
         ],
         value: 'Hello',
+        inputType: ui.SemanticsInputType.text,
       ),
     );
 
@@ -8233,6 +8257,8 @@ void main() {
             TestSemantics.rootChild(
               id: 1,
               textDirection: TextDirection.ltr,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 0,
               actions: <SemanticsAction>[
                 SemanticsAction.tap,
                 SemanticsAction.focus,
@@ -8275,6 +8301,8 @@ void main() {
             TestSemantics.rootChild(
               id: 1,
               value: 'Hello',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textDirection: TextDirection.ltr,
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               flags: <SemanticsFlag>[
@@ -8302,6 +8330,8 @@ void main() {
             TestSemantics.rootChild(
               id: 1,
               value: 'Hello',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textSelection: const TextSelection.collapsed(offset: 5),
               textDirection: TextDirection.ltr,
               actions: <SemanticsAction>[
@@ -8338,6 +8368,8 @@ void main() {
             TestSemantics.rootChild(
               id: 1,
               value: 'Hello',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textSelection: const TextSelection(baseOffset: 5, extentOffset: 3),
               textDirection: TextDirection.ltr,
               actions: <SemanticsAction>[
@@ -8396,6 +8428,8 @@ void main() {
             TestSemantics.rootChild(
               id: inputFieldId,
               value: 'Hello',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textSelection: const TextSelection.collapsed(offset: 5),
               textDirection: TextDirection.ltr,
               actions: <SemanticsAction>[
@@ -8452,6 +8486,8 @@ void main() {
             TestSemantics.rootChild(
               id: inputFieldId,
               value: 'Hello',
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textSelection: const TextSelection(baseOffset: 0, extentOffset: 5),
               textDirection: TextDirection.ltr,
               actions: <SemanticsAction>[
@@ -8512,6 +8548,8 @@ void main() {
               ],
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               value: textInTextField,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textDirection: TextDirection.ltr,
             ),
           ],
@@ -8547,6 +8585,8 @@ void main() {
                 SemanticsAction.paste,
               ],
               value: textInTextField,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textDirection: TextDirection.ltr,
               textSelection: const TextSelection(
                 baseOffset: textInTextField.length,
@@ -8592,6 +8632,8 @@ void main() {
               ],
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               value: textInTextField,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textDirection: TextDirection.ltr,
             ),
           ],
@@ -8627,6 +8669,8 @@ void main() {
                 // No paste option.
               ],
               value: textInTextField,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 5,
               textDirection: TextDirection.ltr,
               textSelection: const TextSelection(
                 baseOffset: textInTextField.length,
@@ -8770,6 +8814,9 @@ void main() {
               label: 'label',
               id: 1,
               textDirection: TextDirection.ltr,
+              inputType: ui.SemanticsInputType.text,
+              maxValueLength: 10,
+              currentValueLength: 0,
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               flags: <SemanticsFlag>[
                 SemanticsFlag.isTextField,
@@ -8805,6 +8852,9 @@ void main() {
               id: 1,
               textDirection: TextDirection.ltr,
               textSelection: const TextSelection(baseOffset: 0, extentOffset: 0),
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 0,
+              maxValueLength: 10,
               actions: <SemanticsAction>[
                 SemanticsAction.tap,
                 SemanticsAction.focus,
@@ -8871,6 +8921,8 @@ void main() {
             TestSemantics.rootChild(
               label: 'label',
               textDirection: TextDirection.ltr,
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 0,
               actions: <SemanticsAction>[SemanticsAction.tap, SemanticsAction.focus],
               flags: <SemanticsFlag>[
                 SemanticsFlag.isTextField,
@@ -8926,6 +8978,8 @@ void main() {
                 SemanticsFlag.hasEnabledState,
                 SemanticsFlag.isEnabled,
               ],
+              inputType: ui.SemanticsInputType.text,
+              currentValueLength: 0,
               children: <TestSemantics>[
                 TestSemantics(label: 'oh no!', textDirection: TextDirection.ltr),
               ],
@@ -9284,7 +9338,6 @@ void main() {
     // Regression test for https://github.com/flutter/flutter/issues/23994
 
     final ThemeData themeData = ThemeData(
-      useMaterial3: true,
       textTheme: TextTheme(bodyLarge: TextStyle(color: Colors.blue[500])),
     );
 
@@ -11528,7 +11581,7 @@ void main() {
   );
 
   testWidgets(
-    'Toolbar hides on scroll start and re-appears on scroll end on Android and iOS',
+    'Toolbar hides on scroll start and re-appears on scroll end on Android',
     (WidgetTester tester) async {
       final TextEditingController controller = _textEditingController(
         text: 'Atwater Peel Sherbrooke Bonaventure ' * 20,
@@ -11585,10 +11638,7 @@ void main() {
       expect(renderEditable.selectionStartInViewport.value, true);
       expect(renderEditable.selectionEndInViewport.value, true);
     },
-    variant: const TargetPlatformVariant(<TargetPlatform>{
-      TargetPlatform.android,
-      TargetPlatform.iOS,
-    }),
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 
   testWidgets(
@@ -13322,6 +13372,7 @@ void main() {
       scrollPadding: EdgeInsets.zero,
       scrollPhysics: ClampingScrollPhysics(),
       enableInteractiveSelection: false,
+      hintLocales: <Locale>[Locale('en'), Locale('fr')],
     ).debugFillProperties(builder);
 
     final List<String> description =
@@ -13352,6 +13403,7 @@ void main() {
       'scrollPadding: EdgeInsets.zero',
       'selection disabled',
       'scrollPhysics: ClampingScrollPhysics',
+      'hintLocales: [en, fr]',
     ]);
   });
 
@@ -16149,6 +16201,46 @@ void main() {
       },
       skip: kIsWeb, // [intended] on web the browser handles the context menu.
     );
+
+    testWidgets(
+      'iOS uses the system context menu by default if supported',
+      (WidgetTester tester) async {
+        tester.platformDispatcher.supportsShowingSystemContextMenu = true;
+        addTearDown(() {
+          tester.platformDispatcher.resetSupportsShowingSystemContextMenu();
+          tester.view.reset();
+        });
+
+        await tester.pumpWidget(
+          // Don't wrap with the global View so that the change to
+          // platformDispatcher is read.
+          wrapWithView: false,
+          View(
+            view: tester.view,
+            child: MaterialApp(
+              home: Material(
+                child: TextField(controller: _textEditingController(text: 'one two three')),
+              ),
+            ),
+          ),
+        );
+
+        // No context menu shown.
+        expect(find.byType(AdaptiveTextSelectionToolbar), findsNothing);
+        expect(find.byType(SystemContextMenu), findsNothing);
+
+        // Double tap to select the first word and show the menu.
+        await tester.tapAt(textOffsetToPosition(tester, 1));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tapAt(textOffsetToPosition(tester, 1));
+        await tester.pump(SelectionOverlay.fadeDuration);
+
+        expect(find.byType(AdaptiveTextSelectionToolbar), findsNothing);
+        expect(find.byType(SystemContextMenu), findsOneWidget);
+      },
+      skip: kIsWeb, // [intended] on web the browser handles the context menu.
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
   });
 
   group('magnifier builder', () {
@@ -17348,6 +17440,8 @@ void main() {
                       children: <TestSemantics>[
                         TestSemantics(
                           id: 4,
+                          inputType: ui.SemanticsInputType.text,
+                          currentValueLength: 0,
                           flags: <SemanticsFlag>[
                             SemanticsFlag.isTextField,
                             SemanticsFlag.hasEnabledState,
@@ -17416,6 +17510,8 @@ void main() {
                         children: <TestSemantics>[
                           TestSemantics(
                             id: 4,
+                            inputType: ui.SemanticsInputType.text,
+                            currentValueLength: 0,
                             flags: <SemanticsFlag>[
                               SemanticsFlag.isTextField,
                               SemanticsFlag.hasEnabledState,
@@ -17505,6 +17601,16 @@ void main() {
     },
     variant: TargetPlatformVariant.all(),
   );
+
+  testWidgets('hintLocales is passed to EditableText', (WidgetTester tester) async {
+    const List<Locale> hintLocales = <Locale>[Locale('en'), Locale('fr')];
+    await tester.pumpWidget(
+      const MaterialApp(home: Material(child: TextField(hintLocales: hintLocales))),
+    );
+
+    final EditableText editableText = tester.widget(find.byType(EditableText));
+    expect(editableText.hintLocales, hintLocales);
+  });
 }
 
 /// A Simple widget for testing the obscure text.

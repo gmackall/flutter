@@ -200,6 +200,41 @@ name: foo
   );
 
   test(
+    'WebTemplatedFiles includes serviceWorkerSettings in flutter_bootstrap.js by default',
+    () => testbed.run(() async {
+      final Directory webResources = environment.projectDir.childDirectory('web');
+      environment.defines[kServiceWorkerStrategy] = 'none';
+      webResources.childFile('index.html').createSync(recursive: true);
+      environment.buildDir.childFile('main.dart.js').createSync();
+      await WebTemplatedFiles(<Map<String, Object?>>[]).build(environment);
+
+      expect(
+        environment.outputDir.childFile('flutter_bootstrap.js').readAsStringSync(),
+        contains('_flutter.loader.load();'),
+      );
+    }),
+  );
+
+  test(
+    'WebTemplatedFiles omits serviceWorkerSettings in flutter_bootstrap.js when environment specifies',
+    () => testbed.run(() async {
+      final Directory webResources = environment.projectDir.childDirectory('web');
+      webResources.childFile('index.html').createSync(recursive: true);
+      environment.buildDir.childFile('main.dart.js').createSync();
+      await WebTemplatedFiles(<Map<String, Object?>>[]).build(environment);
+
+      expect(
+        environment.outputDir.childFile('flutter_bootstrap.js').readAsStringSync(),
+        stringContainsInOrder(<String>[
+          '_flutter.loader.load({',
+          'serviceWorkerSettings',
+          'serviceWorkerVersion',
+        ]),
+      );
+    }),
+  );
+
+  test(
     'null base href does not override existing base href in index.html',
     () => testbed.run(() async {
       environment.defines[kBuildMode] = 'release';
@@ -227,14 +262,18 @@ name: foo
         ..createSync(recursive: true)
         ..writeAsStringSync('A');
       environment.buildDir.childFile('main.dart.js').createSync();
+      environment.buildDir.childFile('main.dart.js.info.json').createSync();
       environment.buildDir.childFile('main.dart.js.map').createSync();
       environment.buildDir.childFile('main.dart.js_1.part.js').createSync();
       environment.buildDir.childFile('main.dart.js_1.part.js.map').createSync();
 
-      await WebReleaseBundle(<WebCompilerConfig>[const JsCompilerConfig()]).build(environment);
+      await WebReleaseBundle(<WebCompilerConfig>[
+        const JsCompilerConfig(dumpInfo: true),
+      ]).build(environment);
 
       expect(environment.outputDir.childFile('foo.txt').readAsStringSync(), 'A');
       expect(environment.outputDir.childFile('main.dart.js').existsSync(), true);
+      expect(environment.outputDir.childFile('main.dart.js.info.json').existsSync(), true);
       expect(environment.outputDir.childFile('main.dart.js.map').existsSync(), true);
       expect(environment.outputDir.childFile('main.dart.js_1.part.js').existsSync(), true);
       expect(environment.outputDir.childFile('main.dart.js_1.part.js.map').existsSync(), true);
