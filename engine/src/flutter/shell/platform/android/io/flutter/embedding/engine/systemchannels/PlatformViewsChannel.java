@@ -35,227 +35,6 @@ public class PlatformViewsChannel {
     channel.invokeMethod("viewFocused", viewId);
   }
 
-  private static String detailedExceptionString(Exception exception) {
-    return Log.getStackTraceString(exception);
-  }
-
-  private final MethodChannel.MethodCallHandler parsingHandler =
-      new MethodChannel.MethodCallHandler() {
-        @Override
-        public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          // If there is no handler to respond to this message then we don't need to
-          // parse it. Return.
-          if (handler == null) {
-            return;
-          }
-
-          Log.v(TAG, "Received '" + call.method + "' message.");
-          switch (call.method) {
-            case "create":
-              create(call, result);
-              break;
-            case "dispose":
-              dispose(call, result);
-              break;
-            case "resize":
-              resize(call, result);
-              break;
-            case "offset":
-              offset(call, result);
-              break;
-            case "touch":
-              touch(call, result);
-              break;
-            case "setDirection":
-              setDirection(call, result);
-              break;
-            case "clearFocus":
-              clearFocus(call, result);
-              break;
-            case "synchronizeToNativeViewHierarchy":
-              synchronizeToNativeViewHierarchy(call, result);
-              break;
-            default:
-              result.notImplemented();
-          }
-        }
-
-        private void create(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          final Map<String, Object> createArgs = call.arguments();
-          // TODO(egarciad): Remove the "hybrid" case.
-          final boolean usesPlatformViewLayer =
-              createArgs.containsKey("hybrid") && (boolean) createArgs.get("hybrid");
-          final ByteBuffer additionalParams =
-              createArgs.containsKey("params")
-                  ? ByteBuffer.wrap((byte[]) createArgs.get("params"))
-                  : null;
-          try {
-            if (usesPlatformViewLayer) {
-              final PlatformViewCreationRequest request =
-                  new PlatformViewCreationRequest(
-                      (int) createArgs.get("id"),
-                      (String) createArgs.get("viewType"),
-                      0,
-                      0,
-                      0,
-                      0,
-                      (int) createArgs.get("direction"),
-                      PlatformViewCreationRequest.RequestedDisplayMode.HYBRID_ONLY,
-                      additionalParams);
-              handler.createForPlatformViewLayer(request);
-              result.success(null);
-            } else {
-              final boolean hybridFallback =
-                  createArgs.containsKey("hybridFallback")
-                      && (boolean) createArgs.get("hybridFallback");
-              final PlatformViewCreationRequest.RequestedDisplayMode displayMode =
-                  hybridFallback
-                      ? PlatformViewCreationRequest.RequestedDisplayMode
-                          .TEXTURE_WITH_HYBRID_FALLBACK
-                      : PlatformViewCreationRequest.RequestedDisplayMode
-                          .TEXTURE_WITH_VIRTUAL_FALLBACK;
-              final PlatformViewCreationRequest request =
-                  new PlatformViewCreationRequest(
-                      (int) createArgs.get("id"),
-                      (String) createArgs.get("viewType"),
-                      createArgs.containsKey("top") ? (double) createArgs.get("top") : 0.0,
-                      createArgs.containsKey("left") ? (double) createArgs.get("left") : 0.0,
-                      (double) createArgs.get("width"),
-                      (double) createArgs.get("height"),
-                      (int) createArgs.get("direction"),
-                      displayMode,
-                      additionalParams);
-              long textureId = handler.createForTextureLayer(request);
-              if (textureId == PlatformViewsHandler.NON_TEXTURE_FALLBACK) {
-                if (!hybridFallback) {
-                  throw new AssertionError(
-                      "Platform view attempted to fall back to hybrid mode when not requested.");
-                }
-                // A fallback to hybrid mode is indicated with a null texture ID.
-                result.success(null);
-              } else {
-                result.success(textureId);
-              }
-            }
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void dispose(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          Map<String, Object> disposeArgs = call.arguments();
-          int viewId = (int) disposeArgs.get("id");
-
-          try {
-            handler.dispose(viewId);
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void resize(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          Map<String, Object> resizeArgs = call.arguments();
-          PlatformViewResizeRequest resizeRequest =
-              new PlatformViewResizeRequest(
-                  (int) resizeArgs.get("id"),
-                  (double) resizeArgs.get("width"),
-                  (double) resizeArgs.get("height"));
-          try {
-            handler.resize(
-                resizeRequest,
-                (PlatformViewBufferSize bufferSize) -> {
-                  if (bufferSize == null) {
-                    result.error("error", "Failed to resize the platform view", null);
-                  } else {
-                    final Map<String, Object> response = new HashMap<>();
-                    response.put("width", (double) bufferSize.width);
-                    response.put("height", (double) bufferSize.height);
-                    result.success(response);
-                  }
-                });
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void offset(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          Map<String, Object> offsetArgs = call.arguments();
-          try {
-            handler.offset(
-                (int) offsetArgs.get("id"),
-                (double) offsetArgs.get("top"),
-                (double) offsetArgs.get("left"));
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void touch(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          List<Object> args = call.arguments();
-          PlatformViewTouch touch =
-              new PlatformViewTouch(
-                  (int) args.get(0),
-                  (Number) args.get(1),
-                  (Number) args.get(2),
-                  (int) args.get(3),
-                  (int) args.get(4),
-                  args.get(5),
-                  args.get(6),
-                  (int) args.get(7),
-                  (int) args.get(8),
-                  (float) (double) args.get(9),
-                  (float) (double) args.get(10),
-                  (int) args.get(11),
-                  (int) args.get(12),
-                  (int) args.get(13),
-                  (int) args.get(14),
-                  ((Number) args.get(15)).longValue());
-
-          try {
-            handler.onTouch(touch);
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void setDirection(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          Map<String, Object> setDirectionArgs = call.arguments();
-          int newDirectionViewId = (int) setDirectionArgs.get("id");
-          int direction = (int) setDirectionArgs.get("direction");
-
-          try {
-            handler.setDirection(newDirectionViewId, direction);
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void clearFocus(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          int viewId = call.arguments();
-          try {
-            handler.clearFocus(viewId);
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-
-        private void synchronizeToNativeViewHierarchy(
-            @NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          boolean yes = call.arguments();
-          try {
-            handler.synchronizeToNativeViewHierarchy(yes);
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
-        }
-      };
-
   /**
    * Constructs a {@code PlatformViewsChannel} that connects Android to the Dart code running in
    * {@code dartExecutor}.
@@ -267,7 +46,6 @@ public class PlatformViewsChannel {
   public PlatformViewsChannel(@NonNull DartExecutor dartExecutor) {
     channel =
         new MethodChannel(dartExecutor, "flutter/platform_views", StandardMethodCodec.INSTANCE);
-    channel.setMethodCallHandler(parsingHandler);
   }
 
   /**
@@ -275,7 +53,7 @@ public class PlatformViewsChannel {
    * from the underlying platform views channel.
    */
   public void setPlatformViewsHandler(@Nullable PlatformViewsHandler handler) {
-    this.handler = handler;
+    channel.setMethodCallHandler(handler);
   }
 
   /**
@@ -285,7 +63,7 @@ public class PlatformViewsChannel {
    * <p>To register a {@code PlatformViewsHandler} with a {@link PlatformViewsChannel}, see {@link
    * PlatformViewsChannel#setPlatformViewsHandler(PlatformViewsHandler)}.
    */
-  public interface PlatformViewsHandler {
+  public interface PlatformViewsHandler extends MethodChannel.MethodCallHandler {
     /*
      * The ID returned by {@code createForTextureLayer} to indicate that the requested texture mode
      * was not available and the view creation fell back to {@code PlatformViewLayer} mode.

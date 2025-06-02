@@ -34,14 +34,19 @@ import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.mutatorsstack.*;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel;
+import io.flutter.plugin.common.MethodCall;
+import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.util.ViewUtils;
 import io.flutter.view.AccessibilityBridge;
 import io.flutter.view.TextureRegistry;
+
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Manages platform views.
@@ -158,6 +163,223 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
 
   private final PlatformViewsChannel.PlatformViewsHandler channelHandler =
       new PlatformViewsChannel.PlatformViewsHandler() {
+
+        private String detailedExceptionString(Exception exception) {
+          return Log.getStackTraceString(exception);
+        }
+
+        // START - cleanup required here.
+
+        @Override
+        public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+
+          Log.v(TAG, "Received '" + call.method + "' message.");
+          switch (call.method) {
+            case "create":
+              createNew(call, result);
+              break;
+            case "dispose":
+              disposeNew(call, result);
+              break;
+            case "resize":
+              resizeNew(call, result);
+              break;
+            case "offset":
+              offsetNew(call, result);
+              break;
+            case "touch":
+              touchNew(call, result);
+              break;
+            case "setDirection":
+              setDirectionNew(call, result);
+              break;
+            case "clearFocus":
+              clearFocusNew(call, result);
+              break;
+            case "synchronizeToNativeViewHierarchy":
+              synchronizeToNativeViewHierarchyNew(call, result);
+              break;
+            default:
+              result.notImplemented();
+          }
+        }
+
+        private void createNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          final Map<String, Object> createArgs = call.arguments();
+          // TODO(egarciad): Remove the "hybrid" case.
+          final boolean usesPlatformViewLayer =
+                  createArgs.containsKey("hybrid") && (boolean) createArgs.get("hybrid");
+          final ByteBuffer additionalParams =
+                  createArgs.containsKey("params")
+                          ? ByteBuffer.wrap((byte[]) createArgs.get("params"))
+                          : null;
+          try {
+            if (usesPlatformViewLayer) {
+              final PlatformViewsChannel.PlatformViewCreationRequest request =
+                      new PlatformViewsChannel.PlatformViewCreationRequest(
+                              (int) createArgs.get("id"),
+                              (String) createArgs.get("viewType"),
+                              0,
+                              0,
+                              0,
+                              0,
+                              (int) createArgs.get("direction"),
+                              PlatformViewsChannel.PlatformViewCreationRequest.RequestedDisplayMode.HYBRID_ONLY,
+                              additionalParams);
+              createForPlatformViewLayer(request);
+              result.success(null);
+            } else {
+              final boolean hybridFallback =
+                      createArgs.containsKey("hybridFallback")
+                              && (boolean) createArgs.get("hybridFallback");
+              final PlatformViewsChannel.PlatformViewCreationRequest.RequestedDisplayMode displayMode =
+                      hybridFallback
+                              ? PlatformViewsChannel.PlatformViewCreationRequest.RequestedDisplayMode
+                              .TEXTURE_WITH_HYBRID_FALLBACK
+                              : PlatformViewsChannel.PlatformViewCreationRequest.RequestedDisplayMode
+                              .TEXTURE_WITH_VIRTUAL_FALLBACK;
+              final PlatformViewsChannel.PlatformViewCreationRequest request =
+                      new PlatformViewsChannel.PlatformViewCreationRequest(
+                              (int) createArgs.get("id"),
+                              (String) createArgs.get("viewType"),
+                              createArgs.containsKey("top") ? (double) createArgs.get("top") : 0.0,
+                              createArgs.containsKey("left") ? (double) createArgs.get("left") : 0.0,
+                              (double) createArgs.get("width"),
+                              (double) createArgs.get("height"),
+                              (int) createArgs.get("direction"),
+                              displayMode,
+                              additionalParams);
+              long textureId = createForTextureLayer(request);
+              if (textureId == PlatformViewsChannel.PlatformViewsHandler.NON_TEXTURE_FALLBACK) {
+                if (!hybridFallback) {
+                  throw new AssertionError(
+                          "Platform view attempted to fall back to hybrid mode when not requested.");
+                }
+                // A fallback to hybrid mode is indicated with a null texture ID.
+                result.success(null);
+              } else {
+                result.success(textureId);
+              }
+            }
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void disposeNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          Map<String, Object> disposeArgs = call.arguments();
+          int viewId = (int) disposeArgs.get("id");
+
+          try {
+            dispose(viewId);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void resizeNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          Map<String, Object> resizeArgs = call.arguments();
+          PlatformViewsChannel.PlatformViewResizeRequest resizeRequest =
+                  new PlatformViewsChannel.PlatformViewResizeRequest(
+                          (int) resizeArgs.get("id"),
+                          (double) resizeArgs.get("width"),
+                          (double) resizeArgs.get("height"));
+          try {
+            resize(
+                    resizeRequest,
+                    (PlatformViewsChannel.PlatformViewBufferSize bufferSize) -> {
+                      if (bufferSize == null) {
+                        result.error("error", "Failed to resize the platform view", null);
+                      } else {
+                        final Map<String, Object> response = new HashMap<>();
+                        response.put("width", (double) bufferSize.width);
+                        response.put("height", (double) bufferSize.height);
+                        result.success(response);
+                      }
+                    });
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void offsetNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          Map<String, Object> offsetArgs = call.arguments();
+          try {
+            offset(
+                    (int) offsetArgs.get("id"),
+                    (double) offsetArgs.get("top"),
+                    (double) offsetArgs.get("left"));
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void touchNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          List<Object> args = call.arguments();
+          PlatformViewsChannel.PlatformViewTouch touch =
+                  new PlatformViewsChannel.PlatformViewTouch(
+                          (int) args.get(0),
+                          (Number) args.get(1),
+                          (Number) args.get(2),
+                          (int) args.get(3),
+                          (int) args.get(4),
+                          args.get(5),
+                          args.get(6),
+                          (int) args.get(7),
+                          (int) args.get(8),
+                          (float) (double) args.get(9),
+                          (float) (double) args.get(10),
+                          (int) args.get(11),
+                          (int) args.get(12),
+                          (int) args.get(13),
+                          (int) args.get(14),
+                          ((Number) args.get(15)).longValue());
+
+          try {
+            onTouch(touch);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void setDirectionNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          Map<String, Object> setDirectionArgs = call.arguments();
+          int newDirectionViewId = (int) setDirectionArgs.get("id");
+          int direction = (int) setDirectionArgs.get("direction");
+
+          try {
+            setDirection(newDirectionViewId, direction);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void clearFocusNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          int viewId = call.arguments();
+          try {
+            clearFocus(viewId);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void synchronizeToNativeViewHierarchyNew(
+                @NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          boolean yes = call.arguments();
+          try {
+            synchronizeToNativeViewHierarchy(yes);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        // END - Cleanup required here.
 
         @Override
         // TODO(egarciad): Remove the need for this.

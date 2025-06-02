@@ -47,4 +47,13 @@ public class PlatformViewsControllerDelegator implements PlatformViewsAccessibil
     platformViewsController.detachAccessibilityBridge();
     platformViewsController2.detachAccessibilityBridge();
   }
+
+
+
+  // TODO(gmackall) Can we define a common interface, allowing us to do something like this?
+//  private PlatformViewsController delegateToController(int viewId) {
+//    return platformViewsController2.getPlatformViewById(viewId) != null
+//            ? platformViewsController2
+//            : platformViewsController;
+//  }
 }

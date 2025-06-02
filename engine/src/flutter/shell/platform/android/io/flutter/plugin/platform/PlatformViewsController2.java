@@ -32,10 +32,15 @@ import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.mutatorsstack.*;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel2;
+import io.flutter.plugin.common.MethodCall;
+import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.view.AccessibilityBridge;
+
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Manages platform views.
@@ -615,6 +620,138 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   private final PlatformViewsChannel2.PlatformViewsHandler channelHandler =
       new PlatformViewsChannel2.PlatformViewsHandler() {
+        // TODO(gmackall) should this be moved?
+        private String detailedExceptionString(Exception exception) {
+          return Log.getStackTraceString(exception);
+        }
+
+        @Override
+        public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          // If there is no handler to respond to this message then we don't need to
+          // parse it. Return.
+          // TODO (gmackall) what do null case
+
+          // START - cleanup required here, can we collapse and remove 'new' methods?
+
+          Log.v(TAG, "Received '" + call.method + "' message.");
+          switch (call.method) {
+            case "create":
+              createNew(call, result);
+              break;
+            case "dispose":
+              disposeNew(call, result);
+              break;
+            case "touch":
+              touchNew(call, result);
+              break;
+            case "setDirection":
+              setDirectionNew(call, result);
+              break;
+            case "clearFocus":
+              clearFocusNew(call, result);
+              break;
+            case "isSurfaceControlEnabled": // TODO(gmackall) remove
+              isSurfaceControlEnabledNew(call, result);
+              break;
+            default:
+              result.notImplemented();
+          }
+        }
+
+        private void createNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          final Map<String, Object> createArgs = call.arguments();
+          final ByteBuffer additionalParams =
+                  createArgs.containsKey("params")
+                          ? ByteBuffer.wrap((byte[]) createArgs.get("params"))
+                          : null;
+          try {
+
+            final PlatformViewsChannel2.PlatformViewCreationRequest request =
+                    new PlatformViewsChannel2.PlatformViewCreationRequest(
+                            (int) createArgs.get("id"),
+                            (String) createArgs.get("viewType"),
+                            0,
+                            0,
+                            (int) createArgs.get("direction"),
+                            additionalParams);
+            createPlatformView(request);
+            result.success(null);
+
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void disposeNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          Map<String, Object> disposeArgs = call.arguments();
+          int viewId = (int) disposeArgs.get("id");
+
+          try {
+            dispose(viewId);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void touchNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          List<Object> args = call.arguments();
+          PlatformViewsChannel2.PlatformViewTouch touch =
+                  new PlatformViewsChannel2.PlatformViewTouch(
+                          (int) args.get(0),
+                          (Number) args.get(1),
+                          (Number) args.get(2),
+                          (int) args.get(3),
+                          (int) args.get(4),
+                          args.get(5),
+                          args.get(6),
+                          (int) args.get(7),
+                          (int) args.get(8),
+                          (float) (double) args.get(9),
+                          (float) (double) args.get(10),
+                          (int) args.get(11),
+                          (int) args.get(12),
+                          (int) args.get(13),
+                          (int) args.get(14),
+                          ((Number) args.get(15)).longValue());
+
+          try {
+            onTouch(touch);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void setDirectionNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          Map<String, Object> setDirectionArgs = call.arguments();
+          int newDirectionViewId = (int) setDirectionArgs.get("id");
+          int direction = (int) setDirectionArgs.get("direction");
+
+          try {
+            setDirection(newDirectionViewId, direction);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void clearFocusNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          int viewId = call.arguments();
+          try {
+            clearFocus(viewId);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
+        private void isSurfaceControlEnabledNew(
+                @NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          result.success(isSurfaceControlEnabled());
+        }
+
+        // END - cleanup required here, can we collapse?
 
         @Override
         public void createPlatformView(
