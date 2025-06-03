@@ -26,7 +26,7 @@ public class PlatformViewsChannel {
   private static final String TAG = "PlatformViewsChannel";
 
   private final MethodChannel channel;
-  private PlatformViewsHandler handler;
+  private PlatformViewsHandler platformViewsHandler;
 
   public void invokeViewFocused(int viewId) {
     if (channel == null) {
@@ -48,12 +48,48 @@ public class PlatformViewsChannel {
         new MethodChannel(dartExecutor, "flutter/platform_views", StandardMethodCodec.INSTANCE);
   }
 
+  private final MethodChannel.MethodCallHandler channelHandler = new MethodChannel.MethodCallHandler() {
+    @Override
+    public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+
+      Log.v(TAG, "Received '" + call.method + "' message.");
+      switch (call.method) {
+        case "create":
+          platformViewsHandler.createNew(call, result);
+          break;
+        case "dispose":
+          platformViewsHandler.disposeNew(call, result);
+          break;
+        case "resize":
+          platformViewsHandler.resizeNew(call, result);
+          break;
+        case "offset":
+          platformViewsHandler.offsetNew(call, result);
+          break;
+        case "touch":
+          platformViewsHandler.touchNew(call, result);
+          break;
+        case "setDirection":
+          platformViewsHandler.setDirectionNew(call, result);
+          break;
+        case "clearFocus":
+          platformViewsHandler.clearFocusNew(call, result);
+          break;
+        case "synchronizeToNativeViewHierarchy":
+          platformViewsHandler.synchronizeToNativeViewHierarchyNew(call, result);
+          break;
+        default:
+          result.notImplemented();
+      }
+    }
+  };
+
   /**
    * Sets the {@link PlatformViewsHandler} which receives all events and requests that are parsed
    * from the underlying platform views channel.
    */
   public void setPlatformViewsHandler(@Nullable PlatformViewsHandler handler) {
-    channel.setMethodCallHandler(handler);
+    this.platformViewsHandler = handler;
   }
 
   /**
@@ -308,22 +344,22 @@ public class PlatformViewsChannel {
     public final long motionEventId;
 
     public PlatformViewTouch(
-        int viewId,
-        @NonNull Number downTime,
-        @NonNull Number eventTime,
-        int action,
-        int pointerCount,
-        @NonNull Object rawPointerPropertiesList,
-        @NonNull Object rawPointerCoords,
-        int metaState,
-        int buttonState,
-        float xPrecision,
-        float yPrecision,
-        int deviceId,
-        int edgeFlags,
-        int source,
-        int flags,
-        long motionEventId) {
+            int viewId,
+            @NonNull Number downTime,
+            @NonNull Number eventTime,
+            int action,
+            int pointerCount,
+            @NonNull Object rawPointerPropertiesList,
+            @NonNull Object rawPointerCoords,
+            int metaState,
+            int buttonState,
+            float xPrecision,
+            float yPrecision,
+            int deviceId,
+            int edgeFlags,
+            int source,
+            int flags,
+            long motionEventId) {
       this.viewId = viewId;
       this.downTime = downTime;
       this.eventTime = eventTime;

@@ -7,9 +7,12 @@ package io.flutter.plugin.platform;
 import android.view.View;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+
+import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel;
+import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel3;
 import io.flutter.view.AccessibilityBridge;
 
-public class PlatformViewsControllerDelegator implements PlatformViewsAccessibilityDelegate {
+public class PlatformViewsControllerDelegator implements PlatformViewsAccessibilityDelegate, PlatformViewsChannel3.PlatformViewsHandler {
 
   PlatformViewsController platformViewsController;
   PlatformViewsController2 platformViewsController2;
@@ -48,6 +51,35 @@ public class PlatformViewsControllerDelegator implements PlatformViewsAccessibil
     platformViewsController2.detachAccessibilityBridge();
   }
 
+  @Override
+  public void createPlatformView(@NonNull PlatformViewsChannel3.PlatformViewCreationRequest request) {
+
+  }
+
+  @Override
+  public void dispose(int viewId) {
+
+  }
+
+  @Override
+  public void onTouch(@NonNull PlatformViewsChannel3.PlatformViewTouch touch) {
+
+  }
+
+  @Override
+  public void setDirection(int viewId, int direction) {
+
+  }
+
+  @Override
+  public void clearFocus(int viewId) {
+
+  }
+
+  @Override
+  public boolean isSurfaceControlEnabled() {
+    return false;
+  }
 
 
   // TODO(gmackall) Can we define a common interface, allowing us to do something like this?

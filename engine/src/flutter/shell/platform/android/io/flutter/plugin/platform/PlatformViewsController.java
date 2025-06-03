@@ -33,7 +33,9 @@ import io.flutter.embedding.engine.FlutterOverlaySurface;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.mutatorsstack.*;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
+import io.flutter.embedding.engine.systemchannels.PlatformViewTouch;
 import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel;
+import io.flutter.embedding.engine.systemchannels.UnifiedPlatformViewsHandler;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.editing.TextInputPlugin;
@@ -161,48 +163,14 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
 
   private static boolean enableSurfaceProducerRenderTarget = true;
 
-  private final PlatformViewsChannel.PlatformViewsHandler channelHandler =
-      new PlatformViewsChannel.PlatformViewsHandler() {
+  private final UnifiedPlatformViewsHandler channelHandler =
+      new UnifiedPlatformViewsHandler() {
 
         private String detailedExceptionString(Exception exception) {
           return Log.getStackTraceString(exception);
         }
 
         // START - cleanup required here.
-
-        @Override
-        public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-
-          Log.v(TAG, "Received '" + call.method + "' message.");
-          switch (call.method) {
-            case "create":
-              createNew(call, result);
-              break;
-            case "dispose":
-              disposeNew(call, result);
-              break;
-            case "resize":
-              resizeNew(call, result);
-              break;
-            case "offset":
-              offsetNew(call, result);
-              break;
-            case "touch":
-              touchNew(call, result);
-              break;
-            case "setDirection":
-              setDirectionNew(call, result);
-              break;
-            case "clearFocus":
-              clearFocusNew(call, result);
-              break;
-            case "synchronizeToNativeViewHierarchy":
-              synchronizeToNativeViewHierarchyNew(call, result);
-              break;
-            default:
-              result.notImplemented();
-          }
-        }
 
         private void createNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
           final Map<String, Object> createArgs = call.arguments();
@@ -318,8 +286,8 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
 
         private void touchNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
           List<Object> args = call.arguments();
-          PlatformViewsChannel.PlatformViewTouch touch =
-                  new PlatformViewsChannel.PlatformViewTouch(
+          PlatformViewTouch touch =
+                  new PlatformViewTouch(
                           (int) args.get(0),
                           (Number) args.get(1),
                           (Number) args.get(2),
@@ -359,13 +327,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
         }
 
         private void clearFocusNew(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-          int viewId = call.arguments();
-          try {
-            clearFocus(viewId);
-            result.success(null);
-          } catch (IllegalStateException exception) {
-            result.error("error", detailedExceptionString(exception), null);
-          }
+
         }
 
         private void synchronizeToNativeViewHierarchyNew(
@@ -621,7 +583,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
         }
 
         @Override
-        public void onTouch(@NonNull PlatformViewsChannel.PlatformViewTouch touch) {
+        public void onTouch(@NonNull PlatformViewTouch touch) {
           final int viewId = touch.viewId;
           final float density = context.getResources().getDisplayMetrics().density;
 
