@@ -371,10 +371,12 @@ class FlutterPlugin : Plugin<Project> {
                 projectToAddTasksTo.extensions.findByName("android") as AbstractAppExtension
             android.applicationVariants.configureEach {
                 val variant = this
+                print("HI GRAY, EARLIER, FLAVORNAME IS ${flavorName}")
                 val assembleTask = variant.assembleProvider.get()
                 if (!FlutterPluginUtils.shouldConfigureFlutterTask(
                         projectToAddTasksTo,
-                        assembleTask
+                        assembleTask,
+                        variant.flavorName
                     )
                 ) {
                     return@configureEach
@@ -653,6 +655,7 @@ class FlutterPlugin : Plugin<Project> {
 
             val variantBuildMode: String = FlutterPluginUtils.buildModeFor(variant.buildType)
             val flavorValue: String = variant.flavorName
+            print("HI GRAY FLAVOR IS ${flavorValue}");
             val taskName: String =
                 FlutterPluginUtils.toCamelCase(
                     listOf(

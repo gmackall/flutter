@@ -250,13 +250,21 @@ object FlutterPluginUtils {
     @JvmName("shouldConfigureFlutterTask")
     internal fun shouldConfigureFlutterTask(
         project: Project,
-        assembleTask: Task
+        assembleTask: Task,
+        flavorName: String? = null
     ): Boolean {
         val cliTasksNames = project.gradle.startParameter.taskNames
-        if (cliTasksNames.size != 1 || !cliTasksNames.first().contains("assemble")) {
+        if (cliTasksNames.size != 1) {
             return true
         }
-        val taskName = cliTasksNames.first().split(":").last()
+        val cliTaskName = cliTasksNames.first()
+        if (flavorName != null && !cliTaskName.contains(flavorName)) {
+            return false
+        }
+        if (cliTaskName.contains("assemble")) {
+            return true
+        }
+        val taskName = cliTaskName.split(":").last()
         if (taskName == "assemble") {
             return true
         }
