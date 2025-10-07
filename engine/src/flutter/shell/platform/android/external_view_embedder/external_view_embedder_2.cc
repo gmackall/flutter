@@ -69,10 +69,10 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
   TRACE_EVENT0("flutter", "AndroidExternalViewEmbedder2::SubmitFlutterView");
-  FML_LOG(ERROR) << "Submitting Flutter view with "
-                << composition_order_.size() << " platform views.";
+  FML_LOG(ERROR) << "Submitting Flutter view with " << composition_order_.size()
+                 << " platform views.";
 
-   if (!FrameHasPlatformLayers()) {
+  if (!FrameHasPlatformLayers()) {
     frame->Submit();
 
     // Compute which views need to be cleared (they were visible last frame but
@@ -90,11 +90,10 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         [&, composition_order = composition_order_, view_params = view_params_,
          jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
          views_to_clear = std::move(views_to_clear)]() mutable -> void {
-          FinalizeFrame(
-              std::move(jni_facade), device_pixel_ratio,
-              std::move(composition_order), std::move(view_params),
-              /*overlay_layer_has_content_this_frame=*/false,
-              std::move(views_to_clear));
+          FinalizeFrame(std::move(jni_facade), device_pixel_ratio,
+                        std::move(composition_order), std::move(view_params),
+                        /*overlay_layer_has_content_this_frame=*/false,
+                        std::move(views_to_clear));
         }));
 
     // Update last-frame visible set after scheduling FinalizeFrame.
@@ -222,29 +221,26 @@ void AndroidExternalViewEmbedder2::FinalizeFrame(
   // Display/update views that are visible this frame.
   for (int64_t view_id : composition_order) {
     DlRect view_rect = GetViewRect(view_id, view_params);
-    FML_LOG(ERROR) << "Finalizing platform view " << view_id << " at "
-                   << view_rect.GetX() << ", " << view_rect.GetY() << " "
-                   << view_rect.GetWidth() << "x" << view_rect.GetHeight()
-                   << "with viewWidth and height " +
-                          std::to_string(view_params.at(view_id)
-                                             .sizePoints()
-                                             .width *
-                                         device_pixel_ratio) +
-                          "x" +
-                          std::to_string(view_params.at(view_id)
-                                             .sizePoints()
-                                             .height *
-                                         device_pixel_ratio);
+    FML_LOG(ERROR)
+        << "Finalizing platform view " << view_id << " at " << view_rect.GetX()
+        << ", " << view_rect.GetY() << " " << view_rect.GetWidth() << "x"
+        << view_rect.GetHeight()
+        << "with viewWidth and height " +
+               std::to_string(view_params.at(view_id).sizePoints().width *
+                              device_pixel_ratio) +
+               "x" +
+               std::to_string(view_params.at(view_id).sizePoints().height *
+                              device_pixel_ratio);
     const EmbeddedViewParams& params = view_params.at(view_id);
     jni_facade_->onDisplayPlatformView2(
-        view_id,                                 //
-        view_rect.GetX(),                        //
-        view_rect.GetY(),                        //
-        view_rect.GetWidth(),                    //
-        view_rect.GetHeight(),                   //
+        view_id,                //
+        view_rect.GetX(),       //
+        view_rect.GetY(),       //
+        view_rect.GetWidth(),   //
+        view_rect.GetHeight(),  //
         params.sizePoints().width * device_pixel_ratio,
         params.sizePoints().height * device_pixel_ratio,
-        params.mutatorsStack()                   //
+        params.mutatorsStack()  //
     );
   }
 
@@ -263,15 +259,14 @@ void AndroidExternalViewEmbedder2::FinalizeFrame(
       continue;
     }
     const EmbeddedViewParams& params = it->second;
-    jni_facade_->onDisplayPlatformView2(
-        view_id,  //
-        0,        // x
-        0,        // y
-        0,        // width
-        0,        // height
-        0,        // view width in px
-        0,        // view height in px
-        params.mutatorsStack());
+    jni_facade_->onDisplayPlatformView2(view_id,  //
+                                        0,        // x
+                                        0,        // y
+                                        0,        // width
+                                        0,        // height
+                                        0,        // view width in px
+                                        0,        // view height in px
+                                        params.mutatorsStack());
   }
 
   jni_facade_->onEndFrame2();
