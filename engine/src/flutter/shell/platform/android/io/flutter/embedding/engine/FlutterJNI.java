@@ -12,7 +12,9 @@ import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.ColorSpace;
 import android.graphics.ImageDecoder;
+import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
+import android.media.ExifInterface;
 import android.os.Build;
 import android.os.Looper;
 import android.util.DisplayMetrics;
@@ -43,7 +45,9 @@ import io.flutter.util.Preconditions;
 import io.flutter.view.AccessibilityBridge;
 import io.flutter.view.FlutterCallbackInformation;
 import io.flutter.view.TextureRegistry;
+import java.io.BufferedInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -552,28 +556,149 @@ public class FlutterJNI {
   @Nullable
   public static Bitmap decodeImage(@NonNull ByteBuffer buffer, long imageGeneratorAddress) {
     if (Build.VERSION.SDK_INT >= API_LEVELS.API_28) {
+      final int exifOrientation = readExifOrientationFromByteBuffer(buffer);
+      Log.e("HI GRAY", "buffer has array? " + buffer.hasArray());
       ImageDecoder.Source source = ImageDecoder.createSource(buffer);
       try {
-        return ImageDecoder.decodeBitmap(
-            source,
-            (decoder, info, src) -> {
-              // i.e. ARGB_8888
-              decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB));
-              // TODO(bdero): Switch to ALLOCATOR_HARDWARE for devices that have
-              // `AndroidBitmap_getHardwareBuffer` (API 30+) available once Skia supports
-              // `SkImage::MakeFromAHardwareBuffer` via dynamic lookups:
-              // https://skia-review.googlesource.com/c/skia/+/428960
-              decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+        Bitmap decoded =
+            ImageDecoder.decodeBitmap(
+                source,
+                (decoder, info, src) -> {
+                  // i.e. ARGB_8888
+                  decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB));
+                  // TODO(bdero): Switch to ALLOCATOR_HARDWARE for devices that have
+                  // `AndroidBitmap_getHardwareBuffer` (API 30+) available once Skia supports
+                  // `SkImage::MakeFromAHardwareBuffer` via dynamic lookups:
+                  // https://skia-review.googlesource.com/c/skia/+/428960
+                  decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
 
-              Size size = info.getSize();
-              nativeImageHeaderCallback(imageGeneratorAddress, size.getWidth(), size.getHeight());
-            });
+                  Size size = info.getSize();
+                  nativeImageHeaderCallback(
+                      imageGeneratorAddress, size.getWidth(), size.getHeight());
+                });
+        Log.e("HI GRAY", "before returning in jni, and the exif data says" + exifOrientation);
+        return applyExifFlipIfNeeded(decoded, exifOrientation);
       } catch (IOException e) {
         Log.e(TAG, "Failed to decode image", e);
         return null;
       }
     }
     return null;
+  }
+
+  // Reads EXIF TAG_ORIENTATION from the compressed bytes in the ByteBuffer without changing
+  // the caller's buffer state.
+  private static int readExifOrientationFromByteBuffer(@NonNull ByteBuffer original) {
+    // Make a read-only duplicate that shares content but has independent position/limit.
+    ByteBuffer dup = original.asReadOnlyBuffer();
+    // Preserve the caller's window of bytes (position..limit) as the image payload.
+    dup.position(original.position());
+    dup.limit(original.limit());
+
+    try (InputStream in = new BufferedInputStream(new ByteBufferBackedInputStream(dup))) {
+      ExifInterface exif = null;
+      if (Build.VERSION.SDK_INT >= API_LEVELS.API_24) {
+        exif = new ExifInterface(in);
+      }
+      return exif.getAttributeInt(
+          ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED);
+    } catch (Throwable t) {
+      // On any failure, treat as undefined orientation.
+      Log.e("hi gray", "WE THROWING!!!");
+      return ExifInterface.ORIENTATION_UNDEFINED;
+    }
+  }
+
+  private static boolean isFlipCase(int orientation) {
+    switch (orientation) {
+      case ExifInterface.ORIENTATION_FLIP_HORIZONTAL: // 2
+      case ExifInterface.ORIENTATION_FLIP_VERTICAL: // 4
+      case ExifInterface.ORIENTATION_TRANSPOSE: // 5 (rotate 90 + flip H)
+      case ExifInterface.ORIENTATION_TRANSVERSE: // 7 (rotate 270 + flip H)
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // ImageDecoder generally applies rotation (3/6/8). It often does not apply mirror/flip (2/4/5/7).
+  // For 5 and 7, ImageDecoder should have already applied the 90/270 rotation,
+  // so we only need a horizontal mirror to complete the transform.
+  private static Bitmap applyExifFlipIfNeeded(Bitmap decoded, int exifOrientation) {
+    if (decoded == null || !isFlipCase(exifOrientation)) {
+      Log.e("hi gray", "HI GRAY, is not flip case i suppose?");
+      return decoded;
+    }
+    Log.e("HI GRAY", "not returning early, should be flipping!");
+
+    int w = decoded.getWidth();
+    int h = decoded.getHeight();
+    Matrix m = new Matrix();
+
+    // I don't know if these are all right
+    switch (exifOrientation) {
+      case ExifInterface.ORIENTATION_FLIP_HORIZONTAL: // 2
+        m.setScale(-1f, 1f, w / 2f, h / 2f);
+        break;
+      case ExifInterface.ORIENTATION_FLIP_VERTICAL: // 4
+        m.setScale(1f, -1f, w / 2f, h / 2f);
+        break;
+      case ExifInterface.ORIENTATION_TRANSPOSE: // 5
+        m.setScale(1f, -1f, w / 2f, h / 2f);
+        break;
+      case ExifInterface.ORIENTATION_TRANSVERSE: // 7
+        m.setScale(-1f, 1f, w / 2f, h / 2f);
+        break;
+      default:
+        return decoded;
+    }
+
+    Bitmap flipped = Bitmap.createBitmap(decoded, 0, 0, w, h, m, /*filter=*/ true);
+    if (flipped != decoded) {
+      decoded.recycle();
+    }
+    return flipped;
+  }
+
+  // Minimal InputStream over a ByteBuffer duplicate. Does not modify the original ByteBuffer.
+  // copied from online, seems to work!
+  private static final class ByteBufferBackedInputStream extends InputStream {
+    private final ByteBuffer buf;
+
+    ByteBufferBackedInputStream(ByteBuffer buffer) {
+      // Use a slice starting at current position to limit to remaining bytes.
+      this.buf = buffer.slice();
+    }
+
+    @Override
+    public int read() {
+      if (!buf.hasRemaining()) {
+        return -1;
+      }
+      return buf.get() & 0xFF;
+    }
+
+    @Override
+    public int read(byte[] bytes, int off, int len) {
+      if (!buf.hasRemaining()) {
+        return -1;
+      }
+      int toRead = Math.min(len, buf.remaining());
+      buf.get(bytes, off, toRead);
+      return toRead;
+    }
+
+    @Override
+    public long skip(long n) {
+      int k = (int) Math.min(n, buf.remaining());
+      buf.position(buf.position() + k);
+      return k;
+    }
+
+    @Override
+    public int available() {
+      return buf.remaining();
+    }
   }
 
   // Called by native to notify first Flutter frame rendered.
