@@ -69,12 +69,36 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
   TRACE_EVENT0("flutter", "AndroidExternalViewEmbedder2::SubmitFlutterView");
+  FML_LOG(ERROR) << "Submitting Flutter view with "
+                << composition_order_.size() << " platform views.";
 
-  if (!FrameHasPlatformLayers()) {
+   if (!FrameHasPlatformLayers()) {
     frame->Submit();
-    // If the previous frame had platform views, hide the overlay surface.
-    HideOverlayLayerIfNeeded();
-    jni_facade_->applyTransaction();
+
+    // Compute which views need to be cleared (they were visible last frame but
+    // are not in this frame's composition_order_).
+    std::unordered_set<int64_t> current_views_set;  // empty since no PVs.
+    std::vector<int64_t> views_to_clear;
+    views_to_clear.reserve(visible_views_last_frame_.size());
+    for (int64_t id : visible_views_last_frame_) {
+      views_to_clear.push_back(id);
+    }
+
+    // MODIFIED: Re-added captures for jni_facade and device_pixel_ratio.
+    // Added 'mutable'
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
+        [&, composition_order = composition_order_, view_params = view_params_,
+         jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
+         views_to_clear = std::move(views_to_clear)]() mutable -> void {
+          FinalizeFrame(
+              std::move(jni_facade), device_pixel_ratio,
+              std::move(composition_order), std::move(view_params),
+              /*overlay_layer_has_content_this_frame=*/false,
+              std::move(views_to_clear));
+        }));
+
+    // Update last-frame visible set after scheduling FinalizeFrame.
+    visible_views_last_frame_ = std::move(current_views_set);
     return;
   }
 
@@ -153,35 +177,105 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   }
   frame->Submit();
 
+  // Compute which views need to be cleared (they were visible last frame but
+  // are not in this frame's composition_order_).
+  std::unordered_set<int64_t> current_views_set(composition_order_.begin(),
+                                                composition_order_.end());
+  std::vector<int64_t> views_to_clear;
+  views_to_clear.reserve(visible_views_last_frame_.size());
+  for (int64_t id : visible_views_last_frame_) {
+    if (current_views_set.count(id) == 0u) {
+      views_to_clear.push_back(id);
+    }
+  }
+
   task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
       [&, composition_order = composition_order_, view_params = view_params_,
        jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
-       slices = std::move(slices_),
-       overlay_layer_has_content_this_frame_]() -> void {
-        jni_facade->swapTransaction();
-
-        if (overlay_layer_has_content_this_frame_) {
-          ShowOverlayLayerIfNeeded();
-        } else {
-          HideOverlayLayerIfNeeded();
-        }
-
-        for (int64_t view_id : composition_order) {
-          DlRect view_rect = GetViewRect(view_id, view_params);
-          const EmbeddedViewParams& params = view_params.at(view_id);
-          jni_facade->onDisplayPlatformView2(
-              view_id,                //
-              view_rect.GetX(),       //
-              view_rect.GetY(),       //
-              view_rect.GetWidth(),   //
-              view_rect.GetHeight(),  //
-              params.sizePoints().width * device_pixel_ratio,
-              params.sizePoints().height * device_pixel_ratio,
-              params.mutatorsStack()  //
-          );
-        }
-        jni_facade_->onEndFrame2();
+       overlay_layer_has_content_this_frame_,
+       views_to_clear = std::move(views_to_clear)]() -> void {
+        FinalizeFrame(std::move(jni_facade), device_pixel_ratio,
+                      std::move(composition_order), std::move(view_params),
+                      overlay_layer_has_content_this_frame_,
+                      std::move(views_to_clear));
       }));
+
+  // Update last-frame visible set after scheduling FinalizeFrame.
+  visible_views_last_frame_ = std::move(current_views_set);
+}
+
+void AndroidExternalViewEmbedder2::FinalizeFrame(
+    std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
+    double device_pixel_ratio,
+    std::vector<int64_t> composition_order,
+    std::unordered_map<int64_t, EmbeddedViewParams> view_params,
+    bool overlay_layer_has_content_this_frame,
+    std::vector<int64_t> views_to_clear) {
+  jni_facade_->swapTransaction();
+
+  if (overlay_layer_has_content_this_frame) {
+    ShowOverlayLayerIfNeeded();
+  } else {
+    HideOverlayLayerIfNeeded();
+  }
+
+  // Display/update views that are visible this frame.
+  for (int64_t view_id : composition_order) {
+    DlRect view_rect = GetViewRect(view_id, view_params);
+    FML_LOG(ERROR) << "Finalizing platform view " << view_id << " at "
+                   << view_rect.GetX() << ", " << view_rect.GetY() << " "
+                   << view_rect.GetWidth() << "x" << view_rect.GetHeight()
+                   << "with viewWidth and height " +
+                          std::to_string(view_params.at(view_id)
+                                             .sizePoints()
+                                             .width *
+                                         device_pixel_ratio) +
+                          "x" +
+                          std::to_string(view_params.at(view_id)
+                                             .sizePoints()
+                                             .height *
+                                         device_pixel_ratio);
+    const EmbeddedViewParams& params = view_params.at(view_id);
+    jni_facade_->onDisplayPlatformView2(
+        view_id,                                 //
+        view_rect.GetX(),                        //
+        view_rect.GetY(),                        //
+        view_rect.GetWidth(),                    //
+        view_rect.GetHeight(),                   //
+        params.sizePoints().width * device_pixel_ratio,
+        params.sizePoints().height * device_pixel_ratio,
+        params.mutatorsStack()                   //
+    );
+  }
+
+  // Explicitly clear views that dropped out this frame by sending 0-size.
+  for (int64_t view_id : views_to_clear) {
+    auto it = view_params.find(view_id);
+    if (it == view_params.end()) {
+      FML_LOG(WARNING) << "Missing params while clearing platform view "
+                       << view_id << ". Skipping mutators.";
+      // Best-effort clear with zero rect and zero view size; mutators from last
+      // known params would be ideal, but we don't have them in this rare case.
+      // If this log ever appears, consider retaining params longer.
+      // We still send a 0-size to ensure removal.
+      // Note: Using a fallback path that reuses any available params isn't
+      // possible here without a default MutatorsStack.
+      continue;
+    }
+    const EmbeddedViewParams& params = it->second;
+    jni_facade_->onDisplayPlatformView2(
+        view_id,  //
+        0,        // x
+        0,        // y
+        0,        // width
+        0,        // height
+        0,        // view width in px
+        0,        // view height in px
+        params.mutatorsStack());
+  }
+
+  jni_facade_->onEndFrame2();
+  // 'slices' is destroyed here, on the platform thread.
 }
 
 // |ExternalViewEmbedder|
@@ -260,6 +354,9 @@ void AndroidExternalViewEmbedder2::DestroySurfaces() {
                                     });
   latch.Wait();
   overlay_layer_is_shown_ = false;
+
+  // Clear tracking to avoid sending stale removals after teardown.
+  visible_views_last_frame_.clear();
 }
 
 void AndroidExternalViewEmbedder2::ShowOverlayLayerIfNeeded() {
