@@ -6,6 +6,7 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_EXTERNAL_VIEW_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_2_H_
 
 #include <unordered_map>
+#include <unordered_set>
 
 #include "flutter/common/task_runners.h"
 #include "flutter/flow/embedded_views.h"
@@ -135,6 +136,11 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   // mutation stack.
   std::unordered_map<int64_t, EmbeddedViewParams> view_params_;
 
+  // Tracks the set of platform view IDs that were visible in the last
+  // successfully submitted frame, so we can send a 0-size update when
+  // they drop out of composition_order on a subsequent frame.
+  std::unordered_set<int64_t> visible_views_last_frame_;
+
   // Destroys the surfaces created from the surface factory.
   // This method schedules a task on the platform thread, and waits for
   // the task until it completes.
@@ -152,6 +158,14 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   // Hides the overlay layer if it does not have content and the previous
   // frame did have content.
   void HideOverlayLayerIfNeeded();
+
+  void FinalizeFrame(
+      std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
+      double device_pixel_ratio,
+      std::vector<int64_t> composition_order,
+      std::unordered_map<int64_t, EmbeddedViewParams> view_params,
+      bool overlay_layer_has_content_this_frame,
+      std::vector<int64_t> views_to_clear);
 };
 
 }  // namespace flutter
