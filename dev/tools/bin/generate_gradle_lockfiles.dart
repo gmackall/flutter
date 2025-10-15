@@ -15,6 +15,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:file/file.dart';
 import 'package:file/local.dart';
+import 'package:xml/xml.dart';
 import 'package:yaml/yaml.dart';
 
 void main(List<String> arguments) {
@@ -203,6 +204,10 @@ void main(List<String> arguments) {
     // Generate lock files.
     exec(gradleWrapper.absolute.path, <String>[
       ':generateLockfiles',
+      '-Plocal-engine-build-mode=debug',
+      '-Plocal-engine-out=/Users/mackall/development/flutter/engine/src/out/android_debug_arm64',
+      '-Plocal-engine-host-out=/Users/mackall/development/flutter/engine/src/out/host_debug',
+      '-Plocal-engine-repo=${_getLocalEngineRepo(engineOutPath: '/Users/mackall/development/flutter/engine/src/out/android_debug_arm64', fileSystem: fileSystem)}'
     ], workingDirectory: androidDirectory.absolute.path);
 
     print('Processed');
@@ -215,6 +220,110 @@ String exec(String cmd, List<String> args, {String? workingDirectory}) {
     throw ProcessException(cmd, args, '${result.stdout}${result.stderr}', result.exitCode);
   }
   return result.stdout as String;
+}
+
+/// Returns the local Maven repository for a local engine build.
+/// For example, if the engine is built locally at `<home>/engine/src/out/android_release_unopt`.
+/// This method generates symlinks in the temp directory to the engine artifacts
+/// following the convention specified on https://maven.apache.org/pom.html#Repositories.
+Directory _getLocalEngineRepo({
+  required String engineOutPath,
+  required FileSystem fileSystem,
+}) {
+  final String abi = _getAbiByLocalEnginePath(engineOutPath);
+  final Directory localEngineRepo = fileSystem.systemTempDirectory.createTempSync(
+    'flutter_tool_local_engine_repo.',
+  );
+  const String buildMode = 'debug'; // change if needed
+  final String artifactVersion = _getLocalArtifactVersion(
+    fileSystem.path.join(engineOutPath, 'flutter_embedding_$buildMode.pom'),
+    fileSystem,
+  );
+  for (final artifact in const <String>['pom', 'jar']) {
+    // The Android embedding artifacts.
+    _createSymlink(
+      fileSystem.path.join(engineOutPath, 'flutter_embedding_$buildMode.$artifact'),
+      fileSystem.path.join(
+        localEngineRepo.path,
+        'io',
+        'flutter',
+        'flutter_embedding_$buildMode',
+        artifactVersion,
+        'flutter_embedding_$buildMode-$artifactVersion.$artifact',
+      ),
+      fileSystem,
+    );
+    // The engine artifacts (libflutter.so).
+    _createSymlink(
+      fileSystem.path.join(engineOutPath, '${abi}_$buildMode.$artifact'),
+      fileSystem.path.join(
+        localEngineRepo.path,
+        'io',
+        'flutter',
+        '${abi}_$buildMode',
+        artifactVersion,
+        '${abi}_$buildMode-$artifactVersion.$artifact',
+      ),
+      fileSystem,
+    );
+  }
+  for (final artifact in <String>['flutter_embedding_$buildMode', '${abi}_$buildMode']) {
+    _createSymlink(
+      fileSystem.path.join(engineOutPath, '$artifact.maven-metadata.xml'),
+      fileSystem.path.join(localEngineRepo.path, 'io', 'flutter', artifact, 'maven-metadata.xml'),
+      fileSystem,
+    );
+  }
+  return localEngineRepo;
+}
+
+String _getAbiByLocalEnginePath(String engineOutPath) {
+  var result = 'armeabi_v7a';
+  if (engineOutPath.contains('x64')) {
+    result = 'x86_64';
+  } else if (engineOutPath.contains('arm64')) {
+    result = 'arm64_v8a';
+  }
+  return result;
+}
+
+void _createSymlink(String targetPath, String linkPath, FileSystem fileSystem) {
+  final File targetFile = fileSystem.file(targetPath);
+  if (!targetFile.existsSync()) {
+    throw Error(); // oh well
+  }
+  final File linkFile = fileSystem.file(linkPath);
+  final Link symlink = linkFile.parent.childLink(linkFile.basename);
+  try {
+    symlink.createSync(targetPath, recursive: true);
+  } on FileSystemException catch (exception) {
+    throw Error(); // oh well
+  }
+}
+
+String _getLocalArtifactVersion(String pomPath, FileSystem fileSystem) {
+  final File pomFile = fileSystem.file(pomPath);
+  if (!pomFile.existsSync()) {
+    throw Error();
+  }
+  XmlDocument document;
+  try {
+    document = XmlDocument.parse(pomFile.readAsStringSync());
+  } on XmlException {
+    // oh well
+    throw Error();
+  } on FileSystemException {
+    // oh well
+    throw Error();
+  }
+  final Iterable<XmlElement> project = document.findElements('project');
+  assert(project.isNotEmpty);
+  for (final XmlElement versionElement in document.findAllElements('version')) {
+    if (versionElement.parent == project.first) {
+      return versionElement.innerText;
+    }
+  }
+  throw Error(); // oh well
 }
 
 const String rootGradleFileContent = r'''

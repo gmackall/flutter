@@ -22,6 +22,7 @@ dependencies:
   file: any
   platform: any
   yaml_edit: any
+  xml: ^6.5.0
 
 dev_dependencies:
   test: any
