@@ -348,11 +348,13 @@ class FlutterPlugin : Plugin<Project> {
                         val gradlew: String =
                             getExecutableNameForPlatform("${rootProject.projectDir}/gradlew")
                         val execOps = rootProject.serviceOf<ExecOperations>()
-                        print(subproject.name)
+                        println(subproject.name)
 
                         // 3. Combine your base arguments with the new extra arguments
                         val allArgs = listOf(":${subproject.name}:dependencies", "--write-locks") + extraArgsList
 
+                        println("hi gray, next we have the extra args")
+                        println(extraArgsList)
                         execOps.exec {
                             workingDir(rootProject.projectDir)
                             executable(gradlew)
