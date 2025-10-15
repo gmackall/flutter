@@ -201,13 +201,15 @@ void main(List<String> arguments) {
       exec(flutterPath, <String>['build', 'apk', '--config-only'], workingDirectory: appDirectory);
     }
 
+    final Directory localEngineRepo = _getLocalEngineRepo(engineOutPath: '/Users/mackall/development/flutter/engine/src/out/android_release_arm64', fileSystem: fileSystem);
+
     // Generate lock files.
     exec(gradleWrapper.absolute.path, <String>[
       ':generateLockfiles',
       '-Plocal-engine-build-mode=debug',
-      '-Plocal-engine-out=/Users/mackall/development/flutter/engine/src/out/android_debug_arm64',
-      '-Plocal-engine-host-out=/Users/mackall/development/flutter/engine/src/out/host_debug',
-      '-Plocal-engine-repo=${_getLocalEngineRepo(engineOutPath: '/Users/mackall/development/flutter/engine/src/out/android_debug_arm64', fileSystem: fileSystem)}'
+      '-Plocal-engine-out=/Users/mackall/development/flutter/engine/src/out/android_release_arm64',
+      '-Plocal-engine-host-out=/Users/mackall/development/flutter/engine/src/out/host_release',
+      '-Plocal-engine-repo=${localEngineRepo.path}'
     ], workingDirectory: androidDirectory.absolute.path);
 
     print('Processed');
@@ -234,7 +236,7 @@ Directory _getLocalEngineRepo({
   final Directory localEngineRepo = fileSystem.systemTempDirectory.createTempSync(
     'flutter_tool_local_engine_repo.',
   );
-  const String buildMode = 'debug'; // change if needed
+  const String buildMode = 'release'; // change if needed
   final String artifactVersion = _getLocalArtifactVersion(
     fileSystem.path.join(engineOutPath, 'flutter_embedding_$buildMode.pom'),
     fileSystem,

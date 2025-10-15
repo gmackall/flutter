@@ -67,6 +67,7 @@ class FlutterPlugin : Plugin<Project> {
             throw GradleException("flutter.sdk must point to the Flutter SDK directory")
         }
 
+        println("hi gray should use local engine? " + FlutterPluginUtils.shouldProjectUseLocalEngine(project))
         engineVersion =
             if (FlutterPluginUtils.shouldProjectUseLocalEngine(project)) {
                 "+" // Match any version since there's only one.
@@ -332,14 +333,31 @@ class FlutterPlugin : Plugin<Project> {
         try {
             rootProject.tasks.register("generateLockfiles") {
                 doLast {
+                    // 1. Get the extra arguments from the project property.
+                    //    This will be null if -PextraArgs is not provided.
+                    val extraArgsProperty: String? = rootProject.findProperty("extraArgs") as? String
+
+                    // 2. Split the string into a list of arguments.
+                    //    This safely handles the case where the property is not set.
+                    val extraArgsList: List<String> = extraArgsProperty
+                        ?.split(' ')
+                        ?.filter { it.isNotBlank() } // Remove empty strings if there are double spaces
+                        ?: emptyList() // Default to an empty list
+
                     rootProject.subprojects.forEach { subproject ->
                         val gradlew: String =
                             getExecutableNameForPlatform("${rootProject.projectDir}/gradlew")
                         val execOps = rootProject.serviceOf<ExecOperations>()
+                        print(subproject.name)
+
+                        // 3. Combine your base arguments with the new extra arguments
+                        val allArgs = listOf(":${subproject.name}:dependencies", "--write-locks") + extraArgsList
+
                         execOps.exec {
                             workingDir(rootProject.projectDir)
                             executable(gradlew)
-                            args(":${subproject.name}:dependencies", "--write-locks")
+                            // 4. Pass the combined list to the exec action
+                            args(allArgs)
                         }
                     }
                 }
