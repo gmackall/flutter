@@ -2484,6 +2484,16 @@ targets:
         ["devicelab", "android", "linux", "pixel", "7pro"]
       task_name: channels_integration_test
 
+  - name: Linux_pixel_7pro embedded_android_views_integration_test
+    bringup: true
+    recipe: devicelab/devicelab_drone
+    presubmit: false
+    timeout: 60
+    properties:
+      tags: >
+        ["devicelab", "android", "linux", "pixel", "7pro"]
+      task_name: embedded_android_views_integration_test
+
   # linux mokey benchmark
   - name: Linux_mokey clipper_cache_perf__e2e_summary
     recipe: devicelab/devicelab_drone
