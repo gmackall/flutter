@@ -43,6 +43,11 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
       view_params_.at(view_id) == *params.get()) {
     return;
   }
+  FML_LOG(ERROR) << "Updating view params for view id " << view_id << " to x="
+                 << params->finalBoundingRect().GetX() << " y="
+                 << params->finalBoundingRect().GetY() << " w="
+                 << params->finalBoundingRect().GetWidth() << " h="
+                 << params->finalBoundingRect().GetHeight();
   view_params_.insert_or_assign(view_id, EmbeddedViewParams(*params.get()));
 }
 
