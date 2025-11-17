@@ -34,8 +34,8 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
 
   DlRect view_bounds = DlRect::MakeSize(frame_size_);
   // Print out the view bounds for debugging.
-  FML_LOG(ERROR) << "PrerollCompositeEmbeddedView for view id " << view_id
-                 << " with bounds " << view_bounds;
+  // FML_LOG(ERROR) << "PrerollCompositeEmbeddedView for view id " << view_id
+  //                << " with bounds " << view_bounds;
   std::unique_ptr<EmbedderViewSlice> view;
   view = std::make_unique<DisplayListEmbedderViewSlice>(view_bounds);
   slices_.insert_or_assign(view_id, std::move(view));
