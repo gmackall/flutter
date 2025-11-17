@@ -33,6 +33,9 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
                "AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView");
 
   DlRect view_bounds = DlRect::MakeSize(frame_size_);
+  // Print out the view bounds for debugging.
+  FML_LOG(ERROR) << "PrerollCompositeEmbeddedView for view id " << view_id
+                 << " with bounds " << view_bounds;
   std::unique_ptr<EmbedderViewSlice> view;
   view = std::make_unique<DisplayListEmbedderViewSlice>(view_bounds);
   slices_.insert_or_assign(view_id, std::move(view));
@@ -97,6 +100,7 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   std::unordered_map<int64_t, DlRect> view_rects;
   for (auto platform_id : composition_order_) {
     view_rects[platform_id] = GetViewRect(platform_id, view_params_);
+    // problem not here
   }
 
   std::unordered_map<int64_t, DlRect> overlay_layers =
@@ -105,6 +109,12 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
                  slices_,             //
                  view_rects           //
       );
+  // Loop over overlay_layers and print out the rects for debugging.
+  for (const auto& overlay : overlay_layers) {
+    FML_LOG(ERROR) << "HI GRAY, OVERLAY LAYER for view id " << overlay.first
+                   << " rect: " << overlay.second.GetLeftTop() << " - "
+                   << overlay.second.GetRightBottom();
+  }
 
   // If there is no overlay Surface, initialize one on the platform thread. This
   // will only be done once per application launch, as the singular overlay
@@ -196,6 +206,13 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
               params.sizePoints().height * device_pixel_ratio,
               params.mutatorsStack()  //
           );
+          FML_LOG(ERROR) << "Displaying platform view id " << view_id
+                         << " at x=" << view_rect.GetX() << " y="
+                         << view_rect.GetY() << " w=" << view_rect.GetWidth()
+                         << " h=" << view_rect.GetHeight() << " params w="
+                         << params.sizePoints().width * device_pixel_ratio
+                         << " h="
+                         << params.sizePoints().height * device_pixel_ratio;
           // Remove from views visible last frame, so we can hide the rest.
           views_visible_last_frame.erase(view_id);
         }
