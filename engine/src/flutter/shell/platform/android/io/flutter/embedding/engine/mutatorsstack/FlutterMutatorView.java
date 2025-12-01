@@ -20,6 +20,8 @@ import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
+
+import io.flutter.Log;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.util.ViewUtils;
 
@@ -108,6 +110,7 @@ public class FlutterMutatorView extends FrameLayout {
     layoutParams.topMargin = top;
     setLayoutParams(layoutParams);
     setWillNotDraw(false);
+    Log.e("HI GRAY", "in FlutterMutatorView.java, dimensions are " + width + " " + height + " " + left + " " + top);
   }
 
   @Override
@@ -122,6 +125,7 @@ public class FlutterMutatorView extends FrameLayout {
       // the final offset. We should reverse this final offset, both as a translate mutation and to
       // all the clipping paths
       Path pathCopy = new Path(path);
+      Log.e("HI GRAY", "undoing offset: " + left + " " + top);
       pathCopy.offset(-left, -top);
       canvas.clipPath(pathCopy);
     }

@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.h"
 #include "display_list/dl_color.h"
+#include "display_list/geometry/dl_geometry_types.h"
 #include "flow/view_slicer.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/trace_event.h"
@@ -100,7 +101,11 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   std::unordered_map<int64_t, DlRect> view_rects;
   for (auto platform_id : composition_order_) {
     view_rects[platform_id] = GetViewRect(platform_id, view_params_);
-    // problem not here
+    FML_LOG(ERROR) << "HI GRAY, VIEW RECT for view id " << platform_id
+                   << " rect: (" << view_rects[platform_id].GetLeftTop().x << ", "
+                   << view_rects[platform_id].GetLeftTop().y << ") - ("
+                   << view_rects[platform_id].GetRightBottom().x << ", "
+                   << view_rects[platform_id].GetRightBottom().y << ")";
   }
 
   std::unordered_map<int64_t, DlRect> overlay_layers =
@@ -154,13 +159,25 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       DlCanvas* overlay_canvas = overlay_frame->Canvas();
       int restore_count = overlay_canvas->GetSaveCount();
       overlay_canvas->Save();
+      // Pass in a debug rect that is of size 0,0,0,0, instead of the correct calulation which is below:
       overlay_canvas->ClipRect(overlay->second);
+      // overlay_canvas->ClipRect(DlRect::MakeSize(DlSize(0,0)));
+
+      // print out the overlay rect for debugging.
+      FML_LOG(ERROR) << "Rendering overlay for view id " << view_id
+                     << " rect: (" << overlay->second.GetLeftTop().x << ", "
+                     << overlay->second.GetLeftTop().y << ") - ("
+                     << overlay->second.GetRightBottom().x << ", "
+                     << overlay->second.GetRightBottom().y << ")";
 
       // For all following platform views that would cover this overlay,
       // emulate the effect by adding a difference clip. This makes the
       // overlays appear as if they are under the platform view, when in
       // reality there is only a single layer.
       for (size_t j = i + 1; j < composition_order_.size(); j++) {
+        FML_LOG(ERROR)
+            << "Clipping overlay for view id "
+            << composition_order_[j];
         DlRect view_rect = GetViewRect(composition_order_[j], view_params_);
         overlay_canvas->ClipRect(view_rect, DlClipOp::kDifference);
       }
@@ -187,12 +204,6 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
        overlay_layer_has_content_this_frame_]() mutable -> void {
         jni_facade->swapTransaction();
 
-        if (overlay_layer_has_content_this_frame_) {
-          ShowOverlayLayerIfNeeded();
-        } else {
-          HideOverlayLayerIfNeeded();
-        }
-
         for (int64_t view_id : composition_order) {
           DlRect view_rect = GetViewRect(view_id, view_params);
           const EmbeddedViewParams& params = view_params.at(view_id);
@@ -215,6 +226,11 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
                          << params.sizePoints().height * device_pixel_ratio;
           // Remove from views visible last frame, so we can hide the rest.
           views_visible_last_frame.erase(view_id);
+        }
+        if (overlay_layer_has_content_this_frame_) {
+          ShowOverlayLayerIfNeeded();
+        } else {
+          HideOverlayLayerIfNeeded();
         }
         // Hide views that were visible last frame, but not in this frame.
         for (int64_t view_id : views_visible_last_frame) {

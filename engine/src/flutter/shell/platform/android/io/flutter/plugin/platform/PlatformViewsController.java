@@ -562,7 +562,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
   private void configureForHybridComposition(
       @NonNull PlatformView platformView, @NonNull PlatformViewCreationRequest request) {
     enforceMinimumAndroidApiVersion(19);
-    Log.i(TAG, "Using hybrid composition for platform view: " + request.viewId);
+    Log.e("HI GRAY", "Using hybrid composition for platform view: " + request.viewId);
     throwIfHCPPEnabled();
   }
 
@@ -1251,6 +1251,14 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     }
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
+    // Print out the view parameters of the parent view.
+    Log.e("HI GRAY", "height is " + parentView.getLayoutParams().height + " and width is " + parentView.getLayoutParams().width + " and mutator stack size is " + mutatorsStack.getMutators().size());
+    for (FlutterMutatorsStack.FlutterMutator mutator : mutatorsStack.getMutators()) {
+      Log.e("HI GRAY", "mutator type is " + mutator.getType());
+      if (mutator.getType() == FlutterMutatorsStack.FlutterMutatorType.CLIP_RECT) {
+        Log.e("HI GRAY", "rect is top: " + mutator.getRect().top + " bottom: " + mutator.getRect().bottom + " left: " + mutator.getRect().left + " right: " + mutator.getRect().right);
+      }
+    }
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
@@ -1258,7 +1266,10 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     final FrameLayout.LayoutParams layoutParams =
         new FrameLayout.LayoutParams(viewWidth, viewHeight);
     final View view = platformViews.get(viewId).getView();
+    Log.e("HI GRAY", "the z for the parent view is " + parentView.getZ());
     if (view != null) {
+      Log.e("HI GRAY", "the z for the platform view is " + view.getZ());
+      Log.e("HI GRAY", "height is " + view.getLayoutParams().height + " and width is " + view.getLayoutParams().width);
       view.setLayoutParams(layoutParams);
       view.bringToFront();
     }
@@ -1306,6 +1317,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
    * <p>This member is not intended for public use, and is only visible for testing.
    */
   public void onEndFrame() {
+    Log.e("HI GRAY", "the z for the flutter view is " + flutterView.getZ());
     // If there are no platform views in the current frame,
     // then revert the image view surface and use the previous surface.
     //
@@ -1330,6 +1342,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     // For example, a toolbar widget painted by Flutter may not be rendered.
     final boolean isFrameRenderedUsingImageReaders =
         flutterViewConvertedToImageView && flutterView.acquireLatestImageViewFrame();
+    Log.e("HI GRAY", "isFrameRenderedUsingImageReaders is " + isFrameRenderedUsingImageReaders);
     finishFrame(isFrameRenderedUsingImageReaders);
   }
 

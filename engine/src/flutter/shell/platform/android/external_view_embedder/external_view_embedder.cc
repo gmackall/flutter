@@ -171,6 +171,9 @@ AndroidExternalViewEmbedder::CreateSurfaceIfNeeded(GrDirectContext* context,
                                                 rect.GetWidth(),  //
                                                 rect.GetHeight()  //
   );
+  FML_LOG(ERROR) << "Displaying overlay surface id " << layer->id
+                 << " at x=" << rect.GetX() << " y=" << rect.GetY()
+                 << " w=" << rect.GetWidth() << " h=" << rect.GetHeight();
   DlCanvas* overlay_canvas = frame->Canvas();
   overlay_canvas->Clear(DlColor::kTransparent());
   // Offset the picture since its absolute position on the scene is determined

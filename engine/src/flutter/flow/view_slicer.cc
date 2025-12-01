@@ -50,6 +50,11 @@ std::unordered_map<int64_t, DlRect> SliceViews(
       }
 
       const DlRect current_view_rect = maybe_rect->second;
+      FML_LOG(ERROR) << "Slicing view id " << current_view_id
+                     << " rect: (" << current_view_rect.GetLeftTop().x << ", "
+                     << current_view_rect.GetLeftTop().y << ") - ("
+                     << current_view_rect.GetRightBottom().x << ", "
+                     << current_view_rect.GetRightBottom().y << ")";
       const DlIRect rounded_in_platform_view_rect =
           DlIRect::RoundIn(current_view_rect);
       const DlRect rounded_out_platform_view_rect =
@@ -77,6 +82,9 @@ std::unordered_map<int64_t, DlRect> SliceViews(
         // width (or height) on edge.
         if (!it->IntersectsWithRect(rounded_in_platform_view_rect)) {
           it = intersection_rects.erase(it);
+          FML_LOG(ERROR)
+              << "Erasing intersection rect: (" << it->GetLeftTop().x << ", " << it->GetLeftTop().y
+              << ") - (" << it->GetRightBottom().x << ", " << it->GetRightBottom().y << ")";
         } else {
           ++it;
         }
@@ -106,6 +114,12 @@ std::unordered_map<int64_t, DlRect> SliceViews(
         full_joined_rect = full_joined_rect.Union(partial_joined_rect);
       }
     }
+
+    FML_LOG(ERROR) << "Full joined rect for view id " << view_id
+                   << " rect: (" << full_joined_rect.GetLeftTop().x << ", "
+                   << full_joined_rect.GetLeftTop().y << ") - ("
+                   << full_joined_rect.GetRightBottom().x << ", "
+                   << full_joined_rect.GetRightBottom().y << ")";
 
     if (!full_joined_rect.IsEmpty()) {
       overlay_layers.insert({view_id, full_joined_rect});
