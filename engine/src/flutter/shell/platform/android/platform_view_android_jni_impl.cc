@@ -1803,7 +1803,8 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
       case MutatorType::kBackdropClipRSuperellipse:
       case MutatorType::kBackdropClipPath:
       case MutatorType::kPlatformViewOverscrollStretch: {
-        const PlatformViewOverscrollStretch& stretch = (*iter)->GetPlatformViewOverscrollStretch();
+        const PlatformViewOverscrollStretch& stretch =
+            (*iter)->GetPlatformViewOverscrollStretch();
         env->CallVoidMethod(
             mutatorsStack,
             g_mutators_stack_push_platform_view_overscroll_stretch_method,
@@ -2324,7 +2325,8 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       case MutatorType::kBackdropClipRSuperellipse:
       case MutatorType::kBackdropClipPath:
       case MutatorType::kPlatformViewOverscrollStretch: {
-        const PlatformViewOverscrollStretch& stretch = (*iter)->GetPlatformViewOverscrollStretch();
+        const PlatformViewOverscrollStretch& stretch =
+            (*iter)->GetPlatformViewOverscrollStretch();
         env->CallVoidMethod(
             mutatorsStack,
             g_mutators_stack_push_platform_view_overscroll_stretch_method,

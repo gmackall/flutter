@@ -364,8 +364,10 @@ class EmbeddedViewParams {
     mutators_stack_.PushPlatformViewClipPath(clip_path);
   }
 
-  void PushPlatformViewOverscrollStretch(double x_overscroll, double y_overscroll) {
-    mutators_stack_.PushPlatformViewOverscrollStretch(x_overscroll, y_overscroll);
+  void PushPlatformViewOverscrollStretch(double x_overscroll,
+                                         double y_overscroll) {
+    mutators_stack_.PushPlatformViewOverscrollStretch(x_overscroll,
+                                                      y_overscroll);
   }
 
   bool operator==(const EmbeddedViewParams& other) const {

@@ -11,7 +11,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
-import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RenderEffect;
 import android.graphics.RuntimeShader;
@@ -242,137 +241,138 @@ public class FlutterMutatorView extends FrameLayout {
     }
     return androidTouchProcessor.onTouchEvent(event, screenMatrix);
   }
+
   private static final String STRETCH_SHADER =
-    "  uniform shader u_texture;\n" +
-    "  uniform float2 u_size;\n" +
-    "  uniform float u_max_stretch_intensity;\n" +
-    "  uniform float u_overscroll_x;\n" +
-    "  uniform float u_overscroll_y;\n" +
-    "  uniform float u_interpolation_strength;\n" +
-    "\n" +
-    "  float ease_in(float t, float d) {\n" +
-    "    return t * d;\n" +
-    "  }\n" +
-    "\n" +
-    "  float compute_overscroll_start(\n" +
-    "    float in_pos,\n" +
-    "    float overscroll,\n" +
-    "    float u_stretch_affected_dist,\n" +
-    "    float u_inverse_stretch_affected_dist,\n" +
-    "    float distance_stretched,\n" +
-    "    float interpolation_strength\n" +
-    "  ) {\n" +
-    "    float offset_pos = u_stretch_affected_dist - in_pos;\n" +
-    "    float pos_based_variation = mix(\n" +
-    "      1.0,\n" +
-    "      ease_in(offset_pos, u_inverse_stretch_affected_dist),\n" +
-    "      interpolation_strength\n" +
-    "    );\n" +
-    "    float stretch_intensity = overscroll * pos_based_variation;\n" +
-    "    return distance_stretched - (offset_pos / (1.0 + stretch_intensity));\n" +
-    "  }\n" +
-    "\n" +
-    "  float compute_overscroll_end(\n" +
-    "    float in_pos,\n" +
-    "    float overscroll,\n" +
-    "    float reverse_stretch_dist,\n" +
-    "    float u_stretch_affected_dist,\n" +
-    "    float u_inverse_stretch_affected_dist,\n" +
-    "    float distance_stretched,\n" +
-    "    float interpolation_strength,\n" +
-    "    float viewport_dimension\n" +
-    "  ) {\n" +
-    "    float offset_pos = in_pos - reverse_stretch_dist;\n" +
-    "    float pos_based_variation = mix(\n" +
-    "      1.0,\n" +
-    "      ease_in(offset_pos, u_inverse_stretch_affected_dist),\n" +
-    "      interpolation_strength\n" +
-    "    );\n" +
-    "    float stretch_intensity = (-overscroll) * pos_based_variation;\n" +
-    "    return viewport_dimension - (distance_stretched - (offset_pos / (1.0 + stretch_intensity)));\n" +
-    "  }\n" +
-    "\n" +
-    "  float compute_streched_effect(\n" +
-    "    float in_pos,\n" +
-    "    float overscroll,\n" +
-    "    float u_stretch_affected_dist,\n" +
-    "    float u_inverse_stretch_affected_dist,\n" +
-    "    float distance_stretched,\n" +
-    "    float distance_diff,\n" +
-    "    float interpolation_strength,\n" +
-    "    float viewport_dimension\n" +
-    "  ) {\n" +
-    "    if (overscroll > 0.0) {\n" +
-    "      if (in_pos <= u_stretch_affected_dist) {\n" +
-    "        return compute_overscroll_start(\n" +
-    "          in_pos, overscroll, u_stretch_affected_dist,\n" +
-    "          u_inverse_stretch_affected_dist, distance_stretched,\n" +
-    "          interpolation_strength\n" +
-    "        );\n" +
-    "      } else {\n" +
-    "        return distance_diff + in_pos;\n" +
-    "      }\n" +
-    "    } else if (overscroll < 0.0) {\n" +
-    "      float stretch_affected_dist_calc = viewport_dimension - u_stretch_affected_dist;\n" +
-    "      if (in_pos >= stretch_affected_dist_calc) {\n" +
-    "        return compute_overscroll_end(\n" +
-    "          in_pos,\n" +
-    "          overscroll,\n" +
-    "          stretch_affected_dist_calc,\n" +
-    "          u_stretch_affected_dist,\n" +
-    "          u_inverse_stretch_affected_dist,\n" +
-    "          distance_stretched,\n" +
-    "          interpolation_strength,\n" +
-    "          viewport_dimension\n" +
-    "        );\n" +
-    "      } else {\n" +
-    "        return -distance_diff + in_pos;\n" +
-    "      }\n" +
-    "    } else {\n" +
-    "      return in_pos;\n" +
-    "    }\n" +
-    "  }\n" +
-    "\n" +
-    "  half4 main(float2 xy) {\n" +
-    "    float2 uv = xy / u_size;\n" +
-    "    float in_u_norm = uv.x;\n" +
-    "    float in_v_norm = uv.y;\n" +
-    "\n" +
-    "    float out_u_norm;\n" +
-    "    float out_v_norm;\n" +
-    "\n" +
-    "    bool isVertical = u_overscroll_y != 0.0;\n" +
-    "    float overscroll = isVertical ? u_overscroll_y : u_overscroll_x;\n" +
-    "\n" +
-    "    float norm_distance_stretched = 1.0 / (1.0 + abs(overscroll));\n" +
-    "    float norm_dist_diff = norm_distance_stretched - 1.0;\n" +
-    "\n" +
-    "    const float norm_viewport = 1.0;\n" +
-    "    const float norm_stretch_affected_dist = 1.0;\n" +
-    "    const float norm_inverse_stretch_affected_dist = 1.0;\n" +
-    "\n" +
-    "    out_u_norm = isVertical ? in_u_norm : compute_streched_effect(\n" +
-    "      in_u_norm,\n" +
-    "      overscroll,\n" +
-    "      norm_stretch_affected_dist,\n" +
-    "      norm_inverse_stretch_affected_dist,\n" +
-    "      norm_distance_stretched,\n" +
-    "      norm_dist_diff,\n" +
-    "      u_interpolation_strength,\n" +
-    "      norm_viewport\n" +
-    "    );\n" +
-    "\n" +
-    "    out_v_norm = isVertical ? compute_streched_effect(\n" +
-    "      in_v_norm,\n" +
-    "      overscroll,\n" +
-    "      norm_stretch_affected_dist,\n" +
-    "      norm_inverse_stretch_affected_dist,\n" +
-    "      norm_distance_stretched,\n" +
-    "      norm_dist_diff,\n" +
-    "      u_interpolation_strength,\n" +
-    "      norm_viewport\n" +
-    "    ) : in_v_norm;\n" +
-    "\n" +
-    "    return u_texture.eval(float2(out_u_norm, out_v_norm) * u_size);\n" +
-    "  }";
+      "  uniform shader u_texture;\n"
+          + "  uniform float2 u_size;\n"
+          + "  uniform float u_max_stretch_intensity;\n"
+          + "  uniform float u_overscroll_x;\n"
+          + "  uniform float u_overscroll_y;\n"
+          + "  uniform float u_interpolation_strength;\n"
+          + "\n"
+          + "  float ease_in(float t, float d) {\n"
+          + "    return t * d;\n"
+          + "  }\n"
+          + "\n"
+          + "  float compute_overscroll_start(\n"
+          + "    float in_pos,\n"
+          + "    float overscroll,\n"
+          + "    float u_stretch_affected_dist,\n"
+          + "    float u_inverse_stretch_affected_dist,\n"
+          + "    float distance_stretched,\n"
+          + "    float interpolation_strength\n"
+          + "  ) {\n"
+          + "    float offset_pos = u_stretch_affected_dist - in_pos;\n"
+          + "    float pos_based_variation = mix(\n"
+          + "      1.0,\n"
+          + "      ease_in(offset_pos, u_inverse_stretch_affected_dist),\n"
+          + "      interpolation_strength\n"
+          + "    );\n"
+          + "    float stretch_intensity = overscroll * pos_based_variation;\n"
+          + "    return distance_stretched - (offset_pos / (1.0 + stretch_intensity));\n"
+          + "  }\n"
+          + "\n"
+          + "  float compute_overscroll_end(\n"
+          + "    float in_pos,\n"
+          + "    float overscroll,\n"
+          + "    float reverse_stretch_dist,\n"
+          + "    float u_stretch_affected_dist,\n"
+          + "    float u_inverse_stretch_affected_dist,\n"
+          + "    float distance_stretched,\n"
+          + "    float interpolation_strength,\n"
+          + "    float viewport_dimension\n"
+          + "  ) {\n"
+          + "    float offset_pos = in_pos - reverse_stretch_dist;\n"
+          + "    float pos_based_variation = mix(\n"
+          + "      1.0,\n"
+          + "      ease_in(offset_pos, u_inverse_stretch_affected_dist),\n"
+          + "      interpolation_strength\n"
+          + "    );\n"
+          + "    float stretch_intensity = (-overscroll) * pos_based_variation;\n"
+          + "    return viewport_dimension - (distance_stretched - (offset_pos / (1.0 + stretch_intensity)));\n"
+          + "  }\n"
+          + "\n"
+          + "  float compute_streched_effect(\n"
+          + "    float in_pos,\n"
+          + "    float overscroll,\n"
+          + "    float u_stretch_affected_dist,\n"
+          + "    float u_inverse_stretch_affected_dist,\n"
+          + "    float distance_stretched,\n"
+          + "    float distance_diff,\n"
+          + "    float interpolation_strength,\n"
+          + "    float viewport_dimension\n"
+          + "  ) {\n"
+          + "    if (overscroll > 0.0) {\n"
+          + "      if (in_pos <= u_stretch_affected_dist) {\n"
+          + "        return compute_overscroll_start(\n"
+          + "          in_pos, overscroll, u_stretch_affected_dist,\n"
+          + "          u_inverse_stretch_affected_dist, distance_stretched,\n"
+          + "          interpolation_strength\n"
+          + "        );\n"
+          + "      } else {\n"
+          + "        return distance_diff + in_pos;\n"
+          + "      }\n"
+          + "    } else if (overscroll < 0.0) {\n"
+          + "      float stretch_affected_dist_calc = viewport_dimension - u_stretch_affected_dist;\n"
+          + "      if (in_pos >= stretch_affected_dist_calc) {\n"
+          + "        return compute_overscroll_end(\n"
+          + "          in_pos,\n"
+          + "          overscroll,\n"
+          + "          stretch_affected_dist_calc,\n"
+          + "          u_stretch_affected_dist,\n"
+          + "          u_inverse_stretch_affected_dist,\n"
+          + "          distance_stretched,\n"
+          + "          interpolation_strength,\n"
+          + "          viewport_dimension\n"
+          + "        );\n"
+          + "      } else {\n"
+          + "        return -distance_diff + in_pos;\n"
+          + "      }\n"
+          + "    } else {\n"
+          + "      return in_pos;\n"
+          + "    }\n"
+          + "  }\n"
+          + "\n"
+          + "  half4 main(float2 xy) {\n"
+          + "    float2 uv = xy / u_size;\n"
+          + "    float in_u_norm = uv.x;\n"
+          + "    float in_v_norm = uv.y;\n"
+          + "\n"
+          + "    float out_u_norm;\n"
+          + "    float out_v_norm;\n"
+          + "\n"
+          + "    bool isVertical = u_overscroll_y != 0.0;\n"
+          + "    float overscroll = isVertical ? u_overscroll_y : u_overscroll_x;\n"
+          + "\n"
+          + "    float norm_distance_stretched = 1.0 / (1.0 + abs(overscroll));\n"
+          + "    float norm_dist_diff = norm_distance_stretched - 1.0;\n"
+          + "\n"
+          + "    const float norm_viewport = 1.0;\n"
+          + "    const float norm_stretch_affected_dist = 1.0;\n"
+          + "    const float norm_inverse_stretch_affected_dist = 1.0;\n"
+          + "\n"
+          + "    out_u_norm = isVertical ? in_u_norm : compute_streched_effect(\n"
+          + "      in_u_norm,\n"
+          + "      overscroll,\n"
+          + "      norm_stretch_affected_dist,\n"
+          + "      norm_inverse_stretch_affected_dist,\n"
+          + "      norm_distance_stretched,\n"
+          + "      norm_dist_diff,\n"
+          + "      u_interpolation_strength,\n"
+          + "      norm_viewport\n"
+          + "    );\n"
+          + "\n"
+          + "    out_v_norm = isVertical ? compute_streched_effect(\n"
+          + "      in_v_norm,\n"
+          + "      overscroll,\n"
+          + "      norm_stretch_affected_dist,\n"
+          + "      norm_inverse_stretch_affected_dist,\n"
+          + "      norm_distance_stretched,\n"
+          + "      norm_dist_diff,\n"
+          + "      u_interpolation_strength,\n"
+          + "      norm_viewport\n"
+          + "    ) : in_v_norm;\n"
+          + "\n"
+          + "    return u_texture.eval(float2(out_u_norm, out_v_norm) * u_size);\n"
+          + "  }";
 }

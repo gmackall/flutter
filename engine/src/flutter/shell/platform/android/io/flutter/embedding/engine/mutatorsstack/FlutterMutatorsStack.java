@@ -292,7 +292,6 @@ public class FlutterMutatorsStack {
     finalYOverscroll += yOverscroll;
   }
 
-
   /**
    * Get a list of all the raw mutators. The 0 index of the returned list is the top of the stack.
    */
@@ -329,16 +328,12 @@ public class FlutterMutatorsStack {
     return finalOpacity;
   }
 
-  /**
-   * Returns the final x overscroll.
-   */
+  /** Returns the final x overscroll. */
   public float getFinalXOverscroll() {
     return finalXOverscroll;
   }
 
-  /**
-   * Returns the final y overscroll.
-   */
+  /** Returns the final y overscroll. */
   public float getFinalYOverscroll() {
     return finalYOverscroll;
   }
