@@ -31,7 +31,8 @@ public class FlutterMutatorsStack {
     CLIP_RRECT,
     CLIP_PATH,
     TRANSFORM,
-    OPACITY
+    OPACITY,
+    PLATFORM_VIEW_OVERSCROLL_STRETCH
   }
 
   /**
@@ -48,6 +49,8 @@ public class FlutterMutatorsStack {
     @Nullable private Path path;
     @Nullable private float[] radiis;
     private float opacity = 1.f;
+    private float xOverscroll = 0.f;
+    private float yOverscroll = 0.f;
 
     private FlutterMutatorType type;
 
@@ -99,9 +102,26 @@ public class FlutterMutatorsStack {
      *
      * @param opacity the opacity value to apply. The value must be between 0 and 1, inclusive.
      */
+    /**
+     * Initialize an opacity mutator.
+     *
+     * @param opacity the opacity value to apply. The value must be between 0 and 1, inclusive.
+     */
     public FlutterMutator(float opacity) {
       this.type = FlutterMutatorType.OPACITY;
       this.opacity = opacity;
+    }
+
+    /**
+     * Initialize a platform view overscroll stretch mutator.
+     *
+     * @param xOverscroll the horizontal overscroll value.
+     * @param yOverscroll the vertical overscroll value.
+     */
+    public FlutterMutator(float xOverscroll, float yOverscroll) {
+      this.type = FlutterMutatorType.PLATFORM_VIEW_OVERSCROLL_STRETCH;
+      this.xOverscroll = xOverscroll;
+      this.yOverscroll = yOverscroll;
     }
 
     /**
@@ -148,6 +168,28 @@ public class FlutterMutatorsStack {
     public float getOpacity() {
       return opacity;
     }
+
+    /**
+     * Get the x overscroll of the mutator if the {@link #getType()} returns
+     * FlutterMutatorType.PLATFORM_VIEW_OVERSCROLL_STRETCH.
+     *
+     * @return the x overscroll of the mutator if the type is
+     *     FlutterMutatorType.PLATFORM_VIEW_OVERSCROLL_STRETCH; otherwise 0.
+     */
+    public float getXOverscroll() {
+      return xOverscroll;
+    }
+
+    /**
+     * Get the y overscroll of the mutator if the {@link #getType()} returns
+     * FlutterMutatorType.PLATFORM_VIEW_OVERSCROLL_STRETCH.
+     *
+     * @return the y overscroll of the mutator if the type is
+     *     FlutterMutatorType.PLATFORM_VIEW_OVERSCROLL_STRETCH; otherwise 0.
+     */
+    public float getYOverscroll() {
+      return yOverscroll;
+    }
   }
 
   private @NonNull List<FlutterMutator> mutators;
@@ -155,6 +197,8 @@ public class FlutterMutatorsStack {
   private List<Path> finalClippingPaths;
   private Matrix finalMatrix;
   private float finalOpacity;
+  private float finalXOverscroll;
+  private float finalYOverscroll;
 
   /** Initialize the mutator stack. */
   public FlutterMutatorsStack() {
@@ -162,6 +206,8 @@ public class FlutterMutatorsStack {
     finalMatrix = new Matrix();
     finalClippingPaths = new ArrayList<Path>();
     finalOpacity = 1.f;
+    finalXOverscroll = 0.f;
+    finalYOverscroll = 0.f;
   }
 
   /**
@@ -233,6 +279,21 @@ public class FlutterMutatorsStack {
   }
 
   /**
+   * Push a platform view overscroll stretch {@link FlutterMutatorsStack.FlutterMutator} to the
+   * stack.
+   *
+   * @param xOverscroll the horizontal overscroll value.
+   * @param yOverscroll the vertical overscroll value.
+   */
+  public void pushPlatformViewOverscrollStretch(float xOverscroll, float yOverscroll) {
+    FlutterMutator mutator = new FlutterMutator(xOverscroll, yOverscroll);
+    mutators.add(mutator);
+    finalXOverscroll += xOverscroll;
+    finalYOverscroll += yOverscroll;
+  }
+
+
+  /**
    * Get a list of all the raw mutators. The 0 index of the returned list is the top of the stack.
    */
   public List<FlutterMutator> getMutators() {
@@ -266,5 +327,19 @@ public class FlutterMutatorsStack {
    */
   public float getFinalOpacity() {
     return finalOpacity;
+  }
+
+  /**
+   * Returns the final x overscroll.
+   */
+  public float getFinalXOverscroll() {
+    return finalXOverscroll;
+  }
+
+  /**
+   * Returns the final y overscroll.
+   */
+  public float getFinalYOverscroll() {
+    return finalYOverscroll;
   }
 }

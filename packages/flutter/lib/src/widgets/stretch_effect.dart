@@ -88,6 +88,7 @@ class StretchEffect extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (ui.ImageFilter.isShaderFilterSupported) {
+      print('HI GRAY, ACTUAL IMAGE FILTER!!!!!!~~~~~~');
       return _StretchOverscrollEffect(stretchStrength: stretchStrength, axis: axis, child: child);
     }
 
@@ -102,6 +103,7 @@ class StretchEffect extends StatelessWidget {
         y += stretchStrength.abs();
     }
 
+    print('HI GRAY, USING A TRANSFORM AS AN APPROX!!!!!!~~~~~~');
     return Transform(
       alignment: _getAlignment(textDirection),
       transform: Matrix4.diagonal3Values(x, y, 1.0),

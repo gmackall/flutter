@@ -652,6 +652,7 @@ ExternalViewEmbedder::ViewMutators ExternalViewEmbedder::ParseMutatorStack(
         });
         transform_accumulator = flutter::DlMatrix();
       } break;
+      case flutter::MutatorType::kPlatformViewOverscrollStretch:
       default: {
         break;
       }

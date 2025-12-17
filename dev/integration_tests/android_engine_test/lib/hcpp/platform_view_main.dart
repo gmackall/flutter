@@ -12,7 +12,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_driver/driver_extension.dart';
 
-import '../platform_view/_shared.dart';
 import '../src/allow_list_devices.dart';
 
 void main() async {
@@ -29,7 +28,7 @@ void main() async {
   // Run on full screen.
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
   runApp(
-    const MainApp(
+    const ScrollableMainApp(
       platformView: _HybridCompositionAndroidPlatformView(viewType: 'box_platform_view'),
     ),
   );
@@ -61,6 +60,65 @@ final class _HybridCompositionAndroidPlatformView extends StatelessWidget {
           ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
           ..create();
       },
+    );
+  }
+}
+
+class ScrollableMainApp extends StatefulWidget {
+  const ScrollableMainApp({super.key, required this.platformView});
+
+  final Widget platformView;
+
+  @override
+  State<ScrollableMainApp> createState() => _ScrollableMainAppState();
+}
+
+class _ScrollableMainAppState extends State<ScrollableMainApp> {
+  bool showPlatformView = true;
+
+  void _togglePlatformView() {
+    setState(() {
+      showPlatformView = !showPlatformView;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        appBar: AppBar(title: const Text('HCPP Scroll Test')),
+        body: ListView(
+          children: <Widget>[
+            Container(height: 100, color: Colors.cyan, child: const Center(child: Text('Above'))),
+            TextButton(
+              key: const ValueKey<String>('AddOverlay'),
+              onPressed: _togglePlatformView,
+              child: const SizedBox(
+                width: 190,
+                height: 100,
+                child: ColoredBox(color: Colors.green, child: Center(child: Text('Toggle (Add)'))),
+              ),
+            ),
+            if (showPlatformView)
+              SizedBox(height: 300, child: widget.platformView),
+            TextButton(
+              key: const ValueKey<String>('RemoveOverlay'),
+              onPressed: _togglePlatformView,
+              child: const SizedBox(
+                 width: double.infinity,
+                 height: 50,
+                 child: ColoredBox(color: Colors.yellow, child: Center(child: Text('Toggle (Remove)'))),
+              ),
+            ),
+            Container(
+              height: 1000,
+              color: Colors.purple,
+              child: const Center(child: Text('Below (Scroll me)')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

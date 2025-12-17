@@ -164,6 +164,8 @@ static jmethodID g_mutators_stack_push_cliprect_method = nullptr;
 static jmethodID g_mutators_stack_push_cliprrect_method = nullptr;
 static jmethodID g_mutators_stack_push_opacity_method = nullptr;
 static jmethodID g_mutators_stack_push_clippath_method = nullptr;
+static jmethodID g_mutators_stack_push_platform_view_overscroll_stretch_method =
+    nullptr;
 
 // android.graphics.Path class, methods, and nested classes.
 static fml::jni::ScopedJavaGlobalRef<jclass>* path_class = nullptr;
@@ -1092,6 +1094,17 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
+  g_mutators_stack_push_platform_view_overscroll_stretch_method =
+      env->GetMethodID(g_mutators_stack_class->obj(),
+                       "pushPlatformViewOverscrollStretch", "(FF)V");
+  if (g_mutators_stack_push_platform_view_overscroll_stretch_method ==
+      nullptr) {
+    FML_LOG(ERROR) << "Could not locate "
+                      "FlutterMutatorsStack.pushPlatformViewOverscrollStretch "
+                      "method";
+    return false;
+  }
+
   g_java_weak_reference_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
       env, env->FindClass("java/lang/ref/WeakReference"));
   if (g_java_weak_reference_class->is_null()) {
@@ -1789,7 +1802,15 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
       case MutatorType::kBackdropClipRRect:
       case MutatorType::kBackdropClipRSuperellipse:
       case MutatorType::kBackdropClipPath:
+      case MutatorType::kPlatformViewOverscrollStretch: {
+        const PlatformViewOverscrollStretch& stretch = (*iter)->GetPlatformViewOverscrollStretch();
+        env->CallVoidMethod(
+            mutatorsStack,
+            g_mutators_stack_push_platform_view_overscroll_stretch_method,
+            static_cast<float>(stretch.x_overscroll),
+            static_cast<float>(stretch.y_overscroll));
         break;
+      }
     }
     ++iter;
   }
@@ -2302,7 +2323,15 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       case MutatorType::kBackdropClipRRect:
       case MutatorType::kBackdropClipRSuperellipse:
       case MutatorType::kBackdropClipPath:
+      case MutatorType::kPlatformViewOverscrollStretch: {
+        const PlatformViewOverscrollStretch& stretch = (*iter)->GetPlatformViewOverscrollStretch();
+        env->CallVoidMethod(
+            mutatorsStack,
+            g_mutators_stack_push_platform_view_overscroll_stretch_method,
+            static_cast<float>(stretch.x_overscroll),
+            static_cast<float>(stretch.y_overscroll));
         break;
+      }
     }
     ++iter;
   }
