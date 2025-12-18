@@ -194,10 +194,9 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
         // Log SkSL stage uniforms
         FML_LOG(ERROR) << "HI GRAY, SkSL Stage Uniforms from FragmentProgram:";
         for (const auto& u : sksl_stage->GetUniforms()) {
-           FML_LOG(ERROR) << "  Name: " << u.name
-                          << " Loc: " << u.location
-                          << " Size: " << u.GetSize()
-                          << " Type: " << (int)u.type;
+          FML_LOG(ERROR) << "  Name: " << u.name << " Loc: " << u.location
+                         << " Size: " << u.GetSize()
+                         << " Type: " << (int)u.type;
         }
       }
     }

@@ -11,10 +11,9 @@ import android.graphics.RectF;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import io.flutter.Log;
 import java.util.ArrayList;
 import java.util.List;
-
-import io.flutter.Log;
 
 /**
  * The mutator stack containing a list of mutators
@@ -349,7 +348,8 @@ public class FlutterMutatorsStack {
    * @param uniformNames the names of the uniforms.
    * @param uniformData the uniforms for the shader.
    */
-  public void pushPlatformViewRuntimeEffect(byte[] shaderData, String[] uniformNames, byte[][] uniformData) {
+  public void pushPlatformViewRuntimeEffect(
+      byte[] shaderData, String[] uniformNames, byte[][] uniformData) {
     Log.e("HI GRAY", "actually invoking push platform view runtime effect");
     FlutterMutator mutator = new FlutterMutator(shaderData, uniformNames, uniformData);
     mutators.add(mutator);

@@ -27,7 +27,8 @@ class DlRuntimeEffectImpeller final : public DlRuntimeEffect {
       sk_sp<SkRuntimeEffect> skia_effect);
 
   std::shared_ptr<std::vector<uint8_t>> GetSkiaUniformData(
-      const std::shared_ptr<std::vector<uint8_t>>& impeller_data) const override;
+      const std::shared_ptr<std::vector<uint8_t>>& impeller_data)
+      const override;
 
   // |DlRuntimeEffect|
   sk_sp<SkRuntimeEffect> skia_runtime_effect() const override;

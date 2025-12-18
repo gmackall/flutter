@@ -1050,8 +1050,8 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
-  g_byte_array_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
-      env, env->FindClass("[B"));
+  g_byte_array_class =
+      new fml::jni::ScopedJavaGlobalRef<jclass>(env, env->FindClass("[B"));
   if (g_byte_array_class->is_null()) {
     FML_LOG(ERROR) << "Could not locate byte array class";
     return false;
@@ -1120,7 +1120,8 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
       g_mutators_stack_class->obj(), "pushPlatformViewRuntimeEffect",
       "([B[Ljava/lang/String;[[B)V");
 
-  FML_LOG(ERROR) << "HI GRAY, JNI Method Resolved: pushPlatformViewRuntimeEffect";
+  FML_LOG(ERROR)
+      << "HI GRAY, JNI Method Resolved: pushPlatformViewRuntimeEffect";
   if (g_mutators_stack_push_platform_view_runtime_effect_method == nullptr) {
     FML_LOG(ERROR) << "Could not locate "
                       "FlutterMutatorsStack.pushPlatformViewRuntimeEffect "
@@ -1745,8 +1746,10 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
   std::vector<std::shared_ptr<Mutator>>::const_iterator iter =
       mutators_stack.Begin();
   while (iter != mutators_stack.End()) {
-    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type: " << static_cast<int>((*iter)->GetType());
-    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type: " << static_cast<int>((*iter)->GetType());
+    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type: "
+                   << static_cast<int>((*iter)->GetType());
+    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type: "
+                   << static_cast<int>((*iter)->GetType());
     switch ((*iter)->GetType()) {
       case MutatorType::kTransform: {
         const DlMatrix& matrix = (*iter)->GetMatrix();
@@ -1829,14 +1832,15 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
       case MutatorType::kRuntimeEffect: {
         const PlatformViewRuntimeEffect& effect =
             (*iter)->GetPlatformViewRuntimeEffect();
-        jbyteArray shaderDataRaw = env->NewByteArray(static_cast<jsize>(effect.shader_data.size()));
+        jbyteArray shaderDataRaw =
+            env->NewByteArray(static_cast<jsize>(effect.shader_data.size()));
         fml::jni::ScopedJavaLocalRef<jbyteArray> shaderData;
         shaderData.Reset(env, shaderDataRaw);
         env->DeleteLocalRef(shaderDataRaw);
 
-        env->SetByteArrayRegion(shaderData.obj(), 0, static_cast<jsize>(effect.shader_data.size()),
-                                reinterpret_cast<const jbyte*>(
-                                    effect.shader_data.data()));
+        env->SetByteArrayRegion(
+            shaderData.obj(), 0, static_cast<jsize>(effect.shader_data.size()),
+            reinterpret_cast<const jbyte*>(effect.shader_data.data()));
 
         jclass stringClass = env->FindClass("java/lang/String");
         jobjectArray uniformNamesRaw = env->NewObjectArray(
@@ -1846,8 +1850,9 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
         env->DeleteLocalRef(uniformNamesRaw);
 
         jclass byteArrayClass = env->FindClass("[B");
-        jobjectArray uniformDataRaw = env->NewObjectArray(
-            static_cast<jsize>(effect.uniforms.size()), byteArrayClass, nullptr);
+        jobjectArray uniformDataRaw =
+            env->NewObjectArray(static_cast<jsize>(effect.uniforms.size()),
+                                byteArrayClass, nullptr);
         fml::jni::ScopedJavaLocalRef<jobjectArray> uniformData;
         uniformData.Reset(env, uniformDataRaw);
         env->DeleteLocalRef(uniformDataRaw);
@@ -1855,9 +1860,11 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
         for (size_t i = 0; i < effect.uniforms.size(); ++i) {
           fml::jni::ScopedJavaLocalRef<jstring> name =
               fml::jni::StringToJavaString(env, effect.uniforms[i].name);
-          env->SetObjectArrayElement(uniformNames.obj(), static_cast<jsize>(i), name.obj());
+          env->SetObjectArrayElement(uniformNames.obj(), static_cast<jsize>(i),
+                                     name.obj());
 
-          jbyteArray dataRaw = env->NewByteArray(static_cast<jsize>(effect.uniforms[i].data.size()));
+          jbyteArray dataRaw = env->NewByteArray(
+              static_cast<jsize>(effect.uniforms[i].data.size()));
           fml::jni::ScopedJavaLocalRef<jbyteArray> data;
           data.Reset(env, dataRaw);
           env->DeleteLocalRef(dataRaw);
@@ -1865,7 +1872,8 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
           env->SetByteArrayRegion(
               data.obj(), 0, static_cast<jsize>(effect.uniforms[i].data.size()),
               reinterpret_cast<const jbyte*>(effect.uniforms[i].data.data()));
-          env->SetObjectArrayElement(uniformData.obj(), static_cast<jsize>(i), data.obj());
+          env->SetObjectArrayElement(uniformData.obj(), static_cast<jsize>(i),
+                                     data.obj());
         }
 
         env->CallVoidMethod(
@@ -2295,25 +2303,28 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
   std::vector<std::shared_ptr<Mutator>>::const_iterator iter =
       mutators_stack.Begin();
   while (iter != mutators_stack.End()) {
-    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type (v2): " << static_cast<int>((*iter)->GetType());
+    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type (v2): "
+                   << static_cast<int>((*iter)->GetType());
     switch ((*iter)->GetType()) {
       case MutatorType::kRuntimeEffect: {
         const PlatformViewRuntimeEffect& effect =
             (*iter)->GetPlatformViewRuntimeEffect();
 
-        jbyteArray shaderDataRaw = env->NewByteArray(static_cast<jsize>(effect.shader_data.size()));
+        jbyteArray shaderDataRaw =
+            env->NewByteArray(static_cast<jsize>(effect.shader_data.size()));
         fml::jni::ScopedJavaLocalRef<jbyteArray> methodParams;
         methodParams.Reset(env, shaderDataRaw);
         env->DeleteLocalRef(shaderDataRaw);
 
         env->SetByteArrayRegion(
-            methodParams.obj(), 0, static_cast<jsize>(effect.shader_data.size()),
+            methodParams.obj(), 0,
+            static_cast<jsize>(effect.shader_data.size()),
             reinterpret_cast<const jbyte*>(effect.shader_data.data()));
 
         // Prepare uniform names
         jclass stringClass = env->FindClass("java/lang/String");
-        jobjectArray uniformNamesRaw = env->NewObjectArray(static_cast<jsize>(effect.uniforms.size()),
-                                     stringClass, nullptr);
+        jobjectArray uniformNamesRaw = env->NewObjectArray(
+            static_cast<jsize>(effect.uniforms.size()), stringClass, nullptr);
         fml::jni::ScopedJavaLocalRef<jobjectArray> uniformNames;
         uniformNames.Reset(env, uniformNamesRaw);
         env->DeleteLocalRef(uniformNamesRaw);
@@ -2321,18 +2332,21 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         for (size_t i = 0; i < effect.uniforms.size(); ++i) {
           fml::jni::ScopedJavaLocalRef<jstring> name =
               fml::jni::StringToJavaString(env, effect.uniforms[i].name);
-          env->SetObjectArrayElement(uniformNames.obj(), static_cast<jsize>(i), name.obj());
+          env->SetObjectArrayElement(uniformNames.obj(), static_cast<jsize>(i),
+                                     name.obj());
         }
 
         // Prepare uniform data (array of byte arrays)
-        jobjectArray uniformDataRaw = env->NewObjectArray(static_cast<jsize>(effect.uniforms.size()),
-                                     g_byte_array_class->obj(), nullptr);
+        jobjectArray uniformDataRaw =
+            env->NewObjectArray(static_cast<jsize>(effect.uniforms.size()),
+                                g_byte_array_class->obj(), nullptr);
         fml::jni::ScopedJavaLocalRef<jobjectArray> uniformData;
         uniformData.Reset(env, uniformDataRaw);
         env->DeleteLocalRef(uniformDataRaw);
 
         for (size_t i = 0; i < effect.uniforms.size(); ++i) {
-          jbyteArray dataRaw = env->NewByteArray(static_cast<jsize>(effect.uniforms[i].data.size()));
+          jbyteArray dataRaw = env->NewByteArray(
+              static_cast<jsize>(effect.uniforms[i].data.size()));
           fml::jni::ScopedJavaLocalRef<jbyteArray> data;
           data.Reset(env, dataRaw);
           env->DeleteLocalRef(dataRaw);
@@ -2340,11 +2354,13 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
           env->SetByteArrayRegion(
               data.obj(), 0, static_cast<jsize>(effect.uniforms[i].data.size()),
               reinterpret_cast<const jbyte*>(effect.uniforms[i].data.data()));
-          env->SetObjectArrayElement(uniformData.obj(), static_cast<jsize>(i), data.obj());
+          env->SetObjectArrayElement(uniformData.obj(), static_cast<jsize>(i),
+                                     data.obj());
         }
 
         env->CallVoidMethod(
-            mutatorsStack, g_mutators_stack_push_platform_view_runtime_effect_method,
+            mutatorsStack,
+            g_mutators_stack_push_platform_view_runtime_effect_method,
             methodParams.obj(), uniformNames.obj(), uniformData.obj());
       } break;
       case MutatorType::kTransform: {

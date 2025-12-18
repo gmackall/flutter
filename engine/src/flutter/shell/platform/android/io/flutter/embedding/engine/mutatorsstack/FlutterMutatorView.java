@@ -26,7 +26,6 @@ import androidx.annotation.VisibleForTesting;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack.FlutterMutator;
 import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack.FlutterMutatorType;
-import io.flutter.Log;
 import io.flutter.util.ViewUtils;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -130,54 +129,62 @@ public class FlutterMutatorView extends FrameLayout {
           byte[][] uniformData = mutator.getUniformData();
 
           if (shaderData != null) {
-              String sksl = new String(shaderData, StandardCharsets.UTF_8);
-              io.flutter.Log.e("HI GRAY", "SkSL Source: " + sksl);
-              try {
-                RuntimeShader shader = new RuntimeShader(sksl);
-                if (uniformNames != null && uniformData != null) {
-                  for (int i = 0; i < uniformNames.length; i++) {
-                     String name = uniformNames[i];
-                     byte[] data = uniformData[i];
-                     if (data != null) {
-                         // Assume floats given we don't transfer type info.
-                         // This covers common interpolation cases like stretch.
-                         FloatBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();
-                         if (buffer.remaining() > 0) {
-                             float[] floats = new float[buffer.remaining()];
-                             buffer.get(floats);
-                             shader.setFloatUniform(name, floats);
-                             io.flutter.Log.e("HI GRAY", "Set uniform: " + name + " count: " + floats.length + " values: " + java.util.Arrays.toString(floats));
-                         }
-                     }
+            String sksl = new String(shaderData, StandardCharsets.UTF_8);
+            io.flutter.Log.e("HI GRAY", "SkSL Source: " + sksl);
+            try {
+              RuntimeShader shader = new RuntimeShader(sksl);
+              if (uniformNames != null && uniformData != null) {
+                for (int i = 0; i < uniformNames.length; i++) {
+                  String name = uniformNames[i];
+                  byte[] data = uniformData[i];
+                  if (data != null) {
+                    // Assume floats given we don't transfer type info.
+                    // This covers common interpolation cases like stretch.
+                    FloatBuffer buffer =
+                        ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();
+                    if (buffer.remaining() > 0) {
+                      float[] floats = new float[buffer.remaining()];
+                      buffer.get(floats);
+                      shader.setFloatUniform(name, floats);
+                      io.flutter.Log.e(
+                          "HI GRAY",
+                          "Set uniform: "
+                              + name
+                              + " count: "
+                              + floats.length
+                              + " values: "
+                              + java.util.Arrays.toString(floats));
+                    }
                   }
                 }
-                setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "u_texture"));
-                io.flutter.Log.e("HI GRAY", "RenderEffect set successfully");
-                hasFilter = true;
-                break; // Only apply the first runtime effect found for now
-              } catch (Exception e) {
-                  io.flutter.Log.e("HI GRAY", "Shader compilation failed", e);
-                  e.printStackTrace();
               }
+              setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "u_texture"));
+              io.flutter.Log.e("HI GRAY", "RenderEffect set successfully");
+              hasFilter = true;
+              break; // Only apply the first runtime effect found for now
+            } catch (Exception e) {
+              io.flutter.Log.e("HI GRAY", "Shader compilation failed", e);
+              e.printStackTrace();
+            }
           }
         }
       }
 
       if (!hasFilter) {
-          float overscrollX = mutatorsStack.getFinalXOverscroll();
-          float overscrollY = mutatorsStack.getFinalYOverscroll();
-          if (Math.abs(overscrollX) > 0 || Math.abs(overscrollY) > 0) {
-            RuntimeShader shader = new RuntimeShader(STRETCH_SHADER);
-            shader.setFloatUniform("u_size", width, height);
-            shader.setFloatUniform("u_max_stretch_intensity", 1.0f);
-            shader.setFloatUniform("u_overscroll_x", overscrollX);
-            shader.setFloatUniform("u_overscroll_y", overscrollY);
-            shader.setFloatUniform("u_interpolation_strength", 0.7f);
+        float overscrollX = mutatorsStack.getFinalXOverscroll();
+        float overscrollY = mutatorsStack.getFinalYOverscroll();
+        if (Math.abs(overscrollX) > 0 || Math.abs(overscrollY) > 0) {
+          RuntimeShader shader = new RuntimeShader(STRETCH_SHADER);
+          shader.setFloatUniform("u_size", width, height);
+          shader.setFloatUniform("u_max_stretch_intensity", 1.0f);
+          shader.setFloatUniform("u_overscroll_x", overscrollX);
+          shader.setFloatUniform("u_overscroll_y", overscrollY);
+          shader.setFloatUniform("u_interpolation_strength", 0.7f);
 
-            setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "u_texture"));
-          } else {
-            setRenderEffect(null);
-          }
+          setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "u_texture"));
+        } else {
+          setRenderEffect(null);
+        }
       }
     }
   }

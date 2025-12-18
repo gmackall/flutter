@@ -4,11 +4,11 @@
 
 #include "flutter/flow/layers/layer_state_stack.h"
 
-#include "flutter/display_list/utils/dl_matrix_clip_tracker.h"
-#include "flutter/display_list/effects/image_filters/dl_runtime_effect_image_filter.h"
 #include "flutter/common/graphics/texture.h"
-#include "flutter/flow/layers/layer_state_stack.h"
+#include "flutter/display_list/effects/image_filters/dl_runtime_effect_image_filter.h"
+#include "flutter/display_list/utils/dl_matrix_clip_tracker.h"
 #include "flutter/flow/layers/layer.h"
+#include "flutter/flow/layers/layer_state_stack.h"
 #include "flutter/flow/paint_utils.h"
 #include "flutter/flow/raster_cache_util.h"
 #include "third_party/skia/include/effects/SkRuntimeEffect.h"
@@ -321,34 +321,35 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
         if (runtime_filter->uniform_data()) {
           // If this is an Impeller effect, we might need to remap uniforms
           // from Impeller layout to Skia layout.
-          auto remapped = effect->GetSkiaUniformData(runtime_filter->uniform_data());
+          auto remapped =
+              effect->GetSkiaUniformData(runtime_filter->uniform_data());
           if (remapped) {
-             uniform_data = *remapped;
+            uniform_data = *remapped;
           }
         }
 
         std::vector<PlatformViewRuntimeEffectUniform> uniforms;
         for (const auto& uniform : sk_effect->uniforms()) {
-           FML_LOG(ERROR) << "HI GRAY, Uniform: " << uniform.name
-                          << " offset: " << uniform.offset
-                          << " size: " << uniform.sizeInBytes()
-                          << " total_data_size: " << uniform_data.size();
-           if (uniform.offset + uniform.sizeInBytes() > uniform_data.size()) {
-             FML_LOG(ERROR) << "HI GRAY, Uniform out of bounds!";
-             continue;
-           }
-           std::vector<uint8_t> data(
-               uniform_data.begin() + uniform.offset,
-               uniform_data.begin() + uniform.offset + uniform.sizeInBytes());
+          FML_LOG(ERROR) << "HI GRAY, Uniform: " << uniform.name
+                         << " offset: " << uniform.offset
+                         << " size: " << uniform.sizeInBytes()
+                         << " total_data_size: " << uniform_data.size();
+          if (uniform.offset + uniform.sizeInBytes() > uniform_data.size()) {
+            FML_LOG(ERROR) << "HI GRAY, Uniform out of bounds!";
+            continue;
+          }
+          std::vector<uint8_t> data(
+              uniform_data.begin() + uniform.offset,
+              uniform_data.begin() + uniform.offset + uniform.sizeInBytes());
 
-           // Log first few bytes of data
-           std::stringstream ss;
-           for(size_t i=0; i<data.size() && i<64; ++i) {
-             ss << std::hex << (int)data[i] << " ";
-           }
-           FML_LOG(ERROR) << "HI GRAY, Data: " << ss.str();
+          // Log first few bytes of data
+          std::stringstream ss;
+          for (size_t i = 0; i < data.size() && i < 64; ++i) {
+            ss << std::hex << (int)data[i] << " ";
+          }
+          FML_LOG(ERROR) << "HI GRAY, Data: " << ss.str();
 
-           uniforms.push_back({std::string(uniform.name), std::move(data)});
+          uniforms.push_back({std::string(uniform.name), std::move(data)});
         }
 
         mutators_stack->PushPlatformViewRuntimeEffect(std::move(shader_data),
