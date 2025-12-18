@@ -513,6 +513,35 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     }
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
+
+    Log.e("HI GRAY", "for platform view id " + viewId + " we have the following mutators");
+    for (FlutterMutatorsStack.FlutterMutator mutator : mutatorsStack.getMutators()) {
+      Log.e("HI GRAY", " - " + getMutatorName(mutator.getType()));
+      if (mutator.getType() == FlutterMutatorsStack.FlutterMutatorType.CLIP_RECT) {
+        Log.e(
+                "HI GRAY",
+                "rect is top: "
+                        + mutator.getRect().top
+                        + " bottom: "
+                        + mutator.getRect().bottom
+                        + " left: "
+                        + mutator.getRect().left
+                        + " right: "
+                        + mutator.getRect().right);
+      }
+    }
+
+    Log.e(
+            "HI GRAY",
+            "Additional info, parent view height is "
+                    + parentView.getLayoutParams().height
+                    + " and width is "
+                    + parentView.getLayoutParams().width
+                    + " and mutator stack size is "
+                    + mutatorsStack.getMutators().size()
+                    + " and z layer is " + parentView.getZ()
+    );
+
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
@@ -523,6 +552,25 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (view != null) {
       view.setLayoutParams(layoutParams);
       view.bringToFront();
+    }
+  }
+
+  public static String getMutatorName(FlutterMutatorsStack.FlutterMutatorType type) {
+    if (type == null) return "Unknown";
+
+    switch (type) {
+      case CLIP_RECT:
+        return "ClipRect";
+      case CLIP_RRECT:
+        return "ClipRRect";
+      case CLIP_PATH:
+        return "ClipPath";
+      case TRANSFORM:
+        return "Transform";
+      case OPACITY:
+        return "Opacity";
+      default:
+        return "UnknownMutator";
     }
   }
 
@@ -608,6 +656,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (overlaySurfaceControl == null) {
       return;
     }
+    Log.e("HI GRAY", "we are showing the overlay surface");
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     tx.setVisibility(overlaySurfaceControl, /*visible=*/ true);
     tx.apply();
@@ -618,6 +667,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (overlaySurfaceControl == null) {
       return;
     }
+    Log.e("HI GRAY", "we are hiding the overlay surface");
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     tx.setVisibility(overlaySurfaceControl, /*visible=*/ false);
     tx.apply();

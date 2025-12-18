@@ -14,6 +14,8 @@ import androidx.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.flutter.Log;
+
 /**
  * The mutator stack containing a list of mutators
  *
@@ -181,6 +183,18 @@ public class FlutterMutatorsStack {
   /** Push a clipRect {@link FlutterMutatorsStack.FlutterMutator} to the stack. */
   public void pushClipRect(int left, int top, int right, int bottom) {
     Rect rect = new Rect(left, top, right, bottom);
+    RectF rectF = new RectF(rect);
+    finalMatrix.mapRect(rectF);
+    Log.e(
+            "HI GRAY",
+            "final TRANSFORMED rect is left: "
+                    + rectF.left
+                    + ", top: "
+                    + rectF.top
+                    + ", right: "
+                    + rectF.right
+                    + ", bottom:"
+                    + rectF.bottom);
     FlutterMutator mutator = new FlutterMutator(rect);
     mutators.add(mutator);
     Path path = new Path();

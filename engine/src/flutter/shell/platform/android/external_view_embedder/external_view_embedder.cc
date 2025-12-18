@@ -41,6 +41,11 @@ void AndroidExternalViewEmbedder::PrerollCompositeEmbeddedView(
       view_params_.at(view_id) == *params.get()) {
     return;
   }
+  FML_LOG(ERROR) << "Updating view params for view id " << view_id
+                << " to x=" << params->finalBoundingRect().GetX()
+                << " y=" << params->finalBoundingRect().GetY()
+                << " w=" << params->finalBoundingRect().GetWidth()
+                << " h=" << params->finalBoundingRect().GetHeight();
   view_params_.insert_or_assign(view_id, EmbeddedViewParams(*params.get()));
 }
 
@@ -79,6 +84,11 @@ void AndroidExternalViewEmbedder::SubmitFlutterView(
   std::unordered_map<int64_t, DlRect> view_rects;
   for (auto platform_id : composition_order_) {
     view_rects[platform_id] = GetViewRect(platform_id);
+    FML_LOG(ERROR) << "HI GRAY, VIEW RECT for view id " << platform_id
+                << " rect: (" << view_rects[platform_id].GetLeftTop().x
+                << ", " << view_rects[platform_id].GetLeftTop().y << ") - ("
+                << view_rects[platform_id].GetRightBottom().x << ", "
+                << view_rects[platform_id].GetRightBottom().y << ")";
   }
 
   std::unordered_map<int64_t, DlRect> overlay_layers =
@@ -87,6 +97,13 @@ void AndroidExternalViewEmbedder::SubmitFlutterView(
                  slices_,             //
                  view_rects           //
       );
+
+  // Loop over overlay_layers and print out the rects for debugging.
+  for (const auto& overlay : overlay_layers) {
+    FML_LOG(ERROR) << "HI GRAY, OVERLAY LAYER for view id " << overlay.first
+                    << " rect: " << overlay.second.GetLeftTop() << " - "
+                    << overlay.second.GetRightBottom();
+  }
 
   // Submit the background canvas frame before switching the GL context to
   // the overlay surfaces.
