@@ -14,6 +14,8 @@ import androidx.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.flutter.Log;
+
 /**
  * The mutator stack containing a list of mutators
  *
@@ -32,7 +34,8 @@ public class FlutterMutatorsStack {
     CLIP_PATH,
     TRANSFORM,
     OPACITY,
-    PLATFORM_VIEW_OVERSCROLL_STRETCH
+    PLATFORM_VIEW_OVERSCROLL_STRETCH,
+    PLATFORM_VIEW_RUNTIME_EFFECT
   }
 
   /**
@@ -51,6 +54,9 @@ public class FlutterMutatorsStack {
     private float opacity = 1.f;
     private float xOverscroll = 0.f;
     private float yOverscroll = 0.f;
+    @Nullable private byte[] shaderData;
+    @Nullable private String[] uniformNames;
+    @Nullable private byte[][] uniformData;
 
     private FlutterMutatorType type;
 
@@ -125,6 +131,20 @@ public class FlutterMutatorsStack {
     }
 
     /**
+     * Initialize a platform view runtime effect mutator.
+     *
+     * @param shaderData the AGSL shader code.
+     * @param uniformNames the names of the uniforms.
+     * @param uniformData the uniforms for the shader.
+     */
+    public FlutterMutator(byte[] shaderData, String[] uniformNames, byte[][] uniformData) {
+      this.type = FlutterMutatorType.PLATFORM_VIEW_RUNTIME_EFFECT;
+      this.shaderData = shaderData;
+      this.uniformNames = uniformNames;
+      this.uniformData = uniformData;
+    }
+
+    /**
      * Get the mutator type.
      *
      * @return The type of the mutator.
@@ -189,6 +209,36 @@ public class FlutterMutatorsStack {
      */
     public float getYOverscroll() {
       return yOverscroll;
+    }
+
+    /**
+     * Get the shader data of the mutator if the {@link #getType()} returns
+     * FlutterMutatorType.PLATFORM_VIEW_RUNTIME_EFFECT.
+     *
+     * @return the shader data.
+     */
+    public byte[] getShaderData() {
+      return shaderData;
+    }
+
+    /**
+     * Get the uniform names of the mutator if the {@link #getType()} returns
+     * FlutterMutatorType.PLATFORM_VIEW_RUNTIME_EFFECT.
+     *
+     * @return the uniform names.
+     */
+    public String[] getUniformNames() {
+      return uniformNames;
+    }
+
+    /**
+     * Get the uniform data of the mutator if the {@link #getType()} returns
+     * FlutterMutatorType.PLATFORM_VIEW_RUNTIME_EFFECT.
+     *
+     * @return the uniform data.
+     */
+    public byte[][] getUniformData() {
+      return uniformData;
     }
   }
 
@@ -290,6 +340,19 @@ public class FlutterMutatorsStack {
     mutators.add(mutator);
     finalXOverscroll += xOverscroll;
     finalYOverscroll += yOverscroll;
+  }
+
+  /**
+   * Push a platform view runtime effect {@link FlutterMutatorsStack.FlutterMutator} to the stack.
+   *
+   * @param shaderData the AGSL shader code.
+   * @param uniformNames the names of the uniforms.
+   * @param uniformData the uniforms for the shader.
+   */
+  public void pushPlatformViewRuntimeEffect(byte[] shaderData, String[] uniformNames, byte[][] uniformData) {
+    Log.e("HI GRAY", "actually invoking push platform view runtime effect");
+    FlutterMutator mutator = new FlutterMutator(shaderData, uniformNames, uniformData);
+    mutators.add(mutator);
   }
 
   /**

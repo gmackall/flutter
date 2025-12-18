@@ -125,6 +125,14 @@ void MutatorsStack::PushPlatformViewOverscrollStretch(double x_overscroll,
   vector_.push_back(element);
 }
 
+void MutatorsStack::PushPlatformViewRuntimeEffect(
+    std::vector<uint8_t> shader_data,
+    std::vector<PlatformViewRuntimeEffectUniform> uniforms) {
+  std::shared_ptr<Mutator> element = std::make_shared<Mutator>(
+      PlatformViewRuntimeEffect(std::move(shader_data), std::move(uniforms)));
+  vector_.push_back(element);
+}
+
 void MutatorsStack::Pop() {
   vector_.pop_back();
 }

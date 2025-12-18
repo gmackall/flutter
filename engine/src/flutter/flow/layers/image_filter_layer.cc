@@ -56,6 +56,10 @@ void ImageFilterLayer::Preroll(PrerollContext* context) {
   Layer::AutoPrerollSaveLayerState save =
       Layer::AutoPrerollSaveLayerState::Create(context);
 
+  if (filter_) {
+    mutator.applyImageFilter(DlRect(), filter_);
+  }
+
 #if !SLIMPELLER
   AutoCache cache = AutoCache(layer_raster_cache_item_.get(), context,
                               context->state_stack.matrix());

@@ -10,6 +10,7 @@ import 'package:flutter/rendering.dart';
 import 'basic.dart';
 import 'framework.dart';
 import 'image_filter.dart';
+import 'layout_builder.dart';
 
 /// A widget that applies a stretching visual effect to its child.
 ///
@@ -178,38 +179,61 @@ class _StretchOverscrollEffectState extends State<_StretchOverscrollEffect> {
   Widget build(BuildContext context) {
     final bool isShaderNeeded = widget.stretchStrength.abs() > precisionErrorTolerance;
 
-    final ui.ImageFilter imageFilter;
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final Size size = constraints.biggest;
+        // If the size is empty or infinite, we can't properly set uniforms, so fallback to empty filter.
+        // But usually this wraps the viewport which has finite size.
+        if (size.isEmpty || !size.isFinite) {
+             return widget.child;
+        }
 
-    if (_StretchEffectShader._initialized) {
-      _fragmentShader?.dispose();
-      _fragmentShader = _StretchEffectShader._program!.fragmentShader();
-      _fragmentShader!.setFloat(2, maxStretchIntensity);
-      if (widget.axis == Axis.vertical) {
-        _fragmentShader!.setFloat(3, 0.0);
-        _fragmentShader!.setFloat(4, widget.stretchStrength);
-      } else {
-        _fragmentShader!.setFloat(3, widget.stretchStrength);
-        _fragmentShader!.setFloat(4, 0.0);
-      }
-      _fragmentShader!.setFloat(5, interpolationStrength);
+        final ui.ImageFilter imageFilter;
 
-      imageFilter = ui.ImageFilter.shader(_fragmentShader!);
-    } else {
-      _fragmentShader?.dispose();
-      _fragmentShader = null;
+        if (_StretchEffectShader._initialized && isShaderNeeded) {
+          _fragmentShader?.dispose();
+          _fragmentShader = _StretchEffectShader._program!.fragmentShader();
 
-      imageFilter = _emptyFilter;
-    }
+          // u_size (0, 1)
+          _fragmentShader!.setFloat(0, size.width);
+          _fragmentShader!.setFloat(1, size.height);
 
-    return ImageFiltered(
-      imageFilter: imageFilter,
-      enabled: isShaderNeeded,
-      // A nearly-transparent pixels is used to ensure the shader gets applied,
-      // even when the child is visually transparent or has no paint operations.
-      child: CustomPaint(
-        painter: isShaderNeeded ? _StretchEffectPainter() : null,
-        child: widget.child,
-      ),
+          // u_max_stretch_intensity (2)
+          _fragmentShader!.setFloat(2, maxStretchIntensity);
+
+          // u_overscroll (3, 4)
+          if (widget.axis == Axis.vertical) {
+            _fragmentShader!.setFloat(3, 0.0);
+            _fragmentShader!.setFloat(4, widget.stretchStrength);
+          } else {
+            _fragmentShader!.setFloat(3, widget.stretchStrength);
+            _fragmentShader!.setFloat(4, 0.0);
+          }
+
+          // u_interpolation_strength (5)
+          _fragmentShader!.setFloat(5, interpolationStrength);
+
+
+
+          imageFilter = ui.ImageFilter.shader(_fragmentShader!);
+        } else {
+          _fragmentShader?.dispose();
+          _fragmentShader = null;
+          imageFilter = _emptyFilter;
+        }
+
+        print('HI GRAY, shader is needed? $isShaderNeeded size: $size');
+        return ImageFiltered(
+          imageFilter: imageFilter,
+          enabled: isShaderNeeded,
+          // A nearly-transparent pixels is used to ensure the shader gets applied,
+          // even when the child is visually transparent or has no paint operations.
+          child: CustomPaint(
+            painter: isShaderNeeded ? _StretchEffectPainter() : null,
+            child: widget.child,
+          ),
+        );
+      },
     );
   }
 }

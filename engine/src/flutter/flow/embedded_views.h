@@ -6,6 +6,8 @@
 #define FLUTTER_FLOW_EMBEDDED_VIEWS_H_
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -45,6 +47,7 @@ enum class MutatorType {
   kBackdropClipRSuperellipse,
   kBackdropClipPath,
   kPlatformViewOverscrollStretch,
+  kRuntimeEffect,
 };
 
 // Represents an image filter mutation.
@@ -117,6 +120,29 @@ struct PlatformViewOverscrollStretch {
   }
 };
 
+struct PlatformViewRuntimeEffectUniform {
+  std::string name;
+  std::vector<uint8_t> data;
+
+  bool operator==(const PlatformViewRuntimeEffectUniform& other) const {
+    return name == other.name && data == other.data;
+  }
+};
+
+struct PlatformViewRuntimeEffect {
+  std::vector<uint8_t> shader_data;
+  std::vector<PlatformViewRuntimeEffectUniform> uniforms;
+
+  PlatformViewRuntimeEffect(
+      std::vector<uint8_t> shader,
+      std::vector<PlatformViewRuntimeEffectUniform> uniform_list)
+      : shader_data(std::move(shader)), uniforms(std::move(uniform_list)) {}
+
+  bool operator==(const PlatformViewRuntimeEffect& other) const {
+    return shader_data == other.shader_data && uniforms == other.uniforms;
+  }
+};
+
 // Stores mutation information like clipping or kTransform.
 //
 // The `type` indicates the type of the mutation: kClipRect, kTransform and etc.
@@ -147,6 +173,7 @@ class Mutator {
       : data_(backdrop_path) {}
   explicit Mutator(const PlatformViewOverscrollStretch& stretch)
       : data_(stretch) {}
+  explicit Mutator(const PlatformViewRuntimeEffect& effect) : data_(effect) {}
 
   MutatorType GetType() const {
     return static_cast<MutatorType>(data_.index());
@@ -181,6 +208,9 @@ class Mutator {
       const {
     return std::get<PlatformViewOverscrollStretch>(data_);
   }
+  const PlatformViewRuntimeEffect& GetPlatformViewRuntimeEffect() const {
+    return std::get<PlatformViewRuntimeEffect>(data_);
+  }
   const uint8_t& GetAlpha() const { return std::get<uint8_t>(data_); }
   float GetAlphaFloat() const { return DlColor::toOpacity(GetAlpha()); }
 
@@ -201,6 +231,7 @@ class Mutator {
       case MutatorType::kTransform:
       case MutatorType::kBackdropFilter:
       case MutatorType::kPlatformViewOverscrollStretch:
+      case MutatorType::kRuntimeEffect:
         return false;
     }
   }
@@ -217,7 +248,8 @@ class Mutator {
                BackdropClipRRect,
                BackdropClipRSuperellipse,
                BackdropClipPath,
-               PlatformViewOverscrollStretch>
+               PlatformViewOverscrollStretch,
+               PlatformViewRuntimeEffect>
       data_;
 };  // Mutator
 
@@ -249,6 +281,9 @@ class MutatorsStack {
   void PushPlatformViewClipPath(const DlPath& path);
   void PushPlatformViewOverscrollStretch(double x_overscroll,
                                          double y_overscroll);
+  void PushPlatformViewRuntimeEffect(
+      std::vector<uint8_t> shader_data,
+      std::vector<PlatformViewRuntimeEffectUniform> uniforms);
 
   // Removes the `Mutator` on the top of the stack
   // and destroys it.
@@ -368,6 +403,13 @@ class EmbeddedViewParams {
                                          double y_overscroll) {
     mutators_stack_.PushPlatformViewOverscrollStretch(x_overscroll,
                                                       y_overscroll);
+  }
+
+  void PushPlatformViewRuntimeEffect(
+      std::vector<uint8_t> shader_data,
+      std::vector<PlatformViewRuntimeEffectUniform> uniforms) {
+    mutators_stack_.PushPlatformViewRuntimeEffect(std::move(shader_data),
+                                                  std::move(uniforms));
   }
 
   bool operator==(const EmbeddedViewParams& other) const {

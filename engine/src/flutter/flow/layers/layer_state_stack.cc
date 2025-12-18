@@ -5,9 +5,13 @@
 #include "flutter/flow/layers/layer_state_stack.h"
 
 #include "flutter/display_list/utils/dl_matrix_clip_tracker.h"
+#include "flutter/display_list/effects/image_filters/dl_runtime_effect_image_filter.h"
+#include "flutter/common/graphics/texture.h"
+#include "flutter/flow/layers/layer_state_stack.h"
 #include "flutter/flow/layers/layer.h"
 #include "flutter/flow/paint_utils.h"
 #include "flutter/flow/raster_cache_util.h"
+#include "third_party/skia/include/effects/SkRuntimeEffect.h"
 
 namespace flutter {
 
@@ -214,6 +218,9 @@ class SaveEntry : public LayerStateStack::StateEntry {
   void restore(LayerStateStack* stack) const override {
     stack->delegate_->restore();
   }
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type Save";
+  }
 
   FML_DISALLOW_COPY_ASSIGN_AND_MOVE(SaveEntry);
 };
@@ -233,6 +240,9 @@ class SaveLayerEntry : public LayerStateStack::StateEntry {
   void restore(LayerStateStack* stack) const override {
     stack->delegate_->restore();
     stack->outstanding_ = old_attributes_;
+  }
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type SaveLayer";
   }
 
  protected:
@@ -262,6 +272,7 @@ class OpacityEntry : public LayerStateStack::StateEntry {
     stack->outstanding_.opacity = old_opacity_;
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type Opacity";
     mutators_stack->PushOpacity(DlColor::toAlpha(opacity_));
   }
 
@@ -295,7 +306,56 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
   }
 
   // There is no ImageFilter mutator currently
-  // void update_mutators(MutatorsStack* mutators_stack) const override;
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type ImageFilter";
+    if (auto runtime_filter = filter_->asRuntimeEffectFilter()) {
+      FML_LOG(ERROR) << "HI GRAY, IN IMAGE FILTER ENTRY, RUNTIME FILTER";
+      auto effect = runtime_filter->runtime_effect();
+      auto sk_effect = effect ? effect->skia_runtime_effect() : nullptr;
+      if (sk_effect) {
+        FML_LOG(ERROR) << "HI GRAY, SK EFFECT VALID, PUSHING MUTATOR";
+        std::string source = sk_effect->source();
+        std::vector<uint8_t> shader_data(source.begin(), source.end());
+
+        std::vector<uint8_t> uniform_data;
+        if (runtime_filter->uniform_data()) {
+          // If this is an Impeller effect, we might need to remap uniforms
+          // from Impeller layout to Skia layout.
+          auto remapped = effect->GetSkiaUniformData(runtime_filter->uniform_data());
+          if (remapped) {
+             uniform_data = *remapped;
+          }
+        }
+
+        std::vector<PlatformViewRuntimeEffectUniform> uniforms;
+        for (const auto& uniform : sk_effect->uniforms()) {
+           FML_LOG(ERROR) << "HI GRAY, Uniform: " << uniform.name
+                          << " offset: " << uniform.offset
+                          << " size: " << uniform.sizeInBytes()
+                          << " total_data_size: " << uniform_data.size();
+           if (uniform.offset + uniform.sizeInBytes() > uniform_data.size()) {
+             FML_LOG(ERROR) << "HI GRAY, Uniform out of bounds!";
+             continue;
+           }
+           std::vector<uint8_t> data(
+               uniform_data.begin() + uniform.offset,
+               uniform_data.begin() + uniform.offset + uniform.sizeInBytes());
+
+           // Log first few bytes of data
+           std::stringstream ss;
+           for(size_t i=0; i<data.size() && i<64; ++i) {
+             ss << std::hex << (int)data[i] << " ";
+           }
+           FML_LOG(ERROR) << "HI GRAY, Data: " << ss.str();
+
+           uniforms.push_back({std::string(uniform.name), std::move(data)});
+        }
+
+        mutators_stack->PushPlatformViewRuntimeEffect(std::move(shader_data),
+                                                      std::move(uniforms));
+      }
+    }
+  }
 
  private:
   const DlRect bounds_;
@@ -327,7 +387,9 @@ class ColorFilterEntry : public LayerStateStack::StateEntry {
   }
 
   // There is no ColorFilter mutator currently
-  // void update_mutators(MutatorsStack* mutators_stack) const override;
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type ColorFilter";
+  }
 
  private:
   const DlRect bounds_;
@@ -367,6 +429,10 @@ class BackdropFilterEntry : public SaveLayerEntry {
     SaveLayerEntry::apply(stack);
   }
 
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type BackdropFilter";
+  }
+
  private:
   const std::shared_ptr<DlImageFilter> filter_;
   std::optional<int64_t> backdrop_id_;
@@ -382,6 +448,7 @@ class TranslateEntry : public LayerStateStack::StateEntry {
     stack->delegate_->translate(translation_.x, translation_.y);
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type Translate";
     mutators_stack->PushTransform(DlMatrix::MakeTranslation(translation_));
   }
 
@@ -399,6 +466,7 @@ class TransformMatrixEntry : public LayerStateStack::StateEntry {
     stack->delegate_->transform(matrix_);
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type TransformMatrix";
     mutators_stack->PushTransform(matrix_);
   }
 
@@ -415,6 +483,9 @@ class IntegralTransformEntry : public LayerStateStack::StateEntry {
   void apply(LayerStateStack* stack) const override {
     stack->delegate_->integralTransform();
   }
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type IntegralTransform";
+  }
 
  private:
   FML_DISALLOW_COPY_ASSIGN_AND_MOVE(IntegralTransformEntry);
@@ -429,6 +500,7 @@ class ClipRectEntry : public LayerStateStack::StateEntry {
     stack->delegate_->clipRect(clip_rect_, DlClipOp::kIntersect, is_aa_);
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type ClipRect";
     mutators_stack->PushClipRect(clip_rect_);
   }
 
@@ -448,6 +520,7 @@ class ClipRRectEntry : public LayerStateStack::StateEntry {
     stack->delegate_->clipRRect(clip_rrect_, DlClipOp::kIntersect, is_aa_);
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type ClipRRect";
     mutators_stack->PushClipRRect(clip_rrect_);
   }
 
@@ -469,6 +542,7 @@ class ClipRSuperellipseEntry : public LayerStateStack::StateEntry {
                                         DlClipOp::kIntersect, is_aa_);
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type ClipRSuperellipse";
     mutators_stack->PushClipRSE(clip_rsuperellipse_);
   }
 
@@ -489,6 +563,7 @@ class ClipPathEntry : public LayerStateStack::StateEntry {
     stack->delegate_->clipPath(clip_path_, DlClipOp::kIntersect, is_aa_);
   }
   void update_mutators(MutatorsStack* mutators_stack) const override {
+    FML_LOG(ERROR) << "HI GRAY, updating mutator of type ClipPath";
     mutators_stack->PushClipPath(clip_path_);
   }
 
@@ -669,6 +744,7 @@ void LayerStateStack::reapply_all() {
 
 void LayerStateStack::fill(MutatorsStack* mutators) {
   for (auto& state : state_stack_) {
+    FML_LOG(ERROR) << "HI GRAY, IN FILL";
     state->update_mutators(mutators);
   }
 }

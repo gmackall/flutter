@@ -28,6 +28,12 @@ private class BoxPlatformView(
 ) : View(context),
     PlatformView {
     val paint = Paint()
+    private val textPaint =
+        Paint().apply {
+            color = Color.WHITE
+            textSize = 100f
+            textAlign = Paint.Align.CENTER
+        }
 
     init {
         layoutParams =
@@ -44,6 +50,7 @@ private class BoxPlatformView(
     override fun onDraw(canvas: Canvas) {
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
         super.onDraw(canvas)
+        canvas.drawText("Heterogeneous", width / 2f, height / 2f, textPaint)
     }
 
     override fun onSizeChanged(

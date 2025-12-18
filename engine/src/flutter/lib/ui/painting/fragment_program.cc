@@ -177,7 +177,32 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
           snapshot_controller->CacheRuntimeStage(runtime_stage);
         });
 #if IMPELLER_SUPPORTS_RENDERING
-    runtime_effect_ = DlRuntimeEffectImpeller::Make(std::move(runtime_stage));
+    sk_sp<SkRuntimeEffect> skia_effect;
+    if (runtime_stages->count(impeller::RuntimeStageBackend::kSkSL)) {
+      auto sksl_stage = (*runtime_stages)[impeller::RuntimeStageBackend::kSkSL];
+      if (sksl_stage) {
+        const auto& code_mapping = sksl_stage->GetCodeMapping();
+        auto code_size = code_mapping->GetSize();
+        const char* sksl =
+            reinterpret_cast<const char*>(code_mapping->GetMapping());
+        SkRuntimeEffect::Result result =
+            SkRuntimeEffect::MakeForShader(SkString(sksl, code_size));
+        if (result.effect) {
+          skia_effect = result.effect;
+        }
+
+        // Log SkSL stage uniforms
+        FML_LOG(ERROR) << "HI GRAY, SkSL Stage Uniforms from FragmentProgram:";
+        for (const auto& u : sksl_stage->GetUniforms()) {
+           FML_LOG(ERROR) << "  Name: " << u.name
+                          << " Loc: " << u.location
+                          << " Size: " << u.GetSize()
+                          << " Type: " << (int)u.type;
+        }
+      }
+    }
+    runtime_effect_ = DlRuntimeEffectImpeller::Make(std::move(runtime_stage),
+                                                    std::move(skia_effect));
 #endif
   } else {
     const auto& code_mapping = runtime_stage->GetCodeMapping();

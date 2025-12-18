@@ -56,6 +56,8 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_bitmap_class = nullptr;
 
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_bitmap_config_class = nullptr;
 
+static fml::jni::ScopedJavaGlobalRef<jclass>* g_byte_array_class = nullptr;
+
 // Called By Native
 
 static jmethodID g_flutter_callback_info_constructor = nullptr;
@@ -165,6 +167,8 @@ static jmethodID g_mutators_stack_push_cliprrect_method = nullptr;
 static jmethodID g_mutators_stack_push_opacity_method = nullptr;
 static jmethodID g_mutators_stack_push_clippath_method = nullptr;
 static jmethodID g_mutators_stack_push_platform_view_overscroll_stretch_method =
+    nullptr;
+static jmethodID g_mutators_stack_push_platform_view_runtime_effect_method =
     nullptr;
 
 // android.graphics.Path class, methods, and nested classes.
@@ -1046,6 +1050,13 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
+  g_byte_array_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
+      env, env->FindClass("[B"));
+  if (g_byte_array_class->is_null()) {
+    FML_LOG(ERROR) << "Could not locate byte array class";
+    return false;
+  }
+
   g_mutators_stack_init_method =
       env->GetMethodID(g_mutators_stack_class->obj(), "<init>", "()V");
   if (g_mutators_stack_init_method == nullptr) {
@@ -1101,6 +1112,18 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
       nullptr) {
     FML_LOG(ERROR) << "Could not locate "
                       "FlutterMutatorsStack.pushPlatformViewOverscrollStretch "
+                      "method";
+    return false;
+  }
+
+  g_mutators_stack_push_platform_view_runtime_effect_method = env->GetMethodID(
+      g_mutators_stack_class->obj(), "pushPlatformViewRuntimeEffect",
+      "([B[Ljava/lang/String;[[B)V");
+
+  FML_LOG(ERROR) << "HI GRAY, JNI Method Resolved: pushPlatformViewRuntimeEffect";
+  if (g_mutators_stack_push_platform_view_runtime_effect_method == nullptr) {
+    FML_LOG(ERROR) << "Could not locate "
+                      "FlutterMutatorsStack.pushPlatformViewRuntimeEffect "
                       "method";
     return false;
   }
@@ -1722,6 +1745,8 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
   std::vector<std::shared_ptr<Mutator>>::const_iterator iter =
       mutators_stack.Begin();
   while (iter != mutators_stack.End()) {
+    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type: " << static_cast<int>((*iter)->GetType());
+    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type: " << static_cast<int>((*iter)->GetType());
     switch ((*iter)->GetType()) {
       case MutatorType::kTransform: {
         const DlMatrix& matrix = (*iter)->GetMatrix();
@@ -1730,8 +1755,10 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
             matrix.m[1], matrix.m[5], matrix.m[13],  //
             matrix.m[3], matrix.m[7], matrix.m[15],
         };
-        fml::jni::ScopedJavaLocalRef<jfloatArray> transformMatrix(
-            env, env->NewFloatArray(9));
+        jfloatArray transformMatrixRaw = env->NewFloatArray(9);
+        fml::jni::ScopedJavaLocalRef<jfloatArray> transformMatrix;
+        transformMatrix.Reset(env, transformMatrixRaw);
+        env->DeleteLocalRef(transformMatrixRaw);
 
         env->SetFloatArrayRegion(transformMatrix.obj(), 0, 9, matrix_array);
         env->CallVoidMethod(mutatorsStack,
@@ -1759,8 +1786,10 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
             radii.bottom_right.width, radii.bottom_right.height,
             radii.bottom_left.width,  radii.bottom_left.height,
         };
-        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray(
-            env, env->NewFloatArray(8));
+        jfloatArray radiisArrayRaw = env->NewFloatArray(8);
+        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray;
+        radiisArray.Reset(env, radiisArrayRaw);
+        env->DeleteLocalRef(radiisArrayRaw);
         env->SetFloatArrayRegion(radiisArray.obj(), 0, 8, radiis);
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_cliprrect_method,
@@ -1781,8 +1810,10 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
             radii.bottom_right.width, radii.bottom_right.height,
             radii.bottom_left.width,  radii.bottom_left.height,
         };
-        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray(
-            env, env->NewFloatArray(8));
+        jfloatArray radiisArrayRaw = env->NewFloatArray(8);
+        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray;
+        radiisArray.Reset(env, radiisArrayRaw);
+        env->DeleteLocalRef(radiisArrayRaw);
         env->SetFloatArrayRegion(radiisArray.obj(), 0, 8, radiis);
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_cliprrect_method,
@@ -1795,6 +1826,54 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
       }
       // TODO(cyanglaz): Implement other mutators.
       // https://github.com/flutter/flutter/issues/58426
+      case MutatorType::kRuntimeEffect: {
+        const PlatformViewRuntimeEffect& effect =
+            (*iter)->GetPlatformViewRuntimeEffect();
+        jbyteArray shaderDataRaw = env->NewByteArray(static_cast<jsize>(effect.shader_data.size()));
+        fml::jni::ScopedJavaLocalRef<jbyteArray> shaderData;
+        shaderData.Reset(env, shaderDataRaw);
+        env->DeleteLocalRef(shaderDataRaw);
+
+        env->SetByteArrayRegion(shaderData.obj(), 0, static_cast<jsize>(effect.shader_data.size()),
+                                reinterpret_cast<const jbyte*>(
+                                    effect.shader_data.data()));
+
+        jclass stringClass = env->FindClass("java/lang/String");
+        jobjectArray uniformNamesRaw = env->NewObjectArray(
+            static_cast<jsize>(effect.uniforms.size()), stringClass, nullptr);
+        fml::jni::ScopedJavaLocalRef<jobjectArray> uniformNames;
+        uniformNames.Reset(env, uniformNamesRaw);
+        env->DeleteLocalRef(uniformNamesRaw);
+
+        jclass byteArrayClass = env->FindClass("[B");
+        jobjectArray uniformDataRaw = env->NewObjectArray(
+            static_cast<jsize>(effect.uniforms.size()), byteArrayClass, nullptr);
+        fml::jni::ScopedJavaLocalRef<jobjectArray> uniformData;
+        uniformData.Reset(env, uniformDataRaw);
+        env->DeleteLocalRef(uniformDataRaw);
+
+        for (size_t i = 0; i < effect.uniforms.size(); ++i) {
+          fml::jni::ScopedJavaLocalRef<jstring> name =
+              fml::jni::StringToJavaString(env, effect.uniforms[i].name);
+          env->SetObjectArrayElement(uniformNames.obj(), static_cast<jsize>(i), name.obj());
+
+          jbyteArray dataRaw = env->NewByteArray(static_cast<jsize>(effect.uniforms[i].data.size()));
+          fml::jni::ScopedJavaLocalRef<jbyteArray> data;
+          data.Reset(env, dataRaw);
+          env->DeleteLocalRef(dataRaw);
+
+          env->SetByteArrayRegion(
+              data.obj(), 0, static_cast<jsize>(effect.uniforms[i].data.size()),
+              reinterpret_cast<const jbyte*>(effect.uniforms[i].data.data()));
+          env->SetObjectArrayElement(uniformData.obj(), static_cast<jsize>(i), data.obj());
+        }
+
+        env->CallVoidMethod(
+            mutatorsStack,
+            g_mutators_stack_push_platform_view_runtime_effect_method,
+            shaderData.obj(), uniformNames.obj(), uniformData.obj());
+        break;
+      }
       case MutatorType::kClipPath:
       case MutatorType::kOpacity:
       case MutatorType::kBackdropFilter:
@@ -2216,7 +2295,58 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
   std::vector<std::shared_ptr<Mutator>>::const_iterator iter =
       mutators_stack.Begin();
   while (iter != mutators_stack.End()) {
+    FML_LOG(ERROR) << "HI GRAY, Iterating mutator type (v2): " << static_cast<int>((*iter)->GetType());
     switch ((*iter)->GetType()) {
+      case MutatorType::kRuntimeEffect: {
+        const PlatformViewRuntimeEffect& effect =
+            (*iter)->GetPlatformViewRuntimeEffect();
+
+        jbyteArray shaderDataRaw = env->NewByteArray(static_cast<jsize>(effect.shader_data.size()));
+        fml::jni::ScopedJavaLocalRef<jbyteArray> methodParams;
+        methodParams.Reset(env, shaderDataRaw);
+        env->DeleteLocalRef(shaderDataRaw);
+
+        env->SetByteArrayRegion(
+            methodParams.obj(), 0, static_cast<jsize>(effect.shader_data.size()),
+            reinterpret_cast<const jbyte*>(effect.shader_data.data()));
+
+        // Prepare uniform names
+        jclass stringClass = env->FindClass("java/lang/String");
+        jobjectArray uniformNamesRaw = env->NewObjectArray(static_cast<jsize>(effect.uniforms.size()),
+                                     stringClass, nullptr);
+        fml::jni::ScopedJavaLocalRef<jobjectArray> uniformNames;
+        uniformNames.Reset(env, uniformNamesRaw);
+        env->DeleteLocalRef(uniformNamesRaw);
+
+        for (size_t i = 0; i < effect.uniforms.size(); ++i) {
+          fml::jni::ScopedJavaLocalRef<jstring> name =
+              fml::jni::StringToJavaString(env, effect.uniforms[i].name);
+          env->SetObjectArrayElement(uniformNames.obj(), static_cast<jsize>(i), name.obj());
+        }
+
+        // Prepare uniform data (array of byte arrays)
+        jobjectArray uniformDataRaw = env->NewObjectArray(static_cast<jsize>(effect.uniforms.size()),
+                                     g_byte_array_class->obj(), nullptr);
+        fml::jni::ScopedJavaLocalRef<jobjectArray> uniformData;
+        uniformData.Reset(env, uniformDataRaw);
+        env->DeleteLocalRef(uniformDataRaw);
+
+        for (size_t i = 0; i < effect.uniforms.size(); ++i) {
+          jbyteArray dataRaw = env->NewByteArray(static_cast<jsize>(effect.uniforms[i].data.size()));
+          fml::jni::ScopedJavaLocalRef<jbyteArray> data;
+          data.Reset(env, dataRaw);
+          env->DeleteLocalRef(dataRaw);
+
+          env->SetByteArrayRegion(
+              data.obj(), 0, static_cast<jsize>(effect.uniforms[i].data.size()),
+              reinterpret_cast<const jbyte*>(effect.uniforms[i].data.data()));
+          env->SetObjectArrayElement(uniformData.obj(), static_cast<jsize>(i), data.obj());
+        }
+
+        env->CallVoidMethod(
+            mutatorsStack, g_mutators_stack_push_platform_view_runtime_effect_method,
+            methodParams.obj(), uniformNames.obj(), uniformData.obj());
+      } break;
       case MutatorType::kTransform: {
         const DlMatrix& matrix = (*iter)->GetMatrix();
         DlScalar matrix_array[9]{
@@ -2224,8 +2354,10 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
             matrix.m[1], matrix.m[5], matrix.m[13],  //
             matrix.m[3], matrix.m[7], matrix.m[15],
         };
-        fml::jni::ScopedJavaLocalRef<jfloatArray> transformMatrix(
-            env, env->NewFloatArray(9));
+        jfloatArray transformMatrixRaw = env->NewFloatArray(9);
+        fml::jni::ScopedJavaLocalRef<jfloatArray> transformMatrix;
+        transformMatrix.Reset(env, transformMatrixRaw);
+        env->DeleteLocalRef(transformMatrixRaw);
 
         env->SetFloatArrayRegion(transformMatrix.obj(), 0, 9, matrix_array);
         env->CallVoidMethod(mutatorsStack,
@@ -2253,8 +2385,10 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
             radii.bottom_right.width, radii.bottom_right.height,
             radii.bottom_left.width,  radii.bottom_left.height,
         };
-        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray(
-            env, env->NewFloatArray(8));
+        jfloatArray radiisArrayRaw = env->NewFloatArray(8);
+        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray;
+        radiisArray.Reset(env, radiisArrayRaw);
+        env->DeleteLocalRef(radiisArrayRaw);
         env->SetFloatArrayRegion(radiisArray.obj(), 0, 8, radiis);
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_cliprrect_method,
@@ -2275,8 +2409,10 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
             radii.bottom_right.width, radii.bottom_right.height,
             radii.bottom_left.width,  radii.bottom_left.height,
         };
-        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray(
-            env, env->NewFloatArray(8));
+        jfloatArray radiisArrayRaw = env->NewFloatArray(8);
+        fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray;
+        radiisArray.Reset(env, radiisArrayRaw);
+        env->DeleteLocalRef(radiisArrayRaw);
         env->SetFloatArrayRegion(radiisArray.obj(), 0, 8, radiis);
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_cliprrect_method,

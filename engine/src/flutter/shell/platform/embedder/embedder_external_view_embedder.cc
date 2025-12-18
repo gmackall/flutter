@@ -182,6 +182,7 @@ struct PlatformView {
         case MutatorType::kBackdropClipRSuperellipse:
         case MutatorType::kBackdropClipPath:
         case MutatorType::kPlatformViewOverscrollStretch:
+        case MutatorType::kRuntimeEffect:
           break;
       }
     }

@@ -6,6 +6,7 @@
 #define FLUTTER_DISPLAY_LIST_EFFECTS_DL_RUNTIME_EFFECT_H_
 
 #include <memory>
+#include <vector>
 
 #include "flutter/fml/macros.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
@@ -25,6 +26,11 @@ class DlRuntimeEffect : public SkRefCnt {
 
   /// Returns the total combined size of all uniforms in bytes.
   virtual size_t uniform_size() const = 0;
+
+  virtual std::shared_ptr<std::vector<uint8_t>> GetSkiaUniformData(
+      const std::shared_ptr<std::vector<uint8_t>>& impeller_data) const {
+    return impeller_data;
+  }
 
  protected:
   DlRuntimeEffect();

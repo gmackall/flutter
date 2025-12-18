@@ -25,7 +25,12 @@ ReusableFragmentShader::ReusableFragmentShader(
       uniform_data_(SkData::MakeUninitialized(
           (float_count + 2 * sampler_count) * sizeof(float))),
       samplers_(sampler_count),
-      float_count_(float_count) {}
+      float_count_(float_count) {
+  // Zero-initialize the uniform data to prevent garbage values from uninitialized memory.
+  if (uniform_data_) {
+    memset(uniform_data_->writable_data(), 0, uniform_data_->size());
+  }
+}
 
 Dart_Handle ReusableFragmentShader::Create(Dart_Handle wrapper,
                                            Dart_Handle program,
