@@ -31,7 +31,7 @@ void AndroidExternalViewEmbedder::PrerollCompositeEmbeddedView(
                "AndroidExternalViewEmbedder::PrerollCompositeEmbeddedView");
 
   DlRect view_bounds = DlRect::MakeSize(frame_size_);
-    // Print out the view bounds for debugging.
+  // Print out the view bounds for debugging.
   FML_LOG(ERROR) << "PrerollCompositeEmbeddedView for view id " << view_id
                  << " with bounds " << view_bounds;
   std::unique_ptr<EmbedderViewSlice> view;
@@ -44,11 +44,11 @@ void AndroidExternalViewEmbedder::PrerollCompositeEmbeddedView(
       view_params_.at(view_id) == *params.get()) {
     return;
   }
-    FML_LOG(ERROR) << "Updating view params for view id " << view_id << " to x="
-                 << params->finalBoundingRect().GetX() << " y="
-                 << params->finalBoundingRect().GetY() << " w="
-                 << params->finalBoundingRect().GetWidth() << " h="
-                 << params->finalBoundingRect().GetHeight();
+  FML_LOG(ERROR) << "Updating view params for view id " << view_id
+                 << " to x=" << params->finalBoundingRect().GetX()
+                 << " y=" << params->finalBoundingRect().GetY()
+                 << " w=" << params->finalBoundingRect().GetWidth()
+                 << " h=" << params->finalBoundingRect().GetHeight();
   view_params_.insert_or_assign(view_id, EmbeddedViewParams(*params.get()));
 }
 
@@ -128,13 +128,12 @@ void AndroidExternalViewEmbedder::SubmitFlutterView(
         params.sizePoints().height * device_pixel_ratio_,
         params.mutatorsStack()  //
     );
-     FML_LOG(ERROR) << "Displaying platform view id " << view_id
-                         << " at x=" << view_rect.GetX() << " y="
-                         << view_rect.GetY() << " w=" << view_rect.GetWidth()
-                         << " h=" << view_rect.GetHeight() << " params w="
-                         << params.sizePoints().width * device_pixel_ratio_
-                         << " h="
-                         << params.sizePoints().height * device_pixel_ratio_;
+    FML_LOG(ERROR) << "Displaying platform view id " << view_id
+                   << " at x=" << view_rect.GetX() << " y=" << view_rect.GetY()
+                   << " w=" << view_rect.GetWidth()
+                   << " h=" << view_rect.GetHeight() << " params w="
+                   << params.sizePoints().width * device_pixel_ratio_
+                   << " h=" << params.sizePoints().height * device_pixel_ratio_;
     std::unordered_map<int64_t, DlRect>::const_iterator overlay =
         overlay_layers.find(view_id);
     if (overlay == overlay_layers.end()) {

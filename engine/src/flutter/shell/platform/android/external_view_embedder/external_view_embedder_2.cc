@@ -47,11 +47,11 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
       view_params_.at(view_id) == *params.get()) {
     return;
   }
-  FML_LOG(ERROR) << "Updating view params for view id " << view_id << " to x="
-                 << params->finalBoundingRect().GetX() << " y="
-                 << params->finalBoundingRect().GetY() << " w="
-                 << params->finalBoundingRect().GetWidth() << " h="
-                 << params->finalBoundingRect().GetHeight();
+  FML_LOG(ERROR) << "Updating view params for view id " << view_id
+                 << " to x=" << params->finalBoundingRect().GetX()
+                 << " y=" << params->finalBoundingRect().GetY()
+                 << " w=" << params->finalBoundingRect().GetWidth()
+                 << " h=" << params->finalBoundingRect().GetHeight();
   view_params_.insert_or_assign(view_id, EmbeddedViewParams(*params.get()));
 }
 
@@ -102,8 +102,8 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   for (auto platform_id : composition_order_) {
     view_rects[platform_id] = GetViewRect(platform_id, view_params_);
     FML_LOG(ERROR) << "HI GRAY, VIEW RECT for view id " << platform_id
-                   << " rect: (" << view_rects[platform_id].GetLeftTop().x << ", "
-                   << view_rects[platform_id].GetLeftTop().y << ") - ("
+                   << " rect: (" << view_rects[platform_id].GetLeftTop().x
+                   << ", " << view_rects[platform_id].GetLeftTop().y << ") - ("
                    << view_rects[platform_id].GetRightBottom().x << ", "
                    << view_rects[platform_id].GetRightBottom().y << ")";
   }
@@ -159,7 +159,8 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       DlCanvas* overlay_canvas = overlay_frame->Canvas();
       int restore_count = overlay_canvas->GetSaveCount();
       overlay_canvas->Save();
-      // Pass in a debug rect that is of size 0,0,0,0, instead of the correct calulation which is below:
+      // Pass in a debug rect that is of size 0,0,0,0, instead of the correct
+      // calulation which is below:
       overlay_canvas->ClipRect(overlay->second);
       // overlay_canvas->ClipRect(DlRect::MakeSize(DlSize(0,0)));
 
@@ -175,9 +176,8 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       // overlays appear as if they are under the platform view, when in
       // reality there is only a single layer.
       for (size_t j = i + 1; j < composition_order_.size(); j++) {
-        FML_LOG(ERROR)
-            << "Clipping overlay for view id "
-            << composition_order_[j];
+        FML_LOG(ERROR) << "Clipping overlay for view id "
+                       << composition_order_[j];
         DlRect view_rect = GetViewRect(composition_order_[j], view_params_);
         overlay_canvas->ClipRect(view_rect, DlClipOp::kDifference);
       }
@@ -218,8 +218,9 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
               params.mutatorsStack()  //
           );
           FML_LOG(ERROR) << "Displaying platform view id " << view_id
-                         << " at x=" << view_rect.GetX() << " y="
-                         << view_rect.GetY() << " w=" << view_rect.GetWidth()
+                         << " at x=" << view_rect.GetX()
+                         << " y=" << view_rect.GetY()
+                         << " w=" << view_rect.GetWidth()
                          << " h=" << view_rect.GetHeight() << " params w="
                          << params.sizePoints().width * device_pixel_ratio
                          << " h="

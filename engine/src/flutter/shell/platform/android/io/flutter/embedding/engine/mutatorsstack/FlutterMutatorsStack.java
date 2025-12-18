@@ -11,10 +11,9 @@ import android.graphics.RectF;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import io.flutter.Log;
 import java.util.ArrayList;
 import java.util.List;
-
-import io.flutter.Log;
 
 /**
  * The mutator stack containing a list of mutators
@@ -182,11 +181,30 @@ public class FlutterMutatorsStack {
 
   /** Push a clipRect {@link FlutterMutatorsStack.FlutterMutator} to the stack. */
   public void pushClipRect(int left, int top, int right, int bottom) {
-    Log.e("HI GRAY", "pushing a clip rect!!!!!!!!!!! Dimensions are " + "left: " + left + ", top: " + top + ", right: " + right + ", bottom:" + bottom);
+    Log.e(
+        "HI GRAY",
+        "pushing a clip rect!!!!!!!!!!! Dimensions are "
+            + "left: "
+            + left
+            + ", top: "
+            + top
+            + ", right: "
+            + right
+            + ", bottom:"
+            + bottom);
     Rect rect = new Rect(left, top, right, bottom);
     RectF rectF = new RectF(rect);
     finalMatrix.mapRect(rectF);
-    Log.e("HI GRAY", "final rect is left: " + rectF.left + ", top: " + rectF.top + ", right: " + rectF.right + ", bottom:" + rectF.bottom);
+    Log.e(
+        "HI GRAY",
+        "final rect is left: "
+            + rectF.left
+            + ", top: "
+            + rectF.top
+            + ", right: "
+            + rectF.right
+            + ", bottom:"
+            + rectF.bottom);
     FlutterMutator mutator = new FlutterMutator(rect);
     mutators.add(mutator);
     Path path = new Path();

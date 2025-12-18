@@ -7,18 +7,13 @@ package io.flutter.plugin.platform;
 import static io.flutter.Build.API_LEVELS;
 
 import android.content.Context;
-import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
-import android.graphics.RectF;
-import android.os.Build;
 import android.util.SparseArray;
 import android.view.MotionEvent;
 import android.view.MotionEvent.PointerCoords;
 import android.view.MotionEvent.PointerProperties;
 import android.view.Surface;
 import android.view.SurfaceControl;
-import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -519,11 +514,27 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
     // Print out the view parameters of the parent view.
-    Log.e("HI GRAY", "height is " + parentView.getLayoutParams().height + " and width is " + parentView.getLayoutParams().width + " and mutator stack size is " + mutatorsStack.getMutators().size());
+    Log.e(
+        "HI GRAY",
+        "height is "
+            + parentView.getLayoutParams().height
+            + " and width is "
+            + parentView.getLayoutParams().width
+            + " and mutator stack size is "
+            + mutatorsStack.getMutators().size());
     for (FlutterMutatorsStack.FlutterMutator mutator : mutatorsStack.getMutators()) {
       Log.e("HI GRAY", "mutator type is " + mutator.getType());
       if (mutator.getType() == FlutterMutatorsStack.FlutterMutatorType.CLIP_RECT) {
-        Log.e("HI GRAY", "rect is top: " + mutator.getRect().top + " bottom: " + mutator.getRect().bottom + " left: " + mutator.getRect().left + " right: " + mutator.getRect().right);
+        Log.e(
+            "HI GRAY",
+            "rect is top: "
+                + mutator.getRect().top
+                + " bottom: "
+                + mutator.getRect().bottom
+                + " left: "
+                + mutator.getRect().left
+                + " right: "
+                + mutator.getRect().right);
       }
     }
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
@@ -536,69 +547,74 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     Log.e("HI GRAY", "the z for the parent view is " + parentView.getZ());
     if (view != null) {
       Log.e("HI GRAY", "the z for the platform view is " + view.getZ());
-      Log.e("HI GRAY", "height is " + view.getLayoutParams().height + " and width is " + view.getLayoutParams().width);
+      Log.e(
+          "HI GRAY",
+          "height is "
+              + view.getLayoutParams().height
+              + " and width is "
+              + view.getLayoutParams().width);
       view.setLayoutParams(layoutParams);
       view.bringToFront();
 
       // --- FIX START: HCPP Manual Surface Synchronization ---
-//      if (Build.VERSION.SDK_INT >= API_LEVELS.API_29 && view instanceof SurfaceView) {
-//        SurfaceView surfaceView = (SurfaceView) view;
-//        SurfaceControl sc = surfaceView.getSurfaceControl();
-//
-//        if (sc != null && sc.isValid()) {
-//          SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
-//
-//          // 1. HANDLE OPACITY
-//          // Apply the accumulated opacity from the stack to the Surface layer.
-//          tx.setAlpha(sc, mutatorsStack.getFinalOpacity());
-//
-//          // 2. HANDLE CLIPPING (RECT, RRECT, PATH, TRANSFORM)
-//          // We start with the view's final on-screen bounds.
-//          RectF screenRectF = new RectF(x, y, x+width, y+height);
-//          Rect screenRect = new Rect();
-//          screenRectF.roundOut(screenRect);
-//
-//          List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
-//
-//          if (clippingPaths != null && !clippingPaths.isEmpty()) {
-//            RectF pathBounds = new RectF();
-//            for (Path path : clippingPaths) {
-//              // Compute the axis-aligned bounding box of the path.
-//              path.computeBounds(pathBounds, true);
-//
-//              // Round out to ensure we cover the pixels (ceil/floor logic).
-//              Rect pathRectInt = new Rect();
-//              pathBounds.roundOut(pathRectInt);
-//
-//              // Intersect the current visible area with this clip.
-//              // If the path is a complex shape (star, rounded rect), this
-//              // constrains the surface to the bounding box of that shape.
-//              screenRect.intersect(pathRectInt);
-//            }
-//          }
-//
-//          // 3. CONVERT TO LOCAL SURFACE COORDINATES
-//          // SurfaceControl.setCrop expects coordinates relative to the Surface (0,0).
-//          // We shift the calculated screen-space rect by the view's origin (-x, -y).
-//          screenRect.offset(-x, -y);
-//          if (screenRect.width() < 0 || screenRect.height() < 0) {
-//            screenRect.setEmpty();
-//          }
-//
-//          // Send the command to SurfaceFlinger.
-//            if (Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
-//                tx.setCrop(sc, screenRect);
-//                Log.e("HI GRAY", "final computed screenrect is " + screenRect);
-//            }
-//
-//            // 5. SYNC WITH FRAME
-//          // Apply this transaction as part of the ViewRoot's draw cycle to prevent
-//          // visual tearing/jitter during scrolling.
-//            if (Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
-//                flutterView.getRootSurfaceControl().applyTransactionOnDraw(tx);
-//            }
-//        }
-//      }
+      //      if (Build.VERSION.SDK_INT >= API_LEVELS.API_29 && view instanceof SurfaceView) {
+      //        SurfaceView surfaceView = (SurfaceView) view;
+      //        SurfaceControl sc = surfaceView.getSurfaceControl();
+      //
+      //        if (sc != null && sc.isValid()) {
+      //          SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
+      //
+      //          // 1. HANDLE OPACITY
+      //          // Apply the accumulated opacity from the stack to the Surface layer.
+      //          tx.setAlpha(sc, mutatorsStack.getFinalOpacity());
+      //
+      //          // 2. HANDLE CLIPPING (RECT, RRECT, PATH, TRANSFORM)
+      //          // We start with the view's final on-screen bounds.
+      //          RectF screenRectF = new RectF(x, y, x+width, y+height);
+      //          Rect screenRect = new Rect();
+      //          screenRectF.roundOut(screenRect);
+      //
+      //          List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
+      //
+      //          if (clippingPaths != null && !clippingPaths.isEmpty()) {
+      //            RectF pathBounds = new RectF();
+      //            for (Path path : clippingPaths) {
+      //              // Compute the axis-aligned bounding box of the path.
+      //              path.computeBounds(pathBounds, true);
+      //
+      //              // Round out to ensure we cover the pixels (ceil/floor logic).
+      //              Rect pathRectInt = new Rect();
+      //              pathBounds.roundOut(pathRectInt);
+      //
+      //              // Intersect the current visible area with this clip.
+      //              // If the path is a complex shape (star, rounded rect), this
+      //              // constrains the surface to the bounding box of that shape.
+      //              screenRect.intersect(pathRectInt);
+      //            }
+      //          }
+      //
+      //          // 3. CONVERT TO LOCAL SURFACE COORDINATES
+      //          // SurfaceControl.setCrop expects coordinates relative to the Surface (0,0).
+      //          // We shift the calculated screen-space rect by the view's origin (-x, -y).
+      //          screenRect.offset(-x, -y);
+      //          if (screenRect.width() < 0 || screenRect.height() < 0) {
+      //            screenRect.setEmpty();
+      //          }
+      //
+      //          // Send the command to SurfaceFlinger.
+      //            if (Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
+      //                tx.setCrop(sc, screenRect);
+      //                Log.e("HI GRAY", "final computed screenrect is " + screenRect);
+      //            }
+      //
+      //            // 5. SYNC WITH FRAME
+      //          // Apply this transaction as part of the ViewRoot's draw cycle to prevent
+      //          // visual tearing/jitter during scrolling.
+      //            if (Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
+      //                flutterView.getRootSurfaceControl().applyTransactionOnDraw(tx);
+      //            }
+      //        }
+      //      }
       // --- FIX END ---
     }
   }
@@ -619,13 +635,13 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       tx = tx.merge(activeTransactions.get(i));
     }
 
-//    if (overlaySurfaceControl != null) {
-//      // Force the overlay surface to be the top-most layer in this transaction.
-//      // Integer.MAX_VALUE might be unsafe depending on the hierarchy depth,
-//      // but a significantly high number or simply re-asserting its layer is required.
-//      // Even better: verify visibility logic.
-//      tx.setLayer(overlaySurfaceControl, Integer.MAX_VALUE);
-//    }
+    //    if (overlaySurfaceControl != null) {
+    //      // Force the overlay surface to be the top-most layer in this transaction.
+    //      // Integer.MAX_VALUE might be unsafe depending on the hierarchy depth,
+    //      // but a significantly high number or simply re-asserting its layer is required.
+    //      // Even better: verify visibility logic.
+    //      tx.setLayer(overlaySurfaceControl, Integer.MAX_VALUE);
+    //    }
     activeTransactions.clear();
     Log.e("HI GRAY", "the z for the flutter view is " + flutterView.getZ());
     flutterView.invalidate();
