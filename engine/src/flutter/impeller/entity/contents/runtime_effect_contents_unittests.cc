@@ -13,7 +13,8 @@
 namespace impeller {
 namespace testing {
 
-TEST(RuntimeEffectContentsTest, MakeShaderMetadataCalculatesByteLengthCorrectly) {
+TEST(RuntimeEffectContentsTest,
+     MakeShaderMetadataCalculatesByteLengthCorrectly) {
   // Case 1: Single float uniform.
   {
     RuntimeUniformDescription uniform;
@@ -58,7 +59,8 @@ TEST(RuntimeEffectContentsTest, MakeShaderMetadataCalculatesByteLengthCorrectly)
     auto metadata = RuntimeEffectContents::MakeShaderMetadata(uniform);
     ASSERT_EQ(metadata->members.size(), 1u);
     EXPECT_EQ(metadata->members[0].type, ShaderType::kFloat);
-    EXPECT_EQ(metadata->members[0].size, 4u); // Size of single element type usually
+    EXPECT_EQ(metadata->members[0].size,
+              4u);  // Size of single element type usually
     // However, looking at logic: size = rows * cols * (bit_width/8)
     // So size is 4.
     EXPECT_EQ(metadata->members[0].size, 4u);
@@ -78,7 +80,7 @@ TEST(RuntimeEffectContentsTest, MakeShaderMetadataCalculatesByteLengthCorrectly)
     auto metadata = RuntimeEffectContents::MakeShaderMetadata(uniform);
     ASSERT_EQ(metadata->members.size(), 1u);
     EXPECT_EQ(metadata->members[0].type, ShaderType::kFloat);
-    EXPECT_EQ(metadata->members[0].size, 16u); // 4 floats * 4 bytes
+    EXPECT_EQ(metadata->members[0].size, 16u);  // 4 floats * 4 bytes
     // Byte length SHOULD include array elements AND vector size.
     // 16 bytes per element * 4 elements = 64 bytes.
     EXPECT_EQ(metadata->members[0].byte_length, 64u);

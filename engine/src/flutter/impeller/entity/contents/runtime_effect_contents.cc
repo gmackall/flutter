@@ -93,7 +93,7 @@ std::unique_ptr<ShaderMetadata> RuntimeEffectContents::MakeShaderMetadata(
       .byte_length = (uniform.bit_width / 8u) * uniform.dimensions.rows *
                      uniform.dimensions.cols *
                      uniform.array_elements.value_or(1),  //
-      .array_elements = uniform.array_elements                            //
+      .array_elements = uniform.array_elements            //
   });
 
   return metadata;
