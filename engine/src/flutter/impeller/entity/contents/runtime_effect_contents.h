@@ -43,6 +43,9 @@ class RuntimeEffectContents final : public ColorSourceContents {
       const RuntimeUniformDescription& uniform,
       size_t minimum_uniform_alignment);
 
+  static std::unique_ptr<ShaderMetadata> MakeShaderMetadata(
+      const RuntimeUniformDescription& uniform);
+
  private:
   bool RegisterShader(const ContentContext& renderer) const;
 

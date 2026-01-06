@@ -81,7 +81,8 @@ static ShaderType GetShaderType(RuntimeUniformType type) {
   }
 }
 
-static std::unique_ptr<ShaderMetadata> MakeShaderMetadata(
+// static
+std::unique_ptr<ShaderMetadata> RuntimeEffectContents::MakeShaderMetadata(
     const RuntimeUniformDescription& uniform) {
   std::unique_ptr<ShaderMetadata> metadata = std::make_unique<ShaderMetadata>();
   metadata->name = uniform.name;
@@ -89,8 +90,9 @@ static std::unique_ptr<ShaderMetadata> MakeShaderMetadata(
       .type = GetShaderType(uniform.type),  //
       .size = uniform.dimensions.rows * uniform.dimensions.cols *
               (uniform.bit_width / 8u),  //
-      .byte_length =
-          (uniform.bit_width / 8u) * uniform.array_elements.value_or(1),  //
+      .byte_length = (uniform.bit_width / 8u) * uniform.dimensions.rows *
+                     uniform.dimensions.cols *
+                     uniform.array_elements.value_or(1),  //
       .array_elements = uniform.array_elements                            //
   });
 
