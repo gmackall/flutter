@@ -11,10 +11,9 @@ import android.graphics.RectF;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import io.flutter.Log;
 import java.util.ArrayList;
 import java.util.List;
-
-import io.flutter.Log;
 
 /**
  * The mutator stack containing a list of mutators
@@ -186,15 +185,15 @@ public class FlutterMutatorsStack {
     RectF rectF = new RectF(rect);
     finalMatrix.mapRect(rectF);
     Log.e(
-            "HI GRAY",
-            "final TRANSFORMED rect is left: "
-                    + rectF.left
-                    + ", top: "
-                    + rectF.top
-                    + ", right: "
-                    + rectF.right
-                    + ", bottom:"
-                    + rectF.bottom);
+        "HI GRAY",
+        "final TRANSFORMED rect is left: "
+            + rectF.left
+            + ", top: "
+            + rectF.top
+            + ", right: "
+            + rectF.right
+            + ", bottom:"
+            + rectF.bottom);
     FlutterMutator mutator = new FlutterMutator(rect);
     mutators.add(mutator);
     Path path = new Path();

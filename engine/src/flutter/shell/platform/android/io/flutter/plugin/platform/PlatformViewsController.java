@@ -1256,28 +1256,28 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
       Log.e("HI GRAY", " - " + getMutatorName(mutator.getType()));
       if (mutator.getType() == FlutterMutatorsStack.FlutterMutatorType.CLIP_RECT) {
         Log.e(
-                "HI GRAY",
-                "rect is top: "
-                        + mutator.getRect().top
-                        + " bottom: "
-                        + mutator.getRect().bottom
-                        + " left: "
-                        + mutator.getRect().left
-                        + " right: "
-                        + mutator.getRect().right);
+            "HI GRAY",
+            "rect is top: "
+                + mutator.getRect().top
+                + " bottom: "
+                + mutator.getRect().bottom
+                + " left: "
+                + mutator.getRect().left
+                + " right: "
+                + mutator.getRect().right);
       }
     }
 
     Log.e(
-            "HI GRAY",
-            "Additional info, parent view height is "
-                    + parentView.getLayoutParams().height
-                    + " and width is "
-                    + parentView.getLayoutParams().width
-                    + " and mutator stack size is "
-                    + mutatorsStack.getMutators().size()
-                    + " and z layer is " + parentView.getZ()
-    );
+        "HI GRAY",
+        "Additional info, parent view height is "
+            + parentView.getLayoutParams().height
+            + " and width is "
+            + parentView.getLayoutParams().width
+            + " and mutator stack size is "
+            + mutatorsStack.getMutators().size()
+            + " and z layer is "
+            + parentView.getZ());
 
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);

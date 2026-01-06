@@ -20,7 +20,6 @@ import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
-
 import io.flutter.Log;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.util.ViewUtils;
@@ -111,15 +110,15 @@ public class FlutterMutatorView extends FrameLayout {
     setLayoutParams(layoutParams);
     setWillNotDraw(false);
     Log.e(
-            "HI GRAY",
-            "in FlutterMutatorView.java, dimensions are "
-                    + width
-                    + " "
-                    + height
-                    + " "
-                    + left
-                    + " "
-                    + top);
+        "HI GRAY",
+        "in FlutterMutatorView.java, dimensions are "
+            + width
+            + " "
+            + height
+            + " "
+            + left
+            + " "
+            + top);
   }
 
   @Override

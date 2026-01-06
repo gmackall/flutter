@@ -109,10 +109,10 @@ std::unordered_map<int64_t, DlRect> SliceViews(
 
     if (!full_joined_rect.IsEmpty()) {
       FML_LOG(ERROR) << "Full joined rect for view id " << view_id << " rect: ("
-                << full_joined_rect.GetLeftTop().x << ", "
-                << full_joined_rect.GetLeftTop().y << ") - ("
-                << full_joined_rect.GetRightBottom().x << ", "
-                << full_joined_rect.GetRightBottom().y << ")";
+                     << full_joined_rect.GetLeftTop().x << ", "
+                     << full_joined_rect.GetLeftTop().y << ") - ("
+                     << full_joined_rect.GetRightBottom().x << ", "
+                     << full_joined_rect.GetRightBottom().y << ")";
       overlay_layers.insert({view_id, full_joined_rect});
 
       // Clip the background canvas, so it doesn't contain any of the pixels
