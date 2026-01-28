@@ -665,6 +665,11 @@ class AndroidDevice extends Device {
         'enable-impeller',
         'false',
       ],
+      if (debuggingOptions.enableSurfaceControl != null) ...<String>[
+        '--ez',
+        'enable-surface-control',
+        debuggingOptions.enableSurfaceControl.toString(),
+      ],
       if (debuggingOptions.enableFlutterGpu) ...<String>['--ez', 'enable-flutter-gpu', 'true'],
       if (debuggingOptions.enableVulkanValidation) ...<String>[
         '--ez',

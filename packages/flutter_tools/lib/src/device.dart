@@ -999,6 +999,7 @@ class DebuggingOptions {
     this.enableDartProfiling = true,
     this.profileStartup = false,
     this.enableEmbedderApi = false,
+    this.enableSurfaceControl,
     this.usingCISystem = false,
     this.debugLogsDirectoryPath,
     this.enableDevTools = true,
@@ -1032,6 +1033,7 @@ class DebuggingOptions {
     this.enableDartProfiling = true,
     this.profileStartup = false,
     this.enableEmbedderApi = false,
+    this.enableSurfaceControl,
     this.usingCISystem = false,
     this.debugLogsDirectoryPath,
     this.webDevServerConfig,
@@ -1114,6 +1116,7 @@ class DebuggingOptions {
     required this.enableDartProfiling,
     required this.profileStartup,
     required this.enableEmbedderApi,
+    required this.enableSurfaceControl,
     required this.usingCISystem,
     required this.debugLogsDirectoryPath,
     required this.enableDevTools,
@@ -1159,6 +1162,7 @@ class DebuggingOptions {
   final bool enableDartProfiling;
   final bool profileStartup;
   final bool enableEmbedderApi;
+  final bool? enableSurfaceControl;
   final bool usingCISystem;
   final String? debugLogsDirectoryPath;
   final bool enableDevTools;
@@ -1308,6 +1312,7 @@ class DebuggingOptions {
     'enableDartProfiling': enableDartProfiling,
     'profileStartup': profileStartup,
     'enableEmbedderApi': enableEmbedderApi,
+    'enableSurfaceControl': enableSurfaceControl,
     'usingCISystem': usingCISystem,
     // TODO(bkonyi): remove once fg3 is updated.
     'fastStart': false,
@@ -1376,6 +1381,7 @@ class DebuggingOptions {
         enableDartProfiling: (json['enableDartProfiling'] as bool?) ?? true,
         profileStartup: (json['profileStartup'] as bool?) ?? false,
         enableEmbedderApi: (json['enableEmbedderApi'] as bool?) ?? false,
+        enableSurfaceControl: json['enableSurfaceControl'] as bool?,
         usingCISystem: (json['usingCISystem'] as bool?) ?? false,
         debugLogsDirectoryPath: json['debugLogsDirectoryPath'] as String?,
         enableDevTools: (json['enableDevTools'] as bool?) ?? true,

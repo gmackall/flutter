@@ -436,8 +436,12 @@ public class FlutterLoader {
         if (metaData.getBoolean(ENABLE_FLUTTER_GPU, false)) {
           shellArgs.add("--enable-flutter-gpu");
         }
-        if (metaData.getBoolean(ENABLE_SURFACE_CONTROL, false)) {
-          shellArgs.add("--enable-surface-control");
+        if (metaData.containsKey(ENABLE_SURFACE_CONTROL)) {
+          if (metaData.getBoolean(ENABLE_SURFACE_CONTROL, false)) {
+            shellArgs.add("--enable-surface-control=true");
+          } else {
+            shellArgs.add("--enable-surface-control=false");
+          }
         }
 
         String backend = metaData.getString(IMPELLER_BACKEND_META_DATA_KEY);

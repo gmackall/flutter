@@ -242,6 +242,13 @@ abstract class RunCommandBase extends FlutterCommand with DeviceBasedDevelopment
     addEnableFlutterGpuFlag(verboseHelp: verboseHelp);
     addEnableVulkanValidationFlag(verboseHelp: verboseHelp);
     addEnableEmbedderApiFlag(verboseHelp: verboseHelp);
+    argParser.addFlag(
+      'enable-surface-control',
+      negatable: true,
+      defaultsTo: null,
+      hide: !verboseHelp,
+      help: 'Enable or disable surface control on Android.',
+    );
   }
 
   bool get traceStartup => boolArg('trace-startup');
@@ -319,6 +326,9 @@ abstract class RunCommandBase extends FlutterCommand with DeviceBasedDevelopment
         uninstallFirst: uninstallFirst,
         enableDartProfiling: enableDartProfiling,
         enableEmbedderApi: enableEmbedderApi,
+        enableSurfaceControl: argResults!.wasParsed('enable-surface-control')
+            ? boolArg('enable-surface-control')
+            : null,
         usingCISystem: usingCISystem,
         debugLogsDirectoryPath: debugLogsDirectoryPath,
         webDevServerConfig: webDevServerConfig,
@@ -379,6 +389,9 @@ abstract class RunCommandBase extends FlutterCommand with DeviceBasedDevelopment
         enableDartProfiling: enableDartProfiling,
         profileStartup: boolArg('profile-startup'),
         enableEmbedderApi: enableEmbedderApi,
+        enableSurfaceControl: argResults!.wasParsed('enable-surface-control')
+            ? boolArg('enable-surface-control')
+            : null,
         usingCISystem: usingCISystem,
         debugLogsDirectoryPath: debugLogsDirectoryPath,
         enableDevTools: boolArg(FlutterCommand.kEnableDevTools),

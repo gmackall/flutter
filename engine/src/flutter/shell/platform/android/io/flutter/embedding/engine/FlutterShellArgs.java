@@ -67,6 +67,9 @@ public class FlutterShellArgs {
   public static final String ARG_VM_SERVICE_PORT = "--vm-service-port=";
   public static final String ARG_KEY_DART_FLAGS = "dart-flags";
   public static final String ARG_DART_FLAGS = "--dart-flags";
+  public static final String ARG_KEY_ENABLE_SURFACE_CONTROL = "enable-surface-control";
+  public static final String ARG_ENABLE_SURFACE_CONTROL = "--enable-surface-control=true";
+  public static final String ARG_DISABLE_SURFACE_CONTROL = "--enable-surface-control=false";
 
   @NonNull
   public static FlutterShellArgs fromIntent(@NonNull Intent intent) {
@@ -143,6 +146,13 @@ public class FlutterShellArgs {
     }
     if (intent.getBooleanExtra(ARG_KEY_VERBOSE_LOGGING, false)) {
       args.add(ARG_VERBOSE_LOGGING);
+    }
+    if (intent.hasExtra(ARG_KEY_ENABLE_SURFACE_CONTROL)) {
+      if (intent.getBooleanExtra(ARG_KEY_ENABLE_SURFACE_CONTROL, false)) {
+        args.add(ARG_ENABLE_SURFACE_CONTROL);
+      } else {
+        args.add(ARG_DISABLE_SURFACE_CONTROL);
+      }
     }
 
     // NOTE: all flags provided with this argument are subject to filtering

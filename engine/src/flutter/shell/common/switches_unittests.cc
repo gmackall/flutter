@@ -122,6 +122,40 @@ TEST(SwitchesTest, NoEnableImpeller) {
   }
 }
 
+TEST(SwitchesTest, EnableAndroidSurfaceControl) {
+  {
+    // enable
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-surface-control"});
+    EXPECT_TRUE(command_line.HasOption("enable-surface-control"));
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_EQ(settings.enable_surface_control, true);
+  }
+  {
+    // enable explicit
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-surface-control=true"});
+    EXPECT_TRUE(command_line.HasOption("enable-surface-control"));
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_EQ(settings.enable_surface_control, true);
+  }
+  {
+    // disable
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-surface-control=false"});
+    EXPECT_TRUE(command_line.HasOption("enable-surface-control"));
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_EQ(settings.enable_surface_control, false);
+  }
+  {
+    // default
+    fml::CommandLine command_line =
+        fml::CommandLineFromInitializerList({"command"});
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_EQ(settings.enable_surface_control, false);
+  }
+}
+
 TEST(SwitchesTest, ProfileStartup) {
   {
     fml::CommandLine command_line =
