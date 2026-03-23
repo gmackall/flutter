@@ -86,9 +86,11 @@ struct HarfBuzzSubset {
       // Retain all glyph IDs from the original font so that GSUB
       // substitution targets for all axis values remain intact.
       unsigned int glyph_count = hb_face_get_glyph_count(face);
-      hb_set_t* glyph_set =
-          hb_subset_input_set(input, HB_SUBSET_SETS_GLYPH_INDEX);
-      hb_set_add_range(glyph_set, 0, glyph_count - 1);
+      if (glyph_count > 0) {
+        hb_set_t* glyph_set =
+            hb_subset_input_set(input, HB_SUBSET_SETS_GLYPH_INDEX);
+        hb_set_add_range(glyph_set, 0, glyph_count - 1);
+      }
     }
 
     return HarfbuzzWrappers::HbFacePtr(hb_subset_or_fail(face, input));
