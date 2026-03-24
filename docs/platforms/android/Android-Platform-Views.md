@@ -29,42 +29,16 @@ within their Flutter UI.
 # Approaches
 
 There are currently four different implementations of Android platform views:
+- [Hybrid Composition++](#hybrid-composition-1) (HCPP)
 - [Virtual Display](Virtual-Display.md) (VD)
 - [Hybrid Composition](../Hybrid-Composition.md) (HC)
 - [Texture Layer Hybrid Composition](Texture-Layer-Hybrid-Composition.md) (TLHC)
-- [Hybrid Composition++](#hybrid-composition-1) (HCPP)
 
 Each has a different set of limitations and tradeoffs, as discussed below. The pages linked above give details about each implementation.
 
-## Virtual Display
-
-This mode works by rendering the platform view into [a `VirtualDisplay`](https://developer.android.com/reference/android/hardware/display/VirtualDisplay), whose contents are connected to [a Flutter `Texture`](https://api.flutter.dev/flutter/widgets/Texture-class.html).
-
-Because this renders to a `Texture`, it integrates well into the Flutter drawing system. However, the use of `VirtualDisplay` introduces a number of compatibility issues, including with text input, accessibility, and secondary views (see [the Virtual Display page](Virtual-Display.md) for details).
-
-This display mode requires SDK 20 or later.
-
-## Hybrid Composition
-
-This mode directly displays the native Android [`View`](https://developer.android.com/reference/android/view/View) in the view hierarchy. This requires several significant changes to the way Flutter renders:
-- The Flutter widget tree is divided into two different Android `View`s, one below the platform view and one above it.
-- To avoid tearing or other visual artifacts, Flutter's composition must be done on the platform thread rather than a dedicated thread.
-
-Because the native view is being displayed directly, just as it would be in non-Flutter application, this mode is the least likely to have compatibility issues with the platform view. However, the rendering changes can significantly impact Flutter's performance. In addition, on versions of Android before SDK 29 (Android 10) Flutter frames have a GPU->CPU->GPU round trip that further impacts performance.
-
-This display mode requires SDK 19 or later, and uses the FlutterImageView based renderer.
-
-## Texture Layer Hybrid Composition
-
-This mode, introduced in Flutter 3.0, attempted to address the limitations of the modes above, and was originally intended to replace both. Like Hybrid Composition, the view is actually placed on the screen at the correct location. However, as with Virtual Display the drawing uses a `Texture`, which in this case is populated by redirecting [`draw`](https://developer.android.com/reference/android/view/View#draw(android.graphics.Canvas)).
-
-In most cases this combines the best aspects of Virtual Display and Hybrid Composition, and should be preferred when possible. One notable exception however is that if the platform view is, or contains, a [`SurfaceView`](https://developer.android.com/reference/android/view/SurfaceView) this mode will not work correctly, and the `SurfaceView` will be drawn at the wrong location and/or z-index.
-
-This display mode requires SDK 23 or later.
-
 ## Hybrid Composition++
 
-This mode is a new hybrid composition strategy designed to solve compositing performance and synchronization issues seen in the original Hybrid Composition mode. It is currently available as an opt-in feature.
+This mode is the latest hybrid composition strategy designed to solve compositing performance and synchronization issues seen in the original Hybrid Composition mode. It is currently available as an opt-in feature.
 
 ### Requirements
 - **Android API 34 or later**: Required for native transaction synchronization capabilities.
@@ -93,8 +67,36 @@ You can enable HCPP using one of the following methods:
    ```
 
 ### Limitations and Known Issues
+The following is a list of limitations and known issues. If you encounter an issue not listed below, please file an issue!
 - **SurfaceView Compatibility**: Opting in is currently not recommended if your application contains a platform view which is or contains a native [`SurfaceView`](https://developer.android.com/reference/android/view/SurfaceView) (often used by video players or map plugins), due to clipping issues. This is tracked in https://github.com/flutter/flutter/issues/175546.
 - **Complex Overlay Stacking**: Transparent platform views will not display correctly in layout stacks structured as: Flutter canvas -> Platform View -> Overlay -> Transparent Platform View, when all four of these layers intersect.
+
+## Virtual Display
+
+This mode works by rendering the platform view into [a `VirtualDisplay`](https://developer.android.com/reference/android/hardware/display/VirtualDisplay), whose contents are connected to [a Flutter `Texture`](https://api.flutter.dev/flutter/widgets/Texture-class.html).
+
+Because this renders to a `Texture`, it integrates well into the Flutter drawing system. However, the use of `VirtualDisplay` introduces a number of compatibility issues, including with text input, accessibility, and secondary views (see [the Virtual Display page](Virtual-Display.md) for details).
+
+This display mode requires SDK 20 or later.
+
+## Hybrid Composition
+
+This mode directly displays the native Android [`View`](https://developer.android.com/reference/android/view/View) in the view hierarchy. This requires several significant changes to the way Flutter renders:
+- The Flutter widget tree is divided into two different Android `View`s, one below the platform view and one above it.
+- To avoid tearing or other visual artifacts, Flutter's composition must be done on the platform thread rather than a dedicated thread.
+
+Because the native view is being displayed directly, just as it would be in non-Flutter application, this mode is the least likely to have compatibility issues with the platform view. However, the rendering changes can significantly impact Flutter's performance. In addition, on versions of Android before SDK 29 (Android 10) Flutter frames have a GPU->CPU->GPU round trip that further impacts performance.
+
+This display mode requires SDK 19 or later, and uses the FlutterImageView based renderer.
+
+## Texture Layer Hybrid Composition
+
+This mode, introduced in Flutter 3.0, attempted to address the limitations of the modes above, and was originally intended to replace both. Like Hybrid Composition, the view is actually placed on the screen at the correct location. However, as with Virtual Display the drawing uses a `Texture`, which in this case is populated by redirecting [`draw`](https://developer.android.com/reference/android/view/View#draw(android.graphics.Canvas)).
+
+In most cases this combines the best aspects of Virtual Display and Hybrid Composition, and should be preferred when possible. One notable exception however is that if the platform view is, or contains, a [`SurfaceView`](https://developer.android.com/reference/android/view/SurfaceView) this mode will not work correctly, and the `SurfaceView` will be drawn at the wrong location and/or z-index.
+
+This display mode requires SDK 23 or later.
+
 
 # Selecting a mode
 
