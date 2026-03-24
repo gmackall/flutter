@@ -38,7 +38,7 @@ Each has a different set of limitations and tradeoffs, as discussed below. The p
 
 ## Hybrid Composition++
 
-This mode is the latest hybrid composition strategy designed to solve compositing performance and synchronization issues seen in the original Hybrid Composition mode. It is currently available as an opt-in feature.
+This mode is the latest hybrid composition strategy, and is designed to solve compositing performance and synchronization issues seen in the original Hybrid Composition mode. It is currently available as an opt-in feature.
 
 ### Requirements
 - **Android API 34 or later**: Required for native transaction synchronization capabilities.
