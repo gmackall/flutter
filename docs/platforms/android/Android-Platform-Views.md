@@ -29,7 +29,7 @@ within their Flutter UI.
 # Approaches
 
 There are currently four different implementations of Android platform views:
-- [Hybrid Composition++](#hybrid-composition-1) (HCPP)
+- [Hybrid Composition++](#hybrid-composition) (HCPP)
 - [Virtual Display](Virtual-Display.md) (VD)
 - [Hybrid Composition](../Hybrid-Composition.md) (HC)
 - [Texture Layer Hybrid Composition](Texture-Layer-Hybrid-Composition.md) (TLHC)
