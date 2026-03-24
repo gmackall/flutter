@@ -409,8 +409,14 @@ object FlutterPluginUtils {
         return project.extensions.findByType(BaseExtension::class.java)!!
     }
 
-    internal fun getAndroidExtension(project: Project): CommonExtension<*, *, *, *, *, *> =
-        project.extensions.findByType(CommonExtension::class.java)!!
+    internal fun getAndroidExtension(project: Project): FlutterCommonExtensionWrapper {
+        // Look up by name to completely avoid importing or resolving CommonExtension
+        val androidExtension =
+            project.extensions.findByName("android")
+            ?: throw IllegalStateException("The Android plugin must be applied before accessing the Android extension.")
+
+        return FlutterCommonExtensionWrapper(androidExtension)
+    }
 
     internal fun getAndroidLibraryExtension(project: Project): LibraryExtension = project.extensions.getByType(LibraryExtension::class.java)
 
