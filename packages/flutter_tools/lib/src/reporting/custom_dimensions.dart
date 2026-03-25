@@ -64,6 +64,7 @@ class CustomDimensions {
     this.commandRunEnableImpeller,
     this.commandRunIOSInterfaceType,
     this.commandRunIsTest,
+    this.commandRunEnableHCPP,
   });
 
   final String? sessionHostOsDetails; // cd1
@@ -120,6 +121,7 @@ class CustomDimensions {
   final bool? commandRunEnableImpeller; // cd56
   final String? commandRunIOSInterfaceType; // cd57
   final bool? commandRunIsTest; // cd58
+  final bool? commandRunEnableHCPP // cd59
 
   /// Convert to a map that will be used to upload to the analytics backend.
   Map<String, String> toMap() => <String, String>{
@@ -242,6 +244,8 @@ class CustomDimensions {
       CustomDimensionsEnum.commandRunIOSInterfaceType.cdKey: commandRunIOSInterfaceType.toString(),
     if (commandRunIsTest != null)
       CustomDimensionsEnum.commandRunIsTest.cdKey: commandRunIsTest.toString(),
+    if (commandRunEnableHCPP != null)
+      CustomDimensionsEnum.commandRunEnableHCPP.cdKey: commandRunEnableHCPP.toString(),
   };
 
   /// Merge the values of two [CustomDimensions] into one. If a value is defined
@@ -319,6 +323,7 @@ class CustomDimensions {
       commandRunEnableImpeller: other.commandRunEnableImpeller ?? commandRunEnableImpeller,
       commandRunIOSInterfaceType: other.commandRunIOSInterfaceType ?? commandRunIOSInterfaceType,
       commandRunIsTest: other.commandRunIsTest ?? commandRunIsTest,
+      commandRunEnableHCPP: other.commandRunEnableHCPP ?? commandRunEnableHCPP,
     );
   }
 
@@ -424,6 +429,7 @@ class CustomDimensions {
       CustomDimensionsEnum.commandRunIOSInterfaceType,
     ),
     commandRunIsTest: _extractBool(map, CustomDimensionsEnum.commandRunIsTest),
+    commandRunEnableHCPP = _extractBool(map, CustomDimensionsEnum.commandRunEnableHCPP),
   );
 
   static bool? _extractBool(Map<String, String> map, CustomDimensionsEnum field) =>
@@ -515,6 +521,7 @@ enum CustomDimensionsEnum {
   commandRunEnableImpeller, // cd56
   commandRunIOSInterfaceType, // cd57
   commandRunIsTest; // cd58
+  commandRunEnableHCPP // cd59
 
   String get cdKey => 'cd${index + 1}';
 }

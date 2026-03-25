@@ -583,6 +583,7 @@ class RunCommand extends RunCommandBase {
       runEnableImpeller: record.runEnableImpeller,
       runIOSInterfaceType: record.runIOSInterfaceType,
       runIsTest: record.runIsTest,
+      runEnableHCPP: record.runEnableHCPP,
     );
   }
 
@@ -663,6 +664,7 @@ class RunCommand extends RunCommandBase {
       runEnableImpeller: enableImpeller.asBool,
       runIOSInterfaceType: iOSInterfaceType,
       runIsTest: targetFile.endsWith('_test.dart'),
+      runEnableHCPP: enableHcpp,
     );
   })();
 
@@ -993,4 +995,5 @@ typedef AnalyticsUsageValuesRecord = ({
   bool runProjectModule,
   String runTargetName,
   String runTargetOsVersion,
+  bool? runEnableHCPP,
 });
