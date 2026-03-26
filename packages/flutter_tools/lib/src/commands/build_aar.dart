@@ -87,6 +87,7 @@ class BuildAarCommand extends BuildSubCommand {
       commandHasTerminal: hasTerminal,
       buildAarProjectType: projectType,
       buildAarTargetPlatform: stringsArg('target-platform').join(','),
+      // todo, does function support this?
     );
   }
 
