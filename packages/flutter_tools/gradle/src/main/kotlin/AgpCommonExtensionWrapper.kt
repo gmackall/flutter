@@ -17,7 +17,7 @@ import java.io.File
  * * CRITICAL: Do not import or reference `com.android.build.api.dsl.CommonExtension`
  * anywhere in this file, or the compiler may weave the broken type into the bytecode.
  */
-class FlutterCommonExtensionWrapper(
+class AgpCommonExtensionWrapper(
     private val backingExtension: Any
 ) {
     var compileSdk: Int?
