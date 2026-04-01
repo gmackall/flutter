@@ -534,7 +534,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       view.setLayoutParams(layoutParams);
       view.bringToFront();
       if (view instanceof SurfaceView) {
-        maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack);
+        maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack, viewId);
       }
     }
   }
@@ -546,7 +546,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       int y,
       int width,
       int height,
-      FlutterMutatorsStack mutatorsStack) {
+      FlutterMutatorsStack mutatorsStack,
+      int viewId) {
     // 1. CALCULATE THE FINAL RECT (RECT, RRECT, PATH, TRANSFORM)
     // We start with the view's final on-screen bounds.
     RectF screenRectF = new RectF(x, y, x + width, y + height);
@@ -590,10 +591,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     float opacity = mutatorsStack.getFinalOpacity();
     SurfaceControl sc = surfaceView.getSurfaceControl();
     if (sc == null) {
-      if (viewsWithPendingSurfaceCallback.contains(surfaceView.getId())) {
+      if (viewsWithPendingSurfaceCallback.contains(viewId)) {
         return;
       }
-      viewsWithPendingSurfaceCallback.add(surfaceView.getId());
+      viewsWithPendingSurfaceCallback.add(viewId);
       SurfaceHolder.Callback cb =
           new SurfaceHolder.Callback() {
             @Override
@@ -607,7 +608,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
               // layout). So we schedule one to ensure the crop is rendered properly.
               // See https://github.com/flutter/flutter/issues/175546.
               flutterJNI.scheduleFrame();
-              viewsWithPendingSurfaceCallback.remove(surfaceView.getId());
+              viewsWithPendingSurfaceCallback.remove(viewId);
               surfaceView.getHolder().removeCallback(this);
             }
 
@@ -617,7 +618,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
             @Override
             public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
-              viewsWithPendingSurfaceCallback.remove(surfaceView.getId());
+              viewsWithPendingSurfaceCallback.remove(viewId);
               surfaceView.getHolder().removeCallback(this);
             }
           };
