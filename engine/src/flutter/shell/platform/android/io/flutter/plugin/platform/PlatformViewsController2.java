@@ -565,8 +565,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         // Intersect the current visible area with this clip.
         // If the path is a complex shape (star, rounded rect), this
         // constrains the surface to the bounding box of that shape.
-        // TODO gmackall: maybe return early if false? or do we need to hide?
-        screenRect.intersect(pathRectInt);
+        boolean anyIntersection = screenRect.intersect(pathRectInt);
+        if (!anyIntersection) {
+          screenRect.setEmpty();
+        }
       }
     }
 
@@ -611,7 +613,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       return;
     }
     if (!sc.isValid()) {
-      // TODO: maybe I level log?
+      Log.i(TAG, "Skipping applying clip to SurfaceView: " + surfaceView.getId() + " because it has an invalid SurfaceControl.");
       return;
     }
     SurfaceControl.Transaction tx = createTransaction();
