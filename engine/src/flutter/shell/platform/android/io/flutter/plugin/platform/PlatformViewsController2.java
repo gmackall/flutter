@@ -613,7 +613,11 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       return;
     }
     if (!sc.isValid()) {
-      Log.i(TAG, "Skipping applying clip to SurfaceView: " + surfaceView.getId() + " because it has an invalid SurfaceControl.");
+      Log.i(
+          TAG,
+          "Skipping applying clip to SurfaceView: "
+              + surfaceView.getId()
+              + " because it has an invalid SurfaceControl.");
       return;
     }
     SurfaceControl.Transaction tx = createTransaction();
