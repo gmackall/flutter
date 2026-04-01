@@ -544,8 +544,6 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       int width,
       int height,
       FlutterMutatorsStack mutatorsStack) {
-    // TODO gmackall: is this right? feels like we should get this another way, who knows
-
     // 1. CALCULATE THE FINAL RECT (RECT, RRECT, PATH, TRANSFORM)
     // We start with the view's final on-screen bounds.
     RectF screenRectF = new RectF(x, y, x + width, y + height);
