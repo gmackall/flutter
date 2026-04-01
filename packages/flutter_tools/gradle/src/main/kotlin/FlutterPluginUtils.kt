@@ -412,7 +412,7 @@ object FlutterPluginUtils {
         // Look up by name to completely avoid importing or resolving CommonExtension
         val androidExtension =
             project.extensions.findByName("android")
-            ?: throw IllegalStateException("The Android plugin must be applied before accessing the Android extension.")
+                ?: throw IllegalStateException("The Android plugin must be applied before accessing the Android extension.")
 
         return AgpCommonExtensionWrapper(androidExtension)
     }
