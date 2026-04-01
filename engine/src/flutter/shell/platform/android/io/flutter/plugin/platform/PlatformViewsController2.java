@@ -4,17 +4,24 @@
 
 package io.flutter.plugin.platform;
 
+import static android.view.SurfaceView.SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT;
 import static io.flutter.Build.API_LEVELS;
 
 import android.content.Context;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.RectF;
 import android.util.SparseArray;
+import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.MotionEvent.PointerCoords;
 import android.view.MotionEvent.PointerProperties;
 import android.view.Surface;
 import android.view.SurfaceControl;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -500,6 +507,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
    * @param mutatorsStack The mutator stack. This member is not intended for public use, and is only
    *     visible for testing.
    */
+  @RequiresApi(API_LEVELS.API_34)
   public void onDisplayPlatformView(
       int viewId,
       int x,
@@ -524,8 +532,94 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (view != null) {
       view.setLayoutParams(layoutParams);
       view.bringToFront();
+        if (view instanceof SurfaceView) {
+            maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack);
+        }
     }
   }
+
+    @RequiresApi(API_LEVELS.API_34)
+    private void maybeApplyClipToSurfaceView(
+            SurfaceView surfaceView,
+            int x,
+            int y,
+            int width,
+            int height,
+            FlutterMutatorsStack mutatorsStack) {
+        // TODO gmackall: is this right? feels like we should get this another way, who knows
+
+        // 1. CALCULATE THE FINAL RECT (RECT, RRECT, PATH, TRANSFORM)
+        // We start with the view's final on-screen bounds.
+        RectF screenRectF = new RectF(x, y, x + width, y + height);
+        Rect screenRect = new Rect();
+        screenRectF.roundOut(screenRect);
+
+        List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
+
+        if (clippingPaths != null && !clippingPaths.isEmpty()) {
+            RectF pathBounds = new RectF();
+            for (Path path : clippingPaths) {
+                // Compute the axis-aligned bounding box of the path.
+                path.computeBounds(pathBounds, true);
+
+                // Round out to ensure we cover the pixels (ceil/floor logic).
+                Rect pathRectInt = new Rect();
+                pathBounds.roundOut(pathRectInt);
+
+                // Intersect the current visible area with this clip.
+                // If the path is a complex shape (star, rounded rect), this
+                // constrains the surface to the bounding box of that shape.
+                // TODO gmackall: maybe return early if false? or do we need to hide?
+                screenRect.intersect(pathRectInt);
+            }
+        }
+
+        // 2. CONVERT TO LOCAL SURFACE COORDINATES
+        // SurfaceControl.setCrop expects coordinates relative to the Surface (0,0).
+        // We shift the calculated screen-space rect by the view's origin (-x, -y).
+        screenRect.offset(-x, -y);
+        if (screenRect.width() < 0 || screenRect.height() < 0) {
+            screenRect.setEmpty();
+        }
+
+        // 3. APPLY EITHER IN TIME, OR AS A CALLBACK
+        // If the widget tree recently changed, the SurfaceControl will likely be null.
+        // So apply via a SurfaceHolder.Callback(). Otherwise, apply via standard
+        // transaction apis.
+        float opacity = mutatorsStack.getFinalOpacity();
+        SurfaceControl sc = surfaceView.getSurfaceControl();
+        if (sc == null) {
+            SurfaceHolder.Callback cb = new SurfaceHolder.Callback() {
+                @Override
+                public void surfaceCreated(@NonNull SurfaceHolder holder) {
+                    SurfaceControl.Transaction tx = createTransaction();
+                    SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
+                    tx.setAlpha(surfaceControl, opacity);
+                    tx.setCrop(surfaceControl, screenRect);
+                    // Because this transaction is created outside of the frame timing, we can't
+                    // guarantee there is another frame coming (if, say, the app has a static
+                    // layout). So we schedule one to ensure the crop is rendered properly.
+                    // See https://github.com/flutter/flutter/issues/175546.
+                    flutterJNI.scheduleFrame();
+                }
+
+                @Override
+                public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {}
+
+                @Override
+                public void surfaceDestroyed(@NonNull SurfaceHolder holder) {}
+            };
+            surfaceView.getHolder().addCallback(cb);
+            return;
+        }
+        if (!sc.isValid()) {
+            // TODO: maybe I level log?
+            return;
+        }
+        SurfaceControl.Transaction tx = createTransaction();
+        tx.setAlpha(sc, opacity);
+        tx.setCrop(sc, screenRect);
+    }
 
   public void hidePlatformView(int viewId) {
     if (!initializePlatformViewIfNeeded(viewId)) {
