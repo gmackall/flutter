@@ -599,10 +599,18 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(@NonNull SurfaceHolder holder) {
-              SurfaceControl.Transaction tx = createTransaction();
               SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
-              tx.setAlpha(surfaceControl, opacity);
-              tx.setCrop(surfaceControl, screenRect);
+              if (surfaceControl != null && surfaceControl.isValid()) {
+                SurfaceControl.Transaction tx = createTransaction();
+                tx.setAlpha(surfaceControl, opacity);
+                tx.setCrop(surfaceControl, screenRect);
+              } else {
+                Log.i(
+                    TAG,
+                    "Failed to apply clipping to SurfaceView: "
+                        + surfaceView.getId()
+                        + " - the SurfaceControl was null or invalid during surfaceCreated callback.");
+              }
               // Because this transaction is created outside of the frame timing, we can't
               // guarantee there is another frame coming (if, say, the app has a static
               // layout). So we schedule one to ensure the crop is rendered properly.
