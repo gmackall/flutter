@@ -87,15 +87,14 @@ class AgpCommonExtensionWrapper(
                 else -> throw IllegalArgumentException(unsupportedMessage())
             }
 
-    fun getDefaultProguardFile(fileName: String): File {
-        return when (backingExtension) {
+    fun getDefaultProguardFile(fileName: String): File =
+        when (backingExtension) {
             is ApplicationExtension -> backingExtension.getDefaultProguardFile(fileName)
             is LibraryExtension -> backingExtension.getDefaultProguardFile(fileName)
             is DynamicFeatureExtension -> backingExtension.getDefaultProguardFile(fileName)
             is TestExtension -> backingExtension.getDefaultProguardFile(fileName)
             else -> throw IllegalArgumentException(unsupportedMessage())
         }
-    }
 
     // Example of wrapping a method rather than a property
     fun compileOptions(action: (Any) -> Unit) {
