@@ -43,6 +43,7 @@ import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel2;
 import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.view.AccessibilityBridge;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 
 /**
@@ -77,6 +78,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   private final ArrayList<SurfaceControl.Transaction> activeTransactions;
   private Surface overlayerSurface = null;
   private SurfaceControl overlaySurfaceControl = null;
+
+  private final HashSet<Integer> viewsWithPendingSurfaceCallback = new HashSet<>();
 
   public PlatformViewsController2() {
     accessibilityEventsDelegate = new AccessibilityEventsDelegate();
@@ -587,6 +590,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     float opacity = mutatorsStack.getFinalOpacity();
     SurfaceControl sc = surfaceView.getSurfaceControl();
     if (sc == null) {
+      if (viewsWithPendingSurfaceCallback.contains(surfaceView.getId())) {
+        return;
+      }
+      viewsWithPendingSurfaceCallback.add(surfaceView.getId());
       SurfaceHolder.Callback cb =
           new SurfaceHolder.Callback() {
             @Override
@@ -600,6 +607,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
               // layout). So we schedule one to ensure the crop is rendered properly.
               // See https://github.com/flutter/flutter/issues/175546.
               flutterJNI.scheduleFrame();
+              viewsWithPendingSurfaceCallback.remove(surfaceView.getId());
+              surfaceView.getHolder().removeCallback(this);
             }
 
             @Override
@@ -607,7 +616,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
                 @NonNull SurfaceHolder holder, int format, int width, int height) {}
 
             @Override
-            public void surfaceDestroyed(@NonNull SurfaceHolder holder) {}
+            public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+              viewsWithPendingSurfaceCallback.remove(surfaceView.getId());
+              surfaceView.getHolder().removeCallback(this);
+            }
           };
       surfaceView.getHolder().addCallback(cb);
       return;
@@ -771,6 +783,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
             }
             platformViewParent.remove(viewId);
           }
+          viewsWithPendingSurfaceCallback.remove(viewId);
         }
 
         @Override
