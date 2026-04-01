@@ -50,7 +50,6 @@ class ClipRectHomePage extends StatefulWidget {
 }
 
 class _ClipRectHomePageState extends State<ClipRectHomePage> {
-  // Simple boolean to track whether the ClipRect is active
   bool _isClipped = false;
 
   void _toggleClip() {
@@ -142,9 +141,7 @@ final class _HybridCompositionAndroidPlatformView extends StatelessWidget {
         );
       },
       onCreatePlatformView: (PlatformViewCreationParams params) {
-        // Use initHybridAndroidView for Hybrid Composition
-        // return PlatformViewsService.initHybridAndroidView(
-        return PlatformViewsService.initExpensiveAndroidView(
+        return PlatformViewsService.initHybridAndroidView(
             id: params.id,
             viewType: viewType,
             layoutDirection: TextDirection.ltr,
