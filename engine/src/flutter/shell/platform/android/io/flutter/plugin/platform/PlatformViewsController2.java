@@ -601,9 +601,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
             public void surfaceCreated(@NonNull SurfaceHolder holder) {
               SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
               if (surfaceControl != null && surfaceControl.isValid()) {
-                SurfaceControl.Transaction tx = createTransaction();
-                tx.setAlpha(surfaceControl, opacity);
-                tx.setCrop(surfaceControl, screenRect);
+                SurfaceControl.Transaction tx =
+                    createTransaction()
+                        .setAlpha(surfaceControl, opacity)
+                        .setCrop(surfaceControl, screenRect);
               } else {
                 Log.i(
                     TAG,
@@ -641,9 +642,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
               + " because it has an invalid SurfaceControl.");
       return;
     }
-    SurfaceControl.Transaction tx = createTransaction();
-    tx.setAlpha(sc, opacity);
-    tx.setCrop(sc, screenRect);
+    SurfaceControl.Transaction tx =
+        createTransaction().setAlpha(sc, opacity).setCrop(sc, screenRect);
   }
 
   public void hidePlatformView(int viewId) {
