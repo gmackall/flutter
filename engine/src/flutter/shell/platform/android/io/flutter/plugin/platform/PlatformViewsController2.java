@@ -572,6 +572,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         boolean anyIntersection = screenRect.intersect(pathRectInt);
         if (!anyIntersection) {
           screenRect.setEmpty();
+          break;
         }
       }
     }
