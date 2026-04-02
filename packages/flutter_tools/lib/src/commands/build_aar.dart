@@ -87,7 +87,7 @@ class BuildAarCommand extends BuildSubCommand {
       commandHasTerminal: hasTerminal,
       buildAarProjectType: projectType,
       buildAarTargetPlatform: stringsArg('target-platform').join(','),
-      // todo, does function support this?
+      // TODO(gmackall): Consider collecting hcpp analytics, see https://github.com/flutter/flutter/issues/184541.
     );
   }
 
