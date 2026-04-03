@@ -1048,10 +1048,13 @@ See the link below for more information:
       final String? name = metaData.getAttribute('android:name');
       if (name == metadataKey) {
         final String? value = metaData.getAttribute('android:value');
-        if (value == 'true') {
+        if (value == null) {
+          continue;
+        }
+        if (value.toLowerCase() == 'true') {
           return true;
         }
-        if (value == 'false') {
+        if (value.toLowerCase() == 'false') {
           return false;
         }
       }
