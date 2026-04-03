@@ -597,41 +597,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       }
       viewsWithPendingSurfaceCallback.add(viewId);
       SurfaceHolder.Callback cb =
-          new SurfaceHolder.Callback() {
-            @Override
-            public void surfaceCreated(@NonNull SurfaceHolder holder) {
-              SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
-              if (surfaceControl != null && surfaceControl.isValid()) {
-                SurfaceControl.Transaction tx =
-                    createTransaction()
-                        .setAlpha(surfaceControl, opacity)
-                        .setCrop(surfaceControl, screenRect);
-              } else {
-                Log.i(
-                    TAG,
-                    "Failed to apply clipping to SurfaceView: "
-                        + surfaceView.getId()
-                        + " - the SurfaceControl was null or invalid during surfaceCreated callback.");
-              }
-              // Because this transaction is created outside of the frame timing, we can't
-              // guarantee there is another frame coming (if, say, the app has a static
-              // layout). So we schedule one to ensure the crop is rendered properly.
-              // See https://github.com/flutter/flutter/issues/175546.
-              flutterJNI.scheduleFrame();
-              viewsWithPendingSurfaceCallback.remove(viewId);
-              surfaceView.getHolder().removeCallback(this);
-            }
-
-            @Override
-            public void surfaceChanged(
-                @NonNull SurfaceHolder holder, int format, int width, int height) {}
-
-            @Override
-            public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
-              viewsWithPendingSurfaceCallback.remove(viewId);
-              surfaceView.getHolder().removeCallback(this);
-            }
-          };
+          createSurfaceClipCallback(surfaceView, opacity, screenRect, viewId);
       surfaceView.getHolder().addCallback(cb);
       return;
     }
@@ -645,6 +611,49 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     }
     SurfaceControl.Transaction tx =
         createTransaction().setAlpha(sc, opacity).setCrop(sc, screenRect);
+  }
+
+  @RequiresApi(API_LEVELS.API_34)
+  private SurfaceHolder.Callback createSurfaceClipCallback(
+      @NonNull final SurfaceView surfaceView,
+      final float opacity,
+      @NonNull final Rect screenRect,
+      final int viewId) {
+    return new SurfaceHolder.Callback() {
+      @Override
+      public void surfaceCreated(@NonNull SurfaceHolder holder) {
+        SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
+        if (surfaceControl != null && surfaceControl.isValid()) {
+          SurfaceControl.Transaction tx =
+              createTransaction()
+                  .setAlpha(surfaceControl, opacity)
+                  .setCrop(surfaceControl, screenRect);
+        } else {
+          Log.i(
+              TAG,
+              "Failed to apply clipping to SurfaceView: "
+                  + surfaceView.getId()
+                  + " - the SurfaceControl was null or invalid during surfaceCreated callback.");
+        }
+        // Because this transaction is created outside of the frame timing, we can't
+        // guarantee there is another frame coming (if, say, the app has a static
+        // layout). So we schedule one to ensure the crop is rendered properly.
+        // See https://github.com/flutter/flutter/issues/175546.
+        flutterJNI.scheduleFrame();
+        viewsWithPendingSurfaceCallback.remove(viewId);
+        surfaceView.getHolder().removeCallback(this);
+      }
+
+      @Override
+      public void surfaceChanged(
+          @NonNull SurfaceHolder holder, int format, int width, int height) {}
+
+      @Override
+      public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+        viewsWithPendingSurfaceCallback.remove(viewId);
+        surfaceView.getHolder().removeCallback(this);
+      }
+    };
   }
 
   public void hidePlatformView(int viewId) {
@@ -759,6 +768,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
         @Override
         public void dispose(int viewId) {
+          viewsWithPendingSurfaceCallback.remove(viewId);
           final PlatformView platformView = platformViews.get(viewId);
           if (platformView == null) {
             Log.e(TAG, "Disposing unknown platform view with id: " + viewId);
@@ -793,7 +803,6 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
             }
             platformViewParent.remove(viewId);
           }
-          viewsWithPendingSurfaceCallback.remove(viewId);
         }
 
         @Override
