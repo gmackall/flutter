@@ -66,6 +66,7 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
                 
                 if (settingsGradle.exists() || settingsGradleKts.exists()) {
                     settings.includeBuild(pluginDirectory) {
+                        name = pluginName
                         dependencySubstitution {
                             substitute(module("dev.flutter.plugins:$pluginName")).using(project(":"))
                         }

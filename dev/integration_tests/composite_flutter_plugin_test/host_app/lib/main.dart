@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sample_plugin/sample_plugin.dart';
+import 'package:sample_consuming_plugin/sample_consuming_plugin.dart';
 
 void main() {
   runApp(const MyApp());
@@ -115,6 +116,12 @@ class _MyHomePageState extends State<MyHomePage> {
               width: 100,
               height: 100,
               child: RedBox(),
+            ),
+            const SizedBox(height: 20),
+            const SizedBox(
+              width: 120,
+              height: 50,
+              child: DoubleBox(),
             ),
           ],
         ),
