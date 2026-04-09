@@ -295,10 +295,13 @@ class FlutterPlugin : Plugin<Project> {
         project.tasks.register("printAgpVersion") {
             doLast {
                 try {
-                    val versionClass = Class.forName("com.android.Version")
-                    val versionField = versionClass.getField("ANDROID_GRADLE_PLUGIN_VERSION")
-                    val agpVersion = versionField.get(null) as String
-                    println("FLUTTER_AGP_VERSION=$agpVersion")
+                    val agpVersion = VersionFetcher.getAGPVersion(project)
+                    if (agpVersion != null) {
+                        val versionStr = "${agpVersion.major}.${agpVersion.minor}.${agpVersion.micro}"
+                        println("FLUTTER_AGP_VERSION=$versionStr")
+                    } else {
+                        println("FLUTTER_AGP_VERSION=unknown")
+                    }
                 } catch (e: Exception) {
                     println("FLUTTER_AGP_VERSION=unknown")
                 }
