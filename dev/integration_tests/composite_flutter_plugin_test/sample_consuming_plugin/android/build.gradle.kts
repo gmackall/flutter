@@ -4,7 +4,7 @@ plugins {
     id("dev.flutter.flutter-plugin-gradle-plugin") version "1.0.0"
 }
 
-group = "com.example.sample_plugin"
+group = "com.example.sample_consuming_plugin"
 version = "1.0-SNAPSHOT"
 
 allprojects {
@@ -15,7 +15,7 @@ allprojects {
 }
 
 android {
-    namespace = "com.example.sample_plugin"
+    namespace = "com.example.sample_consuming_plugin"
 
     compileSdk = 36
 
@@ -53,7 +53,7 @@ android {
 }
 
 dependencies {
-    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("dev.flutter.plugins:sample_plugin:1.0.0")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")
 }

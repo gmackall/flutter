@@ -1,14 +1,13 @@
-package com.example.sample_plugin
+package com.example.sample_consuming_plugin
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
-import com.google.gson.Gson
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 
-/** SamplePlugin */
-class SamplePlugin :
+/** SampleConsumingPlugin */
+class SampleConsumingPlugin :
     FlutterPlugin,
     MethodCallHandler {
     // The MethodChannel that will the communication between Flutter and native Android
@@ -18,16 +17,8 @@ class SamplePlugin :
     private lateinit var channel: MethodChannel
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
-        channel = MethodChannel(flutterPluginBinding.binaryMessenger, "sample_plugin")
+        channel = MethodChannel(flutterPluginBinding.binaryMessenger, "sample_consuming_plugin")
         channel.setMethodCallHandler(this)
-        
-        flutterPluginBinding.platformViewRegistry.registerViewFactory(
-            "sample_plugin/red_box",
-            RedBoxViewFactory()
-        )
-
-        val gson = Gson()
-        println("Gson instance created successfully: $gson")
     }
 
     override fun onMethodCall(
