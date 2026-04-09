@@ -568,6 +568,42 @@ class AndroidGradleBuilder implements AndroidBuilder {
     if (androidBuildInfo.splitPerAbi) {
       options.add('-Psplit-per-abi=true');
     }
+
+    // Query AGP version from the host app.
+    final RunResult agpResult = await _processUtils.run(
+      <String>[gradleExecutablePath, ':app:printAgpVersion', '-q'],
+      workingDirectory: project.android.hostAppGradleRoot.path,
+      environment: <String, String>{
+        'JAVA_HOME': '/Users/mackall/development/flutter/engine/src/flutter/third_party/java/openjdk/Contents/Home/',
+      },
+    );
+    String? agpVersion;
+    for (final line in agpResult.stdout.split('\n')) {
+      if (line.startsWith('FLUTTER_AGP_VERSION=')) {
+        agpVersion = line.substring('FLUTTER_AGP_VERSION='.length).trim();
+        break;
+      }
+    }
+    if (agpVersion != null) {
+      // In a real implementation, the Flutter tool would iterate over all resolved plugins
+      // and write this version to their local.properties.
+      // For this prototype, we hardcode the paths to our test plugins.
+      final File samplePluginLocalProperties = project.directory.parent.childDirectory('sample_plugin').childDirectory('android').childFile('local.properties');
+      if (samplePluginLocalProperties.existsSync()) {
+        final String content = samplePluginLocalProperties.readAsStringSync();
+        if (!content.contains('agp.version=')) {
+          samplePluginLocalProperties.writeAsStringSync('$content\nagp.version=$agpVersion\n');
+        }
+      }
+      final File sampleConsumingPluginLocalProperties = project.directory.parent.childDirectory('sample_consuming_plugin').childDirectory('android').childFile('local.properties');
+      if (sampleConsumingPluginLocalProperties.existsSync()) {
+        final String content = sampleConsumingPluginLocalProperties.readAsStringSync();
+        if (!content.contains('agp.version=')) {
+          sampleConsumingPluginLocalProperties.writeAsStringSync('$content\nagp.version=$agpVersion\n');
+        }
+      }
+    }
+
     late Stopwatch sw;
     final int exitCode = await _runGradleTask(
       assembleTask,

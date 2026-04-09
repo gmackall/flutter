@@ -51,6 +51,7 @@ class FlutterPlugin : Plugin<Project> {
         val rootProject = project.rootProject
         if (FlutterPluginUtils.isFlutterAppProject(project)) {
             addTaskForLockfileGeneration(rootProject)
+            addTaskForPrintingAgpVersion(project)
         }
 
         val flutterRootSystemVal: String? = System.getenv("FLUTTER_ROOT")
@@ -285,6 +286,21 @@ class FlutterPlugin : Plugin<Project> {
                         executable(gradlew)
                         args(":${subproject.name}:dependencies", "--write-locks")
                     }
+                }
+            }
+        }
+    }
+
+    private fun addTaskForPrintingAgpVersion(project: Project) {
+        project.tasks.register("printAgpVersion") {
+            doLast {
+                try {
+                    val versionClass = Class.forName("com.android.Version")
+                    val versionField = versionClass.getField("ANDROID_GRADLE_PLUGIN_VERSION")
+                    val agpVersion = versionField.get(null) as String
+                    println("FLUTTER_AGP_VERSION=$agpVersion")
+                } catch (e: Exception) {
+                    println("FLUTTER_AGP_VERSION=unknown")
                 }
             }
         }

@@ -28,12 +28,6 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         }
 
         project.afterEvaluate {
-            val androidExtension = project.extensions.findByType(BaseExtension::class.java)
-            if (androidExtension == null) {
-                project.logger.quiet("Android extension not found. Skipping Flutter embedding dependency.")
-                return@afterEvaluate
-            }
-
             val flutterRoot = resolveFlutterRoot(project)
             if (flutterRoot == null) {
                 project.logger.error("Flutter SDK root not found. Please set FLUTTER_ROOT environment variable or flutter.sdk in local.properties.")
@@ -46,19 +40,19 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
                 return@afterEvaluate
             }
 
-            androidExtension.buildTypes.forEach { buildType ->
-                val flutterBuildMode = FlutterPluginUtils.buildModeFor(buildType)
-                val dependency = "io.flutter:flutter_embedding_$flutterBuildMode:$engineVersion"
-                
-                val configurationName = "${buildType.name}Api"
-                try {
-                    project.dependencies.add(configurationName, dependency)
-                    project.logger.quiet("Added dependency $dependency to configuration $configurationName")
-                } catch (e: Exception) {
-                    // If the configuration doesn't exist (e.g. custom build types without Api configuration),
-                    // we might need to fall back or log a warning.
-                    project.logger.warn("Could not add dependency to configuration $configurationName: ${e.message}")
-                }
+            // Add dependencies to standard configurations if they exist.
+            // This avoids accessing the Android extension which can fail due to classloader isolation in composite builds.
+            val debugApi = project.configurations.findByName("debugApi")
+            if (debugApi != null) {
+                val dependency = "io.flutter:flutter_embedding_debug:$engineVersion"
+                project.dependencies.add("debugApi", dependency)
+                project.logger.quiet("Added dependency $dependency to configuration debugApi")
+            }
+            val releaseApi = project.configurations.findByName("releaseApi")
+            if (releaseApi != null) {
+                val dependency = "io.flutter:flutter_embedding_release:$engineVersion"
+                project.dependencies.add("releaseApi", dependency)
+                project.logger.quiet("Added dependency $dependency to configuration releaseApi")
             }
         }
     }

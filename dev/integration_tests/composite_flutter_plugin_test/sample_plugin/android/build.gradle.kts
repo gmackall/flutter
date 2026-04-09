@@ -1,6 +1,5 @@
 plugins {
-    id("com.android.library") version "8.11.1"
-    id("org.jetbrains.kotlin.android") version "2.2.20"
+    id("com.android.library")
     id("dev.flutter.flutter-plugin-gradle-plugin") version "1.0.0"
 }
 
