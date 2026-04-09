@@ -60,8 +60,20 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
                     pluginDirectory.exists()
                 ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
                 val pluginName = androidPlugin["name"] as String
-                settings.include(":$pluginName")
-                settings.project(":$pluginName").projectDir = pluginDirectory
+                
+                val settingsGradle = File(pluginDirectory, "settings.gradle")
+                val settingsGradleKts = File(pluginDirectory, "settings.gradle.kts")
+                
+                if (settingsGradle.exists() || settingsGradleKts.exists()) {
+                    settings.includeBuild(pluginDirectory) {
+                        dependencySubstitution {
+                            substitute(module("dev.flutter.plugins:$pluginName")).using(project(":"))
+                        }
+                    }
+                } else {
+                    settings.include(":$pluginName")
+                    settings.project(":$pluginName").projectDir = pluginDirectory
+                }
             }
     }
 }

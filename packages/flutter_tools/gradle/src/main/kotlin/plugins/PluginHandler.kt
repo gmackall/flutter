@@ -102,6 +102,23 @@ class PluginHandler(
         ) {
             val pluginName =
                 requireNotNull(pluginObject["name"] as? String) { "Plugin name must be a string for plugin object: $pluginObject" }
+
+            val pluginDirectory = File(pluginObject["path"] as String, "android")
+            val settingsGradle = File(pluginDirectory, "settings.gradle")
+            val settingsGradleKts = File(pluginDirectory, "settings.gradle.kts")
+            val isMigrated = settingsGradle.exists() || settingsGradleKts.exists()
+
+            if (isMigrated) {
+                project.afterEvaluate {
+                    getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
+                        if (!(pluginObject["dev_dependency"] as Boolean) || buildType.name != "release") {
+                            project.dependencies.add("${buildType.name}Api", "dev.flutter.plugins:$pluginName")
+                        }
+                    }
+                }
+                return
+            }
+
             val pluginProject: Project = project.rootProject.findProject(":$pluginName") ?: return
 
             // Apply the "flutter" Gradle extension to plugins so that they can use it's vended
