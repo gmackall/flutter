@@ -70,10 +70,9 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
                 ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
                 val pluginName = androidPlugin["name"] as String
                 
-                val settingsGradle = File(pluginDirectory, "settings.gradle")
-                val settingsGradleKts = File(pluginDirectory, "settings.gradle.kts")
+                val isMigrated = androidPlugin["is_migrated"] as? Boolean ?: false
                 
-                if (settingsGradle.exists() || settingsGradleKts.exists()) {
+                if (isMigrated) {
                     settings.includeBuild(pluginDirectory) {
                         name = pluginName
                         dependencySubstitution {

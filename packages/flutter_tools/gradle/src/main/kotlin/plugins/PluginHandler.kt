@@ -103,10 +103,7 @@ class PluginHandler(
             val pluginName =
                 requireNotNull(pluginObject["name"] as? String) { "Plugin name must be a string for plugin object: $pluginObject" }
 
-            val pluginDirectory = File(pluginObject["path"] as String, "android")
-            val settingsGradle = File(pluginDirectory, "settings.gradle")
-            val settingsGradleKts = File(pluginDirectory, "settings.gradle.kts")
-            val isMigrated = settingsGradle.exists() || settingsGradleKts.exists()
+            val isMigrated = pluginObject["is_migrated"] as? Boolean ?: false
 
             if (isMigrated) {
                 project.afterEvaluate {
