@@ -19,7 +19,12 @@ import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.UnknownTaskException
+import org.gradle.api.artifacts.result.ResolvedArtifactResult
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.api.attributes.Attribute
 import org.gradle.api.logging.Logger
+import org.gradle.jvm.JvmLibrary
+import org.gradle.language.base.artifact.SourcesArtifact
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Properties
@@ -1055,6 +1060,78 @@ object FlutterPluginUtils {
                     DeepLinkJsonFromManifestTask::manifestFile,
                     DeepLinkJsonFromManifestTask::updatedManifest
                 ).toTransform(SingleArtifact.MERGED_MANIFEST) // (3) Indicate the artifact and operation type.
+        }
+    }
+
+    @JvmStatic
+    @JvmName("addTaskForDumpClasspath")
+    internal fun addTaskForDumpClasspath(project: Project) {
+        project.tasks.register("flutterDumpClasspath") {
+            description = "Prints the resolved classpath for JNIgen"
+            val config = project.configurations.getByName("releaseRuntimeClasspath")
+            
+            val jarView = config.incoming.artifactView {
+                attributes {
+                    attribute(Attribute.of("artifactType", String::class.java), "jar")
+                }
+                lenient(true)
+            }
+            
+            val aarView = config.incoming.artifactView {
+                attributes {
+                    attribute(Attribute.of("artifactType", String::class.java), "android-classes-jar")
+                }
+                lenient(true)
+            }
+            
+            // Use the artifact view files as inputs to avoid ambiguity during resolution.
+            inputs.files(jarView.files, aarView.files)
+            
+            doLast {
+                val allJars = jarView.files + aarView.files
+                allJars.distinct().forEach { file ->
+                    println(file.absolutePath)
+                }
+            }
+        }
+    }
+
+    @JvmStatic
+    @JvmName("addTaskForDumpSources")
+    internal fun addTaskForDumpSources(project: Project) {
+        project.tasks.register("flutterDumpSources") {
+            description = "Prints the resolved sources for JNIgen"
+            val config = project.configurations.getByName("releaseRuntimeClasspath")
+            
+            val jarView = config.incoming.artifactView {
+                attributes {
+                    attribute(Attribute.of("artifactType", String::class.java), "jar")
+                }
+                lenient(true)
+            }
+            
+            // Use the artifact view files as inputs to trigger resolution without ambiguity.
+            inputs.files(jarView.files)
+            
+            doLast {
+                val componentIds = config.incoming.resolutionResult.allDependencies
+                    .filterIsInstance<ResolvedDependencyResult>()
+                    .map { it.selected.id }
+                    
+                val result = project.dependencies.createArtifactResolutionQuery()
+                    .forComponents(componentIds)
+                    .withArtifacts(JvmLibrary::class.java, SourcesArtifact::class.java)
+                    .execute()
+                    
+                result.resolvedComponents.forEach { component ->
+                    val sources = component.getArtifacts(SourcesArtifact::class.java)
+                    sources.forEach { artifact ->
+                        if (artifact is ResolvedArtifactResult) {
+                            println(artifact.file.absolutePath)
+                        }
+                    }
+                }
+            }
         }
     }
 }

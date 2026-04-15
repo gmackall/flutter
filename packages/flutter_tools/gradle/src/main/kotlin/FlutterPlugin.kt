@@ -301,6 +301,8 @@ class FlutterPlugin : Plugin<Project> {
             FlutterPluginUtils.addTaskForPrintBuildVariants(projectToAddTasksTo)
             FlutterPluginUtils.addTaskForPrintNdkVersion(projectToAddTasksTo)
             FlutterPluginUtils.addTasksForOutputsAppLinkSettings(projectToAddTasksTo)
+            FlutterPluginUtils.addTaskForDumpClasspath(projectToAddTasksTo)
+            FlutterPluginUtils.addTaskForDumpSources(projectToAddTasksTo)
         }
 
         val targetPlatforms: List<String> =
