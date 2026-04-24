@@ -527,6 +527,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
 
+    Log.e("PlatformViewsController2", "onDisplayPlatformView: viewId=" + viewId
+        + " x=" + x + " y=" + y + " width=" + width + " height=" + height
+        + " viewWidth=" + viewWidth + " viewHeight=" + viewHeight);
+
     final FrameLayout.LayoutParams layoutParams =
         new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
     final View view = platformViews.get(viewId).getView();
@@ -553,6 +557,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     RectF screenRectF = new RectF(x, y, x + width, y + height);
     Rect screenRect = new Rect();
     screenRectF.roundOut(screenRect);
+
+    Log.e("PlatformViewsController2", "maybeApplyClipToSurfaceView: initial screenRect=" + screenRect + " viewId=" + viewId);
 
     List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
 
@@ -581,6 +587,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     // SurfaceControl.setCrop expects coordinates relative to the Surface (0,0).
     // We shift the calculated screen-space rect by the view's origin (-x, -y).
     screenRect.offset(-x, -y);
+    Log.e("PlatformViewsController2", "maybeApplyClipToSurfaceView: final crop screenRect=" + screenRect + " viewId=" + viewId);
     if (screenRect.width() < 0 || screenRect.height() < 0) {
       screenRect.setEmpty();
     }

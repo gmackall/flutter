@@ -2035,6 +2035,63 @@ class ImageFilterLayer extends OffsetLayer {
 ///
 /// This class inherits from [OffsetLayer] to make it one of the layers that
 /// can be used at the root of a [RenderObject] hierarchy.
+/// A layer that applies the overscroll stretch effect.
+class OverscrollStretchLayer extends ImageFilterLayer {
+  /// Creates a layer that applies an overscroll stretch effect.
+  OverscrollStretchLayer({
+    super.imageFilter,
+    double xStretch = 0.0,
+    double yStretch = 0.0,
+    super.offset,
+  }) : _xStretch = xStretch,
+       _yStretch = yStretch;
+
+  /// The horizontal stretch amount.
+  double get xStretch => _xStretch;
+  double _xStretch;
+  set xStretch(double value) {
+    if (value != _xStretch) {
+      _xStretch = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  /// The vertical stretch amount.
+  double get yStretch => _yStretch;
+  double _yStretch;
+  set yStretch(double value) {
+    if (value != _yStretch) {
+      _yStretch = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  @override
+  void addToScene(ui.SceneBuilder builder) {
+    assert(imageFilter != null);
+    engineLayer = builder.pushOverscrollStretch(
+      imageFilter!,
+      xStretch,
+      yStretch,
+      oldLayer: _engineLayer as ui.OverscrollStretchEngineLayer?,
+    );
+    addChildrenToScene(builder);
+    builder.pop();
+  }
+
+  @override
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(DoubleProperty('xStretch', xStretch));
+    properties.add(DoubleProperty('yStretch', yStretch));
+  }
+}
+
+/// A composited layer that applies a given transformation matrix to its
+/// children.
+///
+/// This class inherits from [OffsetLayer] to make it one of the layers that
+/// can be used at the root of a [RenderObject] hierarchy.
 class TransformLayer extends OffsetLayer {
   /// Creates a transform layer.
   ///

@@ -44,6 +44,7 @@ enum class MutatorType {
   kBackdropClipRRect,
   kBackdropClipRSuperellipse,
   kBackdropClipPath,
+  kOverscrollStretch,
 };
 
 // Represents an image filter mutation.
@@ -103,6 +104,15 @@ struct BackdropClipPath {
   }
 };
 
+struct OverscrollStretchMutation {
+  DlScalar x_stretch;
+  DlScalar y_stretch;
+
+  bool operator==(const OverscrollStretchMutation& other) const {
+    return x_stretch == other.x_stretch && y_stretch == other.y_stretch;
+  }
+};
+
 // Stores mutation information like clipping or kTransform.
 //
 // The `type` indicates the type of the mutation: kClipRect, kTransform and etc.
@@ -131,6 +141,8 @@ class Mutator {
       : data_(backdrop_rse) {}
   explicit Mutator(const BackdropClipPath& backdrop_path)
       : data_(backdrop_path) {}
+  explicit Mutator(const OverscrollStretchMutation& overscroll_stretch)
+      : data_(overscroll_stretch) {}
 
   MutatorType GetType() const {
     return static_cast<MutatorType>(data_.index());
@@ -161,6 +173,9 @@ class Mutator {
   const BackdropClipPath& GetBackdropClipPath() const {
     return std::get<BackdropClipPath>(data_);
   }
+  const OverscrollStretchMutation& GetOverscrollStretch() const {
+    return std::get<OverscrollStretchMutation>(data_);
+  }
   const uint8_t& GetAlpha() const { return std::get<uint8_t>(data_); }
   float GetAlphaFloat() const { return DlColor::toOpacity(GetAlpha()); }
 
@@ -180,6 +195,7 @@ class Mutator {
       case MutatorType::kOpacity:
       case MutatorType::kTransform:
       case MutatorType::kBackdropFilter:
+      case MutatorType::kOverscrollStretch:
         return false;
     }
   }
@@ -195,7 +211,8 @@ class Mutator {
                BackdropClipRect,
                BackdropClipRRect,
                BackdropClipRSuperellipse,
-               BackdropClipPath>
+               BackdropClipPath,
+               OverscrollStretchMutation>
       data_;
 };  // Mutator
 
@@ -221,6 +238,7 @@ class MutatorsStack {
   // `filter_rect` is in global coordinates.
   void PushBackdropFilter(const std::shared_ptr<DlImageFilter>& filter,
                           const DlRect& filter_rect);
+  void PushOverscrollStretch(DlScalar x_stretch, DlScalar y_stretch);
   void PushPlatformViewClipRect(const DlRect& rect);
   void PushPlatformViewClipRRect(const DlRoundRect& rrect);
   void PushPlatformViewClipRSuperellipse(const DlRoundSuperellipse& rse);
@@ -298,8 +316,24 @@ class EmbeddedViewParams {
       : matrix_(matrix),
         size_points_(size_points),
         mutators_stack_(std::move(mutators_stack)) {
-    final_bounding_rect_ =
-        DlRect::MakeSize(size_points).TransformAndClipBounds(matrix);
+    DlRect rect = DlRect::MakeSize(size_points_);
+    
+    DlScalar total_x_stretch = 0.0f;
+    DlScalar total_y_stretch = 0.0f;
+    for (auto it = mutators_stack_.Begin(); it != mutators_stack_.End(); ++it) {
+      if ((*it)->GetType() == MutatorType::kOverscrollStretch) {
+        const auto& stretch = (*it)->GetOverscrollStretch();
+        total_x_stretch += stretch.x_stretch;
+        total_y_stretch += stretch.y_stretch;
+      }
+    }
+    if (total_x_stretch != 0.0f || total_y_stretch != 0.0f) {
+      DlScalar expand_x = rect.GetWidth() * std::abs(total_x_stretch);
+      DlScalar expand_y = rect.GetHeight() * std::abs(total_y_stretch);
+      rect = rect.Expand(expand_x, expand_y, expand_x, expand_y);
+    }
+
+    final_bounding_rect_ = rect.TransformAndClipBounds(matrix_);
   }
 
   // The transformation Matrix corresponding to the sum of all the
@@ -556,6 +590,9 @@ class ExternalViewEmbedder {
   virtual void PushClipRSuperellipseToVisitedPlatformViews(
       const DlRoundSuperellipse& clip_rse) {}
   virtual void PushClipPathToVisitedPlatformViews(const DlPath& clip_path) {}
+  virtual void PushOverscrollStretchToVisitedPlatformViews(DlScalar x_stretch,
+                                                           DlScalar y_stretch) {
+  }
 
  private:
   bool used_this_frame_ = false;

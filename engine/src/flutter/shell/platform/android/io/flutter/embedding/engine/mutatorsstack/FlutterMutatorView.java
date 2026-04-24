@@ -9,6 +9,8 @@ import static android.view.View.OnFocusChangeListener;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.RenderEffect;
+import android.graphics.RuntimeShader;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -36,6 +38,43 @@ public class FlutterMutatorView extends FrameLayout {
 
   private final AndroidTouchProcessor androidTouchProcessor;
   private Paint paint;
+
+  private static final String STRETCH_SHADER =
+      "uniform float u_overscroll_x;\n" +
+      "uniform float u_overscroll_y;\n" +
+      "uniform float u_interpolation_strength;\n" +
+      "uniform shader u_texture;\n" +
+      "uniform vec2 u_size;\n" +
+      "float ease_in(float t, float d) { return t * d; }\n" +
+      "float compute_overscroll_start(float in_pos, float overscroll, float u_stretch_affected_dist, float u_inverse_stretch_affected_dist, float distance_stretched, float interpolation_strength) {\n" +
+      "  float offset_pos = u_stretch_affected_dist - in_pos;\n" +
+      "  float pos_based_variation = mix(1.0, ease_in(offset_pos, u_inverse_stretch_affected_dist), interpolation_strength);\n" +
+      "  float stretch_intensity = overscroll * pos_based_variation;\n" +
+      "  return distance_stretched - (offset_pos / (1.0 + stretch_intensity));\n" +
+      "}\n" +
+      "float compute_overscroll_end(float in_pos, float overscroll, float reverse_stretch_dist, float u_stretch_affected_dist, float u_inverse_stretch_affected_dist, float distance_stretched, float interpolation_strength, float viewport_dimension) {\n" +
+      "  float offset_pos = in_pos - reverse_stretch_dist;\n" +
+      "  float pos_based_variation = mix(1.0, ease_in(offset_pos, u_inverse_stretch_affected_dist), interpolation_strength);\n" +
+      "  float stretch_intensity = (-overscroll) * pos_based_variation;\n" +
+      "  return viewport_dimension - (distance_stretched - (offset_pos / (1.0 + stretch_intensity)));\n" +
+      "}\n" +
+      "float compute_streched_effect(float in_pos, float overscroll, float u_stretch_affected_dist, float u_inverse_stretch_affected_dist, float distance_stretched, float distance_diff, float interpolation_strength, float viewport_dimension) {\n" +
+      "  if (overscroll > 0.0) {\n" +
+      "    if (in_pos <= u_stretch_affected_dist) { return compute_overscroll_start(in_pos, overscroll, u_stretch_affected_dist, u_inverse_stretch_affected_dist, distance_stretched, interpolation_strength); }\n" +
+      "    else { return distance_diff + in_pos; }\n" +
+      "  } else if (overscroll < 0.0) {\n" +
+      "    float stretch_affected_dist_calc = viewport_dimension - u_stretch_affected_dist;\n" +
+      "    if (in_pos >= stretch_affected_dist_calc) { return compute_overscroll_end(in_pos, overscroll, stretch_affected_dist_calc, u_stretch_affected_dist, u_inverse_stretch_affected_dist, distance_stretched, interpolation_strength, viewport_dimension); }\n" +
+      "    else { return -distance_diff + in_pos; }\n" +
+      "  } else { return in_pos; }\n" +
+      "}\n" +
+      "half4 main(vec2 fragCoord) {\n" +
+      "  vec2 uv = fragCoord.xy / u_size;\n" +
+      "  float overscroll = u_overscroll_y != 0.0 ? u_overscroll_y : u_overscroll_x;\n" +
+      "  float out_u_norm = u_overscroll_y != 0.0 ? uv.x : compute_streched_effect(uv.x, overscroll, 1.0, 1.0, 1.0 / (1.0 + abs(overscroll)), (1.0 / (1.0 + abs(overscroll))) - 1.0, u_interpolation_strength, 1.0);\n" +
+      "  float out_v_norm = u_overscroll_y != 0.0 ? compute_streched_effect(uv.y, overscroll, 1.0, 1.0, 1.0 / (1.0 + abs(overscroll)), (1.0 / (1.0 + abs(overscroll))) - 1.0, u_interpolation_strength, 1.0) : uv.y;\n" +
+      "  return u_texture.eval(vec2(out_u_norm * u_size.x, out_v_norm * u_size.y));\n" +
+      "}\n";
 
   /**
    * Initialize the FlutterMutatorView. Use this to set the screenDensity, which will be used to
@@ -108,6 +147,25 @@ public class FlutterMutatorView extends FrameLayout {
     layoutParams.topMargin = top;
     setLayoutParams(layoutParams);
     setWillNotDraw(false);
+
+    if (android.os.Build.VERSION.SDK_INT >= io.flutter.Build.API_LEVELS.API_31) {
+      float totalXStretch = 0.0f;
+      float totalYStretch = 0.0f;
+      for (FlutterMutatorsStack.FlutterMutator mutator : mutatorsStack.getMutators()) {
+        if (mutator.getType() == FlutterMutatorsStack.FlutterMutatorType.STRETCH_OVERSCROLL) {
+          totalXStretch += mutator.getXStretch();
+          totalYStretch += mutator.getYStretch();
+        }
+      }
+      if (totalXStretch != 0.0f || totalYStretch != 0.0f) {
+        RuntimeShader shader = new RuntimeShader(STRETCH_SHADER);
+        shader.setFloatUniform("u_overscroll_x", totalXStretch);
+        shader.setFloatUniform("u_overscroll_y", totalYStretch);
+        shader.setFloatUniform("u_interpolation_strength", 0.7f);
+        shader.setFloatUniform("u_size", (float) width, (float) height);
+        this.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "u_texture"));
+      }
+    }
   }
 
   @Override
@@ -123,7 +181,7 @@ public class FlutterMutatorView extends FrameLayout {
       // all the clipping paths
       Path pathCopy = new Path(path);
       pathCopy.offset(-left, -top);
-      canvas.clipPath(pathCopy);
+      // canvas.clipPath(pathCopy);
     }
 
     int newAlpha = (int) (255 * mutatorsStack.getFinalOpacity());

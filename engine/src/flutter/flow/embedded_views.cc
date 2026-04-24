@@ -96,6 +96,13 @@ void MutatorsStack::PushBackdropFilter(
   vector_.push_back(element);
 }
 
+void MutatorsStack::PushOverscrollStretch(DlScalar x_stretch,
+                                          DlScalar y_stretch) {
+  std::shared_ptr<Mutator> element =
+      std::make_shared<Mutator>(OverscrollStretchMutation{x_stretch, y_stretch});
+  vector_.push_back(element);
+}
+
 void MutatorsStack::PushPlatformViewClipRect(const DlRect& rect) {
   std::shared_ptr<Mutator> element =
       std::make_shared<Mutator>(BackdropClipRect(rect));
