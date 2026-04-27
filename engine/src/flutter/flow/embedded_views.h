@@ -328,9 +328,19 @@ class EmbeddedViewParams {
       }
     }
     if (total_x_stretch != 0.0f || total_y_stretch != 0.0f) {
-      DlScalar expand_x = rect.GetWidth() * std::abs(total_x_stretch);
-      DlScalar expand_y = rect.GetHeight() * std::abs(total_y_stretch);
-      rect = rect.Expand(expand_x, expand_y, expand_x, expand_y);
+      DlScalar distance_stretched_x = rect.GetWidth() * total_x_stretch;
+      DlScalar distance_stretched_y = rect.GetHeight() * total_y_stretch;
+
+      DlScalar expand_left = distance_stretched_x < 0.0f ? -distance_stretched_x : 0.0f;
+      DlScalar expand_top = distance_stretched_y < 0.0f ? -distance_stretched_y : 0.0f;
+      DlScalar expand_right = distance_stretched_x > 0.0f ? distance_stretched_x : 0.0f;
+      DlScalar expand_bottom = distance_stretched_y > 0.0f ? distance_stretched_y : 0.0f;
+
+      rect = rect.Expand(expand_left, expand_top, expand_right, expand_bottom);
+
+      DlMatrix translate = DlMatrix::MakeTranslation({distance_stretched_x, distance_stretched_y, 0.0f});
+      mutators_stack_.PushTransform(translate);
+      matrix_ = matrix_ * translate;
     }
 
     final_bounding_rect_ = rect.TransformAndClipBounds(matrix_);
