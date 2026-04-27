@@ -561,7 +561,8 @@ void MutatorContext::applyOpacity(const DlRect& bounds, DlScalar opacity) {
   }
 }
 
-void MutatorContext::applyOverscrollStretch(DlScalar x_stretch, DlScalar y_stretch) {
+void MutatorContext::applyOverscrollStretch(DlScalar x_stretch,
+                                            DlScalar y_stretch) {
   layer_state_stack_->push_overscroll_stretch(x_stretch, y_stretch);
 }
 
@@ -709,7 +710,8 @@ void LayerStateStack::push_opacity(const DlRect& bounds, DlScalar opacity) {
   apply_last_entry();
 }
 
-void LayerStateStack::push_overscroll_stretch(DlScalar x_stretch, DlScalar y_stretch) {
+void LayerStateStack::push_overscroll_stretch(DlScalar x_stretch,
+                                              DlScalar y_stretch) {
   state_stack_.emplace_back(
       std::make_unique<OverscrollStretchEntry>(x_stretch, y_stretch));
   apply_last_entry();

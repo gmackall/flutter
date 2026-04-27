@@ -317,7 +317,7 @@ class EmbeddedViewParams {
         size_points_(size_points),
         mutators_stack_(std::move(mutators_stack)) {
     DlRect rect = DlRect::MakeSize(size_points_);
-    
+
     DlScalar total_x_stretch = 0.0f;
     DlScalar total_y_stretch = 0.0f;
     for (auto it = mutators_stack_.Begin(); it != mutators_stack_.End(); ++it) {
@@ -331,14 +331,19 @@ class EmbeddedViewParams {
       DlScalar distance_stretched_x = rect.GetWidth() * total_x_stretch;
       DlScalar distance_stretched_y = rect.GetHeight() * total_y_stretch;
 
-      DlScalar expand_left = distance_stretched_x < 0.0f ? -distance_stretched_x : 0.0f;
-      DlScalar expand_top = distance_stretched_y < 0.0f ? -distance_stretched_y : 0.0f;
-      DlScalar expand_right = distance_stretched_x > 0.0f ? distance_stretched_x : 0.0f;
-      DlScalar expand_bottom = distance_stretched_y > 0.0f ? distance_stretched_y : 0.0f;
+      DlScalar expand_left =
+          distance_stretched_x < 0.0f ? -distance_stretched_x : 0.0f;
+      DlScalar expand_top =
+          distance_stretched_y < 0.0f ? -distance_stretched_y : 0.0f;
+      DlScalar expand_right =
+          distance_stretched_x > 0.0f ? distance_stretched_x : 0.0f;
+      DlScalar expand_bottom =
+          distance_stretched_y > 0.0f ? distance_stretched_y : 0.0f;
 
       rect = rect.Expand(expand_left, expand_top, expand_right, expand_bottom);
 
-      DlMatrix translate = DlMatrix::MakeTranslation({distance_stretched_x, distance_stretched_y, 0.0f});
+      DlMatrix translate = DlMatrix::MakeTranslation(
+          {distance_stretched_x, distance_stretched_y, 0.0f});
       mutators_stack_.PushTransform(translate);
       matrix_ = matrix_ * translate;
     }

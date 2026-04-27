@@ -98,8 +98,8 @@ void MutatorsStack::PushBackdropFilter(
 
 void MutatorsStack::PushOverscrollStretch(DlScalar x_stretch,
                                           DlScalar y_stretch) {
-  std::shared_ptr<Mutator> element =
-      std::make_shared<Mutator>(OverscrollStretchMutation{x_stretch, y_stretch});
+  std::shared_ptr<Mutator> element = std::make_shared<Mutator>(
+      OverscrollStretchMutation{x_stretch, y_stretch});
   vector_.push_back(element);
 }
 

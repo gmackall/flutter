@@ -1102,8 +1102,8 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
-  g_mutators_stack_push_overscroll_stretch_method =
-      env->GetMethodID(g_mutators_stack_class->obj(), "pushOverscrollStretch", "(FF)V");
+  g_mutators_stack_push_overscroll_stretch_method = env->GetMethodID(
+      g_mutators_stack_class->obj(), "pushOverscrollStretch", "(FF)V");
   if (g_mutators_stack_push_overscroll_stretch_method == nullptr) {
     FML_LOG(ERROR)
         << "Could not locate FlutterMutatorsStack.pushOverscrollStretch method";
@@ -1770,7 +1770,8 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
       }
       case MutatorType::kOverscrollStretch: {
         const auto& mutation = (*iter)->GetOverscrollStretch();
-        env->CallVoidMethod(mutatorsStack, g_mutators_stack_push_overscroll_stretch_method,
+        env->CallVoidMethod(mutatorsStack,
+                            g_mutators_stack_push_overscroll_stretch_method,
                             static_cast<float>(mutation.x_stretch),
                             static_cast<float>(mutation.y_stretch));
         break;
@@ -2263,7 +2264,8 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       }
       case MutatorType::kOverscrollStretch: {
         const auto& mutation = (*iter)->GetOverscrollStretch();
-        env->CallVoidMethod(mutatorsStack, g_mutators_stack_push_overscroll_stretch_method,
+        env->CallVoidMethod(mutatorsStack,
+                            g_mutators_stack_push_overscroll_stretch_method,
                             static_cast<float>(mutation.x_stretch),
                             static_cast<float>(mutation.y_stretch));
         break;
@@ -2329,7 +2331,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
                             opacity);
         break;
       }
-      
+
       case MutatorType::kClipPath: {
         auto& dlPath = (*iter)->GetPath();
         // The layer mutator mechanism should have already caught and
