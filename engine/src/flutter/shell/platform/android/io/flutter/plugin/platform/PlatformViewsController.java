@@ -330,6 +330,16 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
           final int physicalLeft = toPhysicalPixels(left);
           final FrameLayout.LayoutParams layoutParams =
               (FrameLayout.LayoutParams) viewWrapper.getLayoutParams();
+          // The Dart side already de-dupes on the *logical* offset, but multiple logical offsets
+          // can round to the same physical position (e.g. sub-pixel deltas during a slow scroll or
+          // the tail of a fling). Skip the relayout when the rounded position is unchanged: calling
+          // setLayoutParams() here triggers requestLayout() -> a full re-render of the wrapper's
+          // texture, which is wasted work when the view does not actually move on screen.
+          if (layoutParams.topMargin == physicalTop
+              && layoutParams.leftMargin == physicalLeft
+              && layoutParams.gravity == (Gravity.LEFT | Gravity.TOP)) {
+            return;
+          }
           layoutParams.topMargin = physicalTop;
           layoutParams.leftMargin = physicalLeft;
           layoutParams.gravity = Gravity.LEFT | Gravity.TOP;
