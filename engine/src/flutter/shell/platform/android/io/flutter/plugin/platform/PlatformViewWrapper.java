@@ -11,6 +11,7 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.View;
@@ -89,6 +90,38 @@ public class PlatformViewWrapper extends FrameLayout {
 
     left = params.leftMargin;
     top = params.topMargin;
+  }
+
+  /**
+   * Updates the on-screen position of this view without triggering a relayout of the view
+   * hierarchy.
+   *
+   * <p>Unlike {@link #setLayoutParams}, this does not call {@code requestLayout()}, so it does not
+   * schedule a measure/layout traversal -- and therefore avoids re-rendering the platform view's
+   * texture, whose content does not depend on the view's position. This is the common case during a
+   * scroll, where only the position changes (every frame) while the texture content is unchanged.
+   *
+   * <p>The {@link FrameLayout.LayoutParams} margins are kept in sync so that any subsequent layout
+   * pass (for example a resize, or a relayout triggered elsewhere in the hierarchy) still places the
+   * view at the correct position.
+   *
+   * @param left The left position, in physical pixels, relative to the parent.
+   * @param top The top position, in physical pixels, relative to the parent.
+   */
+  public void updateOffset(int left, int top) {
+    this.left = left;
+    this.top = top;
+
+    final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) getLayoutParams();
+    if (params != null) {
+      params.leftMargin = left;
+      params.topMargin = top;
+      params.gravity = Gravity.LEFT | Gravity.TOP;
+    }
+
+    // Reposition the view directly, bypassing requestLayout() and the measure/layout traversal it
+    // schedules (along with the texture re-render that traversal causes).
+    layout(left, top, left + getWidth(), top + getHeight());
   }
 
   public void resizeRenderTarget(int width, int height) {

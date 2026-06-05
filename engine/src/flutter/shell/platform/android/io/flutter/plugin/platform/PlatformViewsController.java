@@ -340,10 +340,12 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
               && layoutParams.gravity == (Gravity.LEFT | Gravity.TOP)) {
             return;
           }
-          layoutParams.topMargin = physicalTop;
-          layoutParams.leftMargin = physicalLeft;
-          layoutParams.gravity = Gravity.LEFT | Gravity.TOP;
-          viewWrapper.setLayoutParams(layoutParams);
+          // Reposition the wrapper without calling setLayoutParams(), which would trigger
+          // requestLayout() and a full re-render of the wrapper's texture. The texture content does
+          // not depend on the view's position, so re-rendering it on every scroll frame is wasted
+          // work. updateOffset() keeps the LayoutParams margins in sync (for resize/relayout) and
+          // repositions the view via a direct layout() call instead.
+          viewWrapper.updateOffset(physicalLeft, physicalTop);
         }
 
         @Override
