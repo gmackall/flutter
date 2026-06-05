@@ -81,6 +81,32 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   private final HashSet<Integer> viewsWithPendingSurfaceCallback = new HashSet<>();
 
+  // The engine invokes onDisplayPlatformView() unconditionally for every visible platform view on
+  // every composited frame. Without de-duplication, each visible view pays for a full relayout,
+  // a reparent (bringToFront), and a SurfaceControl transaction every frame -- even when nothing
+  // about that view changed since the previous frame. The state below records what was last applied
+  // to each view so that this redundant per-frame work can be skipped.
+  private final SparseArray<DisplayState> displayStates = new SparseArray<>();
+
+  // The composition (z-) order of the platform views displayed in the current frame. This is built
+  // up across the onDisplayPlatformView() calls within a frame and reconciled once in onEndFrame(),
+  // so that views are only re-stacked when the order actually changes instead of every frame.
+  private final ArrayList<Integer> currentFrameCompositionOrder = new ArrayList<>();
+  private final ArrayList<Integer> lastFrameCompositionOrder = new ArrayList<>();
+
+  // A snapshot of the values most recently applied to a platform view, used to skip redundant
+  // per-frame work. See displayStates.
+  private static class DisplayState {
+    int viewWidth = Integer.MIN_VALUE;
+    int viewHeight = Integer.MIN_VALUE;
+    float opacity = Float.NaN;
+    final Rect clip = new Rect();
+    boolean clipValid = false;
+    // Whether the view's wrapper was made visible and stacked on the previous frame. Reset when the
+    // view is hidden so that visibility is re-applied when it is shown again.
+    boolean displayed = false;
+  }
+
   public PlatformViewsController2() {
     accessibilityEventsDelegate = new AccessibilityEventsDelegate();
     platformViews = new SparseArray<>();
@@ -265,6 +291,13 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       flutterView.removeView(view);
     }
 
+    // The wrappers have been detached from the view hierarchy. Drop the cached display state so that
+    // visibility, z-order, and clips are all re-applied from scratch when the views are re-attached
+    // (for example, after a rotation).
+    displayStates.clear();
+    currentFrameCompositionOrder.clear();
+    lastFrameCompositionOrder.clear();
+
     destroyOverlaySurface();
     flutterView = null;
 
@@ -437,6 +470,15 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     channelHandler.dispose(viewId);
   }
 
+  // Clears the cached per-view display state and removes the view from the tracked composition
+  // order. Called when a platform view is disposed or detached.
+  private void clearDisplayState(int viewId) {
+    displayStates.remove(viewId);
+    final Integer boxed = viewId;
+    currentFrameCompositionOrder.remove(boxed);
+    lastFrameCompositionOrder.remove(boxed);
+  }
+
   /**
    * Initializes a platform view and adds it to the view hierarchy.
    *
@@ -522,21 +564,46 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       return;
     }
 
-    final FlutterMutatorView parentView = platformViewParent.get(viewId);
-    parentView.readyToDisplay(mutatorsStack, x, y, width, height);
-    parentView.setVisibility(View.VISIBLE);
-    parentView.bringToFront();
+    DisplayState state = displayStates.get(viewId);
+    if (state == null) {
+      state = new DisplayState();
+      displayStates.put(viewId, state);
+    }
 
-    final FrameLayout.LayoutParams layoutParams =
-        new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
+    final FlutterMutatorView parentView = platformViewParent.get(viewId);
+    // The position and mutators change every frame during a scroll, so the mutator view always
+    // needs the latest values.
+    parentView.readyToDisplay(mutatorsStack, x, y, width, height);
+
+    // Only toggle visibility on the frame a view first appears (or reappears after being hidden).
+    // setVisibility is otherwise a no-op, but skipping it keeps the hot path allocation- and
+    // flag-free.
+    if (!state.displayed) {
+      parentView.setVisibility(View.VISIBLE);
+    }
+
+    // Record this view in composition order. Z-ordering is reconciled once per frame in
+    // onEndFrame() rather than reparenting every view on every frame.
+    currentFrameCompositionOrder.add(viewId);
+
     final View view = platformViews.get(viewId).getView();
     if (view != null) {
-      view.setLayoutParams(layoutParams);
-      view.bringToFront();
+      // The embedded view is the only child of the mutator parent and fills it, so its LayoutParams
+      // depend only on the (constant during a scroll) view size. Skip the relayout when unchanged.
+      if (state.viewWidth != viewWidth || state.viewHeight != viewHeight) {
+        final FrameLayout.LayoutParams layoutParams =
+            new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
+        view.setLayoutParams(layoutParams);
+      }
       if (view instanceof SurfaceView) {
-        maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack, viewId);
+        maybeApplyClipToSurfaceView(
+            (SurfaceView) view, x, y, width, height, mutatorsStack, viewId, state);
       }
     }
+
+    state.viewWidth = viewWidth;
+    state.viewHeight = viewHeight;
+    state.displayed = true;
   }
 
   @RequiresApi(API_LEVELS.API_34)
@@ -547,7 +614,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       int width,
       int height,
       FlutterMutatorsStack mutatorsStack,
-      int viewId) {
+      int viewId,
+      DisplayState state) {
     // 1. CALCULATE THE FINAL RECT (RECT, RRECT, PATH, TRANSFORM)
     // We start with the view's final on-screen bounds.
     RectF screenRectF = new RectF(x, y, x + width, y + height);
@@ -609,8 +677,25 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
               + " because it has an invalid SurfaceControl.");
       return;
     }
-    SurfaceControl.Transaction tx =
-        createTransaction().setAlpha(sc, opacity).setCrop(sc, screenRect);
+    // Only build a transaction for the properties that actually changed since the last frame.
+    // During a scroll the crop moves every frame, but the opacity is typically stable; for a
+    // platform view that is static while the rest of the list scrolls, neither changes and no
+    // transaction is created at all.
+    final boolean opacityChanged = state.opacity != opacity;
+    final boolean clipChanged = !state.clipValid || !state.clip.equals(screenRect);
+    if (!opacityChanged && !clipChanged) {
+      return;
+    }
+    SurfaceControl.Transaction tx = createTransaction();
+    if (opacityChanged) {
+      tx.setAlpha(sc, opacity);
+    }
+    if (clipChanged) {
+      tx.setCrop(sc, screenRect);
+    }
+    state.opacity = opacity;
+    state.clip.set(screenRect);
+    state.clipValid = true;
   }
 
   @RequiresApi(API_LEVELS.API_34)
@@ -663,10 +748,32 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
     parentView.setVisibility(View.GONE);
+    final DisplayState state = displayStates.get(viewId);
+    if (state != null) {
+      // Force visibility (and z-order) to be re-applied when the view is shown again.
+      state.displayed = false;
+    }
   }
 
   @RequiresApi(API_LEVELS.API_34)
   public void onEndFrame() {
+    // Reconcile z-order only when the composition order changed since the previous frame, rather
+    // than reparenting every platform view on every frame. Bringing each view to front in
+    // composition order leaves the last (top-most) view frontmost, matching the previous behavior
+    // of calling bringToFront() per view during onDisplayPlatformView().
+    if (!currentFrameCompositionOrder.equals(lastFrameCompositionOrder)) {
+      for (int i = 0; i < currentFrameCompositionOrder.size(); i++) {
+        final FlutterMutatorView parentView =
+            platformViewParent.get(currentFrameCompositionOrder.get(i));
+        if (parentView != null) {
+          parentView.bringToFront();
+        }
+      }
+      lastFrameCompositionOrder.clear();
+      lastFrameCompositionOrder.addAll(currentFrameCompositionOrder);
+    }
+    currentFrameCompositionOrder.clear();
+
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     for (int i = 0; i < activeTransactions.size(); i++) {
       tx = tx.merge(activeTransactions.get(i));
@@ -769,6 +876,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         @Override
         public void dispose(int viewId) {
           viewsWithPendingSurfaceCallback.remove(viewId);
+          clearDisplayState(viewId);
           final PlatformView platformView = platformViews.get(viewId);
           if (platformView == null) {
             Log.e(TAG, "Disposing unknown platform view with id: " + viewId);
