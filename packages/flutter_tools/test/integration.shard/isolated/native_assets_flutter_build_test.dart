@@ -86,36 +86,56 @@ void main() {
 
   // Regression test for https://github.com/flutter/flutter/issues/186810.
   //
-  // With native assets, `libapp.so` was dropped from the app bundle's merged
-  // native libraries: it reached the Flutter Gradle Plugin's `jniLibs`
-  // intermediate directory but never made it into AGP's
-  // `mergeReleaseNativeLibs`. As a result AGP never stripped it nor emitted its
-  // debug symbols, so the bundle was missing both `base/lib/<abi>/libapp.so` and
-  // the `BUNDLE-METADATA/.../libapp.so.sym` that `flutter build appbundle`
-  // verifies, failing the build with a misleading "failed to strip debug
-  // symbols from native libraries" error.
+  // With native assets, an *incremental* `flutter build appbundle --release`
+  // dropped `libapp.so` from the app bundle's merged native libraries: it
+  // reached the Flutter Gradle Plugin's `jniLibs` intermediate directory but
+  // never made it into AGP's `mergeReleaseNativeLibs`. As a result AGP never
+  // stripped it nor emitted its debug symbols, so the bundle was missing both
+  // `base/lib/<abi>/libapp.so` and the `BUNDLE-METADATA/.../libapp.so.sym` that
+  // `flutter build appbundle` verifies, failing the build with a misleading
+  // "failed to strip debug symbols from native libraries" error.
   //
-  // This exercises the appbundle + native-assets cell of the coverage matrix:
+  // The failure only reproduces on a *rebuild*: the first build is clean, but on
+  // the second build the FlutterTask is UP-TO-DATE while the `copyJniLibs` Sync
+  // (whose output dir is nested inside the FlutterTask's `@OutputDirectory`) has
+  // had its destination removed, so `libapp.so` is never re-staged for the
+  // merge. This exercises the appbundle + native-assets cell of the coverage
+  // matrix that nothing else covers:
   // `dev/devicelab/bin/tasks/gradle_plugin_bundle_test.dart` covers appbundle
-  // *without* native assets, and the tests above cover native assets via APK
-  // only.
+  // rebuilds *without* native assets, and the tests above cover native assets
+  // via APK only.
   testWithoutContext(
-    'flutter build appbundle bundles libapp.so and its debug symbols with native assets',
+    'incremental flutter build appbundle keeps libapp.so and its debug symbols with native assets',
     () async {
       await inTempDir((Directory tempDirectory) async {
         final Directory packageDirectory = await createTestProject(packageName, tempDirectory);
         final Directory exampleDirectory = packageDirectory.childDirectory('example');
 
-        final ProcessResult result = processManager.runSync(<String>[
+        ProcessResult buildAppBundle() => processManager.runSync(<String>[
           flutterBin,
           'build',
           'appbundle',
           '--release',
         ], workingDirectory: exampleDirectory.path);
+
+        // First (clean) build. This is expected to succeed.
+        final ProcessResult firstBuild = buildAppBundle();
         expect(
-          result.exitCode,
+          firstBuild.exitCode,
           0,
-          reason: 'flutter build appbundle --release failed:\n${result.stdout}\n${result.stderr}',
+          reason:
+              'first (clean) flutter build appbundle --release failed:\n'
+              '${firstBuild.stdout}\n${firstBuild.stderr}',
+        );
+
+        // Second (incremental) build. This is where #186810 reproduces.
+        final ProcessResult secondBuild = buildAppBundle();
+        expect(
+          secondBuild.exitCode,
+          0,
+          reason:
+              'incremental flutter build appbundle --release failed:\n'
+              '${secondBuild.stdout}\n${secondBuild.stderr}',
         );
 
         final File appBundle = exampleDirectory
