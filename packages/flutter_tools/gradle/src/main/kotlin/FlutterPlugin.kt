@@ -246,6 +246,11 @@ class FlutterPlugin : Plugin<Project> {
             }
             localEngineHost = engineHostOut.name
         }
+        // Note: this intentionally still uses the legacy android extension. The build mode is
+        // derived from the build type's debuggability (see buildModeFor), but in the new AGP DSL
+        // `isDebuggable` only exists on application build types, not library build types - and this
+        // runs for add-to-app library modules too. The legacy `com.android.builder.model.BuildType`
+        // is the only type that exposes debuggability uniformly across app and library projects.
         FlutterPluginUtils.getLegacyAndroidExtension(project).buildTypes.all {
             addFlutterDependencies(this)
         }
@@ -410,7 +415,7 @@ class FlutterPlugin : Plugin<Project> {
                         if (variant.flavorName != null && variant.flavorName.isNotEmpty()) {
                             filename += "-${FlutterPluginUtils.lowercase(variant.flavorName)}"
                         }
-                        filename += "-${FlutterPluginUtils.buildModeFor(variant.buildType)}"
+                        filename += "-${FlutterPluginUtils.buildModeFor(variant.buildType.name, variant.buildType.isDebuggable)}"
                         projectToAddTasksTo.copy {
                             from(File("$outputDirectoryStr/${output.outputFileName}"))
                             into(projectToAddTasksTo.layout.buildDirectory.dir("outputs/flutter-apk"))
@@ -481,8 +486,8 @@ class FlutterPlugin : Plugin<Project> {
                     //    variant is `debug`.
                     // 3. Otherwise, the equivalent Flutter variant is `release`.
                     val variantBuildMode: String =
-                        FlutterPluginUtils.buildModeFor(libraryVariant.buildType)
-                    if (FlutterPluginUtils.buildModeFor(appProjectVariant.buildType) != variantBuildMode) {
+                        FlutterPluginUtils.buildModeFor(libraryVariant.buildType.name, libraryVariant.buildType.isDebuggable)
+                    if (FlutterPluginUtils.buildModeFor(appProjectVariant.buildType.name, appProjectVariant.buildType.isDebuggable) != variantBuildMode) {
                         return@applicationVariantAll
                     }
                     copyFlutterAssetsTask = copyFlutterAssetsTask ?: addFlutterDeps(
@@ -696,7 +701,7 @@ class FlutterPlugin : Plugin<Project> {
             val isUsedAsSubproject: Boolean =
                 packageAssets != null && cleanPackageAssets != null && !isBuildingAar
 
-            val variantBuildMode: String = FlutterPluginUtils.buildModeFor(variant.buildType)
+            val variantBuildMode: String = FlutterPluginUtils.buildModeFor(variant.buildType.name, variant.buildType.isDebuggable)
             val flavorValue: String = variant.flavorName
             val taskName: String = flutterCompileTaskName(variant.name)
             // The task provider below will shadow a lot of the variable names, so provide this reference

@@ -447,16 +447,24 @@ object FlutterPluginUtils {
     }
 
     /**
-     * Returns a Flutter build mode suitable for the specified Android buildType.
+     * Returns a Flutter build mode suitable for the specified Android build type.
+     *
+     * Takes the build type's name and debuggability directly rather than a build type object, so
+     * that it is decoupled from any particular AGP build type type (the legacy
+     * `com.android.builder.model.BuildType` exposed by the variant API and the new-DSL
+     * `com.android.build.api.dsl.BuildType` both provide these).
      *
      * @return "debug", "profile", or "release" (fall-back).
      */
     @JvmStatic
     @JvmName("buildModeFor")
-    internal fun buildModeFor(buildType: BuildType): String {
-        if (buildType.name == "profile") {
+    internal fun buildModeFor(
+        buildTypeName: String,
+        isDebuggable: Boolean
+    ): String {
+        if (buildTypeName == "profile") {
             return "profile"
-        } else if (buildType.isDebuggable) {
+        } else if (isDebuggable) {
             return "debug"
         }
         return "release"
@@ -513,13 +521,21 @@ object FlutterPluginUtils {
         project.extensions.getByType(ApplicationExtension::class.java)
 
     /**
-     * Expected format of getAndroidExtension(project).compileSdkVersion is a string of the form
-     * `android-` followed by either the numeric version, e.g. `android-35`, or a preview version,
-     * e.g. `android-UpsideDownCake`.
+     * Returns the project's compile SDK as a bare version string, e.g. `35` for a numeric SDK or
+     * `UpsideDownCake` for a preview SDK.
+     *
+     * The new AGP DSL exposes these as two separate properties: [AgpCommonExtensionWrapper.compileSdk]
+     * (the numeric API level) and [AgpCommonExtensionWrapper.compileSdkPreview] (the preview codename).
+     * Exactly one is expected to be set; the preview codename takes precedence when present. This
+     * mirrors the previous behavior of stripping the `android-` prefix from the legacy
+     * `compileSdkVersion` string.
      */
     @JvmStatic
     @JvmName("getCompileSdkFromProject")
-    internal fun getCompileSdkFromProject(project: Project): String = getLegacyAndroidExtension(project).compileSdkVersion!!.substring(8)
+    internal fun getCompileSdkFromProject(project: Project): String {
+        val androidExtension = getAndroidExtension(project)
+        return androidExtension.compileSdkPreview ?: androidExtension.compileSdk!!.toString()
+    }
 
     /**
      * Returns:
@@ -763,7 +779,7 @@ object FlutterPluginUtils {
         pluginHandler: PluginHandler,
         engineVersion: String
     ) {
-        val flutterBuildMode: String = buildModeFor(buildType)
+        val flutterBuildMode: String = buildModeFor(buildType.name, buildType.isDebuggable)
         if (!supportsBuildMode(project, flutterBuildMode)) {
             project.logger.quiet(
                 "Project does not support Flutter build mode: $flutterBuildMode, " +

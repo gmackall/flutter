@@ -4,21 +4,20 @@
 
 package com.flutter.gradle.plugins
 
-import com.android.builder.model.BuildType
+import com.android.build.api.dsl.ApplicationBuildType
+import com.android.build.api.dsl.BuildType
 import com.flutter.gradle.FlutterExtension
 import com.flutter.gradle.FlutterPluginUtils
 import com.flutter.gradle.FlutterPluginUtils.addApiDependencies
 import com.flutter.gradle.FlutterPluginUtils.buildModeFor
+import com.flutter.gradle.FlutterPluginUtils.getAndroidExtension
 import com.flutter.gradle.FlutterPluginUtils.getCompileSdkFromProject
-import com.flutter.gradle.FlutterPluginUtils.getLegacyAndroidExtension
 import com.flutter.gradle.FlutterPluginUtils.isBuiltAsApp
 import com.flutter.gradle.FlutterPluginUtils.supportsBuildMode
 import com.flutter.gradle.NativePluginLoaderReflectionBridge
-import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.Project
 import org.jetbrains.kotlin.gradle.plugin.extraProperties
 import java.io.File
-import com.android.build.gradle.internal.dsl.BuildType as dslBuildType
 
 /**
  * Handles interactions with the flutter plugins (not Gradle plugins) used by the Flutter project,
@@ -111,7 +110,7 @@ class PluginHandler(
             // Add plugin dependency to the app project. We only want to add dependency
             // for dev dependencies in non-release builds.
             project.afterEvaluate {
-                getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
+                getAndroidExtension(project).buildTypes.forEach { buildType ->
                     if (!(pluginObject["dev_dependency"] as Boolean) || buildType.name != "release") {
                         project.dependencies.add("${buildType.name}Api", pluginProject)
                     }
@@ -135,7 +134,7 @@ class PluginHandler(
                     )
                 }
 
-                getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
+                getAndroidExtension(project).buildTypes.forEach { buildType ->
                     addEmbeddingDependencyToPlugin(project, pluginProject, buildType, engineVersion)
                 }
             }
@@ -147,7 +146,7 @@ class PluginHandler(
             buildType: BuildType,
             engineVersion: String
         ) {
-            val flutterBuildMode: String = buildModeFor(buildType)
+            val flutterBuildMode: String = appBuildModeFor(buildType)
             // TODO(gmackall): this should be safe to remove, as the minimum required AGP is well above
             //                 3.5. We should try to remove it.
             // In AGP 3.5, the embedding must be added as an API implementation,
@@ -161,21 +160,26 @@ class PluginHandler(
             }
 
             // Copy build types from the app to the plugin.
-            // This allows to build apps with plugins and custom build types or flavors.
-            // However, only copy if the plugin is also an app project, since library projects
-            // cannot have applicationIdSuffix and other app-specific properties.
-            if (isBuiltAsApp(pluginProject)) {
-                (getLegacyAndroidExtension(pluginProject).buildTypes as NamedDomainObjectContainer<dslBuildType>)
-                    .addAll(getLegacyAndroidExtension(project).buildTypes as NamedDomainObjectContainer<dslBuildType>)
-            } else {
-                // For library projects, create compatible build types without app-specific properties
-                getLegacyAndroidExtension(project).buildTypes.forEach { appBuildType ->
-                    if (getLegacyAndroidExtension(pluginProject).buildTypes.findByName(appBuildType.name) == null) {
-                        getLegacyAndroidExtension(pluginProject).buildTypes.create(appBuildType.name) {
-                            // Copy library-compatible properties only
-                            isDebuggable = appBuildType.isDebuggable
+            // This allows building apps with plugins and custom build types or flavors: any app
+            // build type missing from the plugin is created on the plugin so that its
+            // `<buildType>Api` configuration exists for the embedding dependency below.
+            //
+            // For app projects the build type is copied wholesale (including app-specific
+            // properties like applicationIdSuffix) via initWith. For library projects only the
+            // library-compatible properties are copied, since library build types cannot have
+            // app-specific properties.
+            val appBuildTypes = getAndroidExtension(project).buildTypes
+            val pluginBuildTypes = getAndroidExtension(pluginProject).buildTypes
+            appBuildTypes.forEach { appBuildType ->
+                if (pluginBuildTypes.findByName(appBuildType.name) == null) {
+                    pluginBuildTypes.create(appBuildType.name) {
+                        if (isBuiltAsApp(pluginProject)) {
+                            initWith(appBuildType)
+                        } else {
+                            // Note: isDebuggable is intentionally not copied. In the new AGP DSL it
+                            // only exists on application build types, not library ones, and other
+                            // app-specific properties (applicationIdSuffix etc.) are likewise omitted.
                             isMinifyEnabled = appBuildType.isMinifyEnabled
-                            // Note: applicationIdSuffix and other app-specific properties are intentionally not copied
                         }
                     }
                 }
@@ -188,6 +192,15 @@ class PluginHandler(
             // https://github.com/flutter/flutter/issues/72185 for more details.
             addApiDependencies(pluginProject, buildType.name, "io.flutter:flutter_embedding_$flutterBuildMode:$engineVersion")
         }
+
+        /**
+         * Returns the Flutter build mode for a build type belonging to the main project.
+         *
+         * Plugins are only configured against application projects, so the main project's build
+         * types are always [ApplicationBuildType], which (unlike the base new-DSL [BuildType])
+         * exposes `isDebuggable`.
+         */
+        private fun appBuildModeFor(buildType: BuildType): String = buildModeFor(buildType.name, (buildType as ApplicationBuildType).isDebuggable)
 
         /**
          * Returns `true` if the given project is a plugin project having an `android` directory
@@ -215,8 +228,8 @@ class PluginHandler(
                 }
             val pluginProject: Project = project.rootProject.findProject(":$pluginName") ?: return
 
-            getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
-                val flutterBuildMode: String = buildModeFor(buildType)
+            getAndroidExtension(project).buildTypes.forEach { buildType ->
+                val flutterBuildMode: String = appBuildModeFor(buildType)
                 if (flutterBuildMode == "release" && (pluginObject["dev_dependency"] as? Boolean == true)) {
                     // This plugin is a dev dependency will not be included in the
                     // release build, so no need to add its dependencies.

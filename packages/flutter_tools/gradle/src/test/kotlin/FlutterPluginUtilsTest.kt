@@ -490,31 +490,20 @@ class FlutterPluginUtilsTest {
 
     // buildModeFor
     @Test
-    fun `buildModeFor returns profile if the BuildType has name profile`() {
-        val buildType = mockk<BuildType>()
-        every { buildType.name } returns "profile"
-
-        val result = FlutterPluginUtils.buildModeFor(buildType)
+    fun `buildModeFor returns profile if the build type is named profile`() {
+        val result = FlutterPluginUtils.buildModeFor(buildTypeName = "profile", isDebuggable = false)
         assertEquals("profile", result)
     }
 
     @Test
-    fun `buildModeFor returns debug if the BuildType is debuggable`() {
-        val buildType = mockk<BuildType>()
-        every { buildType.name } returns "something random"
-        every { buildType.isDebuggable } returns true
-
-        val result = FlutterPluginUtils.buildModeFor(buildType)
+    fun `buildModeFor returns debug if the build type is debuggable`() {
+        val result = FlutterPluginUtils.buildModeFor(buildTypeName = "something random", isDebuggable = true)
         assertEquals("debug", result)
     }
 
     @Test
-    fun `buildModeFor returns release if the BuildType is not debuggable and not named profile`() {
-        val buildType = mockk<BuildType>()
-        every { buildType.isDebuggable } returns false
-        every { buildType.name } returns "something random"
-
-        val result = FlutterPluginUtils.buildModeFor(buildType)
+    fun `buildModeFor returns release if the build type is not debuggable and not named profile`() {
+        val result = FlutterPluginUtils.buildModeFor(buildTypeName = "something random", isDebuggable = false)
         assertEquals("release", result)
     }
 
@@ -604,11 +593,25 @@ class FlutterPluginUtilsTest {
 
     // getCompileSdkFromProject
     @Test
-    fun `getCompileSdkFromProject returns the compileSdk from the project`() {
+    fun `getCompileSdkFromProject returns the numeric compileSdk from the project`() {
         val project = mockk<Project>()
-        every { project.extensions.findByType(BaseExtension::class.java)!!.compileSdkVersion } returns "android-35"
+        val mockApplicationExtension = mockk<ApplicationExtension>()
+        every { project.extensions.findByName("android") } returns mockApplicationExtension
+        every { mockApplicationExtension.compileSdk } returns 35
+        every { mockApplicationExtension.compileSdkPreview } returns null
         val result = FlutterPluginUtils.getCompileSdkFromProject(project)
         assertEquals("35", result)
+    }
+
+    @Test
+    fun `getCompileSdkFromProject returns the preview compileSdk from the project`() {
+        val project = mockk<Project>()
+        val mockApplicationExtension = mockk<ApplicationExtension>()
+        every { project.extensions.findByName("android") } returns mockApplicationExtension
+        every { mockApplicationExtension.compileSdk } returns null
+        every { mockApplicationExtension.compileSdkPreview } returns "UpsideDownCake"
+        val result = FlutterPluginUtils.getCompileSdkFromProject(project)
+        assertEquals("UpsideDownCake", result)
     }
 
     @Test
