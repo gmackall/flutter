@@ -8,14 +8,23 @@
 #include "flutter/fml/macros.h"
 #include "flutter/impeller/renderer/context.h"
 #include "flutter/shell/gpu/gpu_surface_gl_delegate.h"
+#include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/platform/android/android_context_gl_impeller.h"
 #include "flutter/shell/platform/android/surface/android_native_window.h"
 #include "flutter/shell/platform/android/surface/android_surface.h"
 
+namespace impeller {
+class AHBSwapchainGLES;
+namespace android {
+class SurfaceControl;
+}  // namespace android
+}  // namespace impeller
+
 namespace flutter {
 
 class AndroidSurfaceGLImpeller final : public GPUSurfaceGLDelegate,
-                                       public AndroidSurface {
+                                       public AndroidSurface,
+                                       public GLImpellerSurfaceProvider {
  public:
   explicit AndroidSurfaceGLImpeller(
       const std::shared_ptr<AndroidContextGLImpeller>& android_context);
@@ -74,11 +83,20 @@ class AndroidSurfaceGLImpeller final : public GPUSurfaceGLDelegate,
   // |GPUSurfaceGLDelegate|
   sk_sp<const GrGLInterface> GetGLInterface() const override;
 
+  // |GLImpellerSurfaceProvider|
+  std::unique_ptr<impeller::Surface> AcquireImpellerSurface(
+      const DlISize& size) override;
+
  private:
   std::shared_ptr<AndroidContextGLImpeller> android_context_;
   std::unique_ptr<impeller::egl::Surface> onscreen_surface_;
   std::unique_ptr<impeller::egl::Surface> offscreen_surface_;
   fml::RefPtr<AndroidNativeWindow> native_window_;
+
+  // The hardware buffer / SurfaceControl swapchain, used in place of the EGL
+  // window surface when HCPP is active on the OpenGL ES backend. Null otherwise.
+  std::shared_ptr<impeller::android::SurfaceControl> surface_control_;
+  std::unique_ptr<impeller::AHBSwapchainGLES> ahb_swapchain_;
 
   bool is_valid_ = false;
   std::optional<bool> should_clear_context_between_frames_;
@@ -86,6 +104,10 @@ class AndroidSurfaceGLImpeller final : public GPUSurfaceGLDelegate,
   bool OnGLContextMakeCurrent();
 
   bool RecreateOnscreenSurfaceAndMakeOnscreenContextCurrent();
+
+  // Whether the main Flutter layer should be presented through the hardware
+  // buffer / SurfaceControl swapchain rather than the EGL window surface.
+  bool ShouldUseSurfaceControlSwapchain() const;
 
   FML_DISALLOW_COPY_AND_ASSIGN(AndroidSurfaceGLImpeller);
 };

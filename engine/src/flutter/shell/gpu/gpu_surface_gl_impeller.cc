@@ -15,7 +15,8 @@ namespace flutter {
 GPUSurfaceGLImpeller::GPUSurfaceGLImpeller(
     GPUSurfaceGLDelegate* delegate,
     std::shared_ptr<impeller::Context> context,
-    bool render_to_surface)
+    bool render_to_surface,
+    GLImpellerSurfaceProvider* swapchain_provider)
     : weak_factory_(this) {
   if (delegate == nullptr) {
     return;
@@ -33,6 +34,7 @@ GPUSurfaceGLImpeller::GPUSurfaceGLImpeller(
   }
 
   delegate_ = delegate;
+  swapchain_provider_ = swapchain_provider;
   impeller_context_ = std::move(context);
   render_to_surface_ = render_to_surface;
   aiks_context_ = std::move(aiks_context);
@@ -55,22 +57,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
     return nullptr;
   }
 
-  auto swap_callback = [weak = weak_factory_.GetWeakPtr(),
-                        delegate = delegate_]() -> bool {
-    if (weak) {
-      GLPresentInfo present_info = {
-          .fbo_id = 0u,
-          .frame_damage = std::nullopt,
-          // TODO (https://github.com/flutter/flutter/issues/105597): wire-up
-          // presentation time to impeller backend.
-          .presentation_time = std::nullopt,
-          .buffer_damage = std::nullopt,
-      };
-      delegate->GLContextPresent(present_info);
-    }
-    return true;
-  };
-
   auto context_switch = delegate_->GLContextMakeCurrent();
   if (!context_switch->GetResult()) {
     FML_LOG(ERROR)
@@ -87,16 +73,47 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
         [](const SurfaceFrame& surface_frame) { return true; }, size);
   }
 
-  GLFrameInfo frame_info = {static_cast<uint32_t>(size.width),
-                            static_cast<uint32_t>(size.height)};
-  const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
-  auto surface = impeller::SurfaceGLES::WrapFBO(
-      impeller_context_,                         // context
-      swap_callback,                             // swap_callback
-      fbo_info.fbo_id,                           // fbo
-      impeller::PixelFormat::kR8G8B8A8UNormInt,  // color_format
-      impeller::ISize{size.width, size.height}   // fbo_size
-  );
+  // If a swapchain provider vends a surface (e.g. an AHardwareBuffer image
+  // presented via a SurfaceControl), render into it. Its own Present performs
+  // the presentation. Otherwise fall back to the window-bound framebuffer.
+  std::unique_ptr<impeller::Surface> surface;
+  if (swapchain_provider_) {
+    surface = swapchain_provider_->AcquireImpellerSurface(size);
+  }
+
+  if (!surface) {
+    auto swap_callback = [weak = weak_factory_.GetWeakPtr(),
+                          delegate = delegate_]() -> bool {
+      if (weak) {
+        GLPresentInfo present_info = {
+            .fbo_id = 0u,
+            .frame_damage = std::nullopt,
+            // TODO (https://github.com/flutter/flutter/issues/105597): wire-up
+            // presentation time to impeller backend.
+            .presentation_time = std::nullopt,
+            .buffer_damage = std::nullopt,
+        };
+        delegate->GLContextPresent(present_info);
+      }
+      return true;
+    };
+
+    GLFrameInfo frame_info = {static_cast<uint32_t>(size.width),
+                              static_cast<uint32_t>(size.height)};
+    const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
+    surface = impeller::SurfaceGLES::WrapFBO(
+        impeller_context_,                         // context
+        swap_callback,                             // swap_callback
+        fbo_info.fbo_id,                           // fbo
+        impeller::PixelFormat::kR8G8B8A8UNormInt,  // color_format
+        impeller::ISize{size.width, size.height}   // fbo_size
+    );
+  }
+
+  if (!surface) {
+    FML_LOG(ERROR) << "Could not acquire a surface to render the frame.";
+    return nullptr;
+  }
 
   impeller::RenderTarget render_target = surface->GetRenderTarget();
 

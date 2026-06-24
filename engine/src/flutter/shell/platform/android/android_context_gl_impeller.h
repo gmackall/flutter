@@ -32,6 +32,15 @@ class AndroidContextGLImpeller : public AndroidContext {
   std::unique_ptr<impeller::egl::Surface> CreateOnscreenSurface(
       EGLNativeWindowType window);
 
+  //----------------------------------------------------------------------------
+  /// @brief      The EGL display backing this context. Used to import hardware
+  ///             buffers as EGLImages and to create native fence syncs for the
+  ///             hardware buffer swapchain.
+  ///
+  /// @return     The EGL display, or `EGL_NO_DISPLAY` if invalid.
+  ///
+  EGLDisplay GetGLDisplay() const;
+
  private:
   class ReactorWorker;
 

@@ -13,13 +13,44 @@
 #include "flutter/impeller/renderer/context.h"
 #include "flutter/shell/gpu/gpu_surface_gl_delegate.h"
 
+namespace impeller {
+class Surface;
+}  // namespace impeller
+
 namespace flutter {
+
+//------------------------------------------------------------------------------
+/// @brief      Optionally provides a fully-formed Impeller surface for
+///             `GPUSurfaceGLImpeller` to render a frame into, in place of the
+///             default window-bound framebuffer path.
+///
+///             This is used on Android to render into an AHardwareBuffer
+///             swapchain image presented via a SurfaceControl (for HCPP on the
+///             OpenGL ES backend). The shared `GPUSurfaceGLDelegate` is
+///             framebuffer-id based and shared with Skia, so this Impeller
+///             specific hook is kept separate.
+///
+class GLImpellerSurfaceProvider {
+ public:
+  virtual ~GLImpellerSurfaceProvider() = default;
+
+  //----------------------------------------------------------------------------
+  /// @brief      Acquire a surface to render the frame into.
+  ///
+  /// @return     A surface, or `nullptr` to fall back to the framebuffer
+  ///             delegate path.
+  ///
+  virtual std::unique_ptr<impeller::Surface> AcquireImpellerSurface(
+      const DlISize& size) = 0;
+};
 
 class GPUSurfaceGLImpeller final : public Surface {
  public:
-  explicit GPUSurfaceGLImpeller(GPUSurfaceGLDelegate* delegate,
-                                std::shared_ptr<impeller::Context> context,
-                                bool render_to_surface);
+  explicit GPUSurfaceGLImpeller(
+      GPUSurfaceGLDelegate* delegate,
+      std::shared_ptr<impeller::Context> context,
+      bool render_to_surface,
+      GLImpellerSurfaceProvider* swapchain_provider = nullptr);
 
   // |Surface|
   ~GPUSurfaceGLImpeller() override;
@@ -29,6 +60,7 @@ class GPUSurfaceGLImpeller final : public Surface {
 
  private:
   GPUSurfaceGLDelegate* delegate_ = nullptr;
+  GLImpellerSurfaceProvider* swapchain_provider_ = nullptr;
   std::shared_ptr<impeller::Context> impeller_context_;
   bool render_to_surface_ = true;
   std::shared_ptr<impeller::AiksContext> aiks_context_;

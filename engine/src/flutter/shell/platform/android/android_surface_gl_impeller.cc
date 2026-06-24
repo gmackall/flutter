@@ -10,8 +10,12 @@
 
 #include "flutter/common/graphics/gl_context_switch.h"
 #include "flutter/fml/logging.h"
+#include "flutter/impeller/renderer/backend/gles/swapchain/ahb/ahb_swapchain_gles.h"
+#include "flutter/impeller/toolkit/android/surface_control.h"
+#include "flutter/impeller/toolkit/android/surface_transaction.h"
 #include "flutter/impeller/toolkit/egl/surface.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
+#include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
 
 namespace flutter {
 
@@ -103,7 +107,8 @@ std::unique_ptr<Surface> AndroidSurfaceGLImpeller::CreateGPUSurface(
   auto surface = std::make_unique<GPUSurfaceGLImpeller>(
       this,                                    // delegate
       android_context_->GetImpellerContext(),  // context
-      true                                     // render to surface
+      true,                                    // render to surface
+      this                                     // swapchain provider
   );
   if (!surface->IsValid()) {
     return nullptr;
@@ -114,6 +119,8 @@ std::unique_ptr<Surface> AndroidSurfaceGLImpeller::CreateGPUSurface(
 // |AndroidSurface|
 void AndroidSurfaceGLImpeller::TeardownOnScreenContext() {
   GLContextClearCurrent();
+  ahb_swapchain_.reset();
+  surface_control_.reset();
   onscreen_surface_.reset();
 }
 
@@ -142,7 +149,31 @@ bool AndroidSurfaceGLImpeller::SetNativeWindow(
     fml::RefPtr<AndroidNativeWindow> window,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
   native_window_ = std::move(window);
-  return RecreateOnscreenSurfaceAndMakeOnscreenContextCurrent();
+  auto result = RecreateOnscreenSurfaceAndMakeOnscreenContextCurrent();
+
+  if (result && native_window_ && ShouldUseSurfaceControlSwapchain()) {
+    impeller::CreateTransactionCB cb = [jni_facade]() {
+      FML_CHECK(jni_facade) << "JNI was nullptr";
+      ASurfaceTransaction* tx = jni_facade->createTransaction();
+      if (tx == nullptr) {
+        return impeller::android::SurfaceTransaction();
+      }
+      return impeller::android::SurfaceTransaction(tx);
+    };
+    surface_control_ = std::shared_ptr<impeller::android::SurfaceControl>(
+        impeller::android::SurfaceControl::Create(native_window_->handle(),
+                                                  "ImpellerSurface"));
+    const auto size = native_window_->GetSize();
+    ahb_swapchain_ = std::make_unique<impeller::AHBSwapchainGLES>(
+        android_context_->GetImpellerContext(),    // context
+        android_context_->GetGLDisplay(),          // display
+        surface_control_,                          // surface control
+        cb,                                        // transaction callback
+        impeller::ISize{size.width, size.height}   // size
+    );
+  }
+
+  return result;
 }
 
 // |AndroidSurface|
@@ -261,6 +292,25 @@ bool AndroidSurfaceGLImpeller::
   }
   onscreen_surface_ = std::move(onscreen_surface);
   return OnGLContextMakeCurrent();
+}
+
+// |GLImpellerSurfaceProvider|
+std::unique_ptr<impeller::Surface> AndroidSurfaceGLImpeller::AcquireImpellerSurface(
+    const DlISize& size) {
+  if (!ahb_swapchain_) {
+    return nullptr;
+  }
+  ahb_swapchain_->UpdateSurfaceSize(impeller::ISize{size.width, size.height});
+  return ahb_swapchain_->AcquireNextDrawable();
+}
+
+bool AndroidSurfaceGLImpeller::ShouldUseSurfaceControlSwapchain() const {
+  // TODO(flutter/flutter#164252): enable when HCPP is active for the OpenGL ES
+  // backend. This requires generalizing the HCPP gate (currently Vulkan-only)
+  // and plumbing the enable_surface_control setting through to the GLES
+  // context. Disabled for now so the default EGL window-surface path is
+  // unaffected.
+  return false;
 }
 
 }  // namespace flutter

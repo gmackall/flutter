@@ -267,4 +267,8 @@ AndroidRenderingAPI AndroidContextGLImpeller::RenderingApi() const {
   return AndroidRenderingAPI::kImpellerOpenGLES;
 }
 
+EGLDisplay AndroidContextGLImpeller::GetGLDisplay() const {
+  return display_ ? display_->GetHandle() : EGL_NO_DISPLAY;
+}
+
 }  // namespace flutter
