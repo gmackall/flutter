@@ -15,12 +15,12 @@ import '../_luci_skia_gold_prelude.dart';
 ///
 /// ```sh
 /// # Checkout HEAD, i.e. *before* changes you want to test.
-/// UPDATE_GOLDENS=1 flutter drive lib/hcpp/platform_view_opacity_main.dart
+/// UPDATE_GOLDENS=1 flutter drive --dart-define=PV_MODE=hcpp --enable-hcpp lib/hcpp_specific/cliprect_surfaceview_main.dart
 ///
 /// # Make your changes.
 ///
 /// # Run the test against baseline.
-/// flutter drive lib/hcpp/platform_view_opacity_main.dart
+/// flutter drive --dart-define=PV_MODE=hcpp --enable-hcpp lib/hcpp_specific/cliprect_surfaceview_main.dart
 /// ```
 ///
 /// For a convenient way to deflake a test, see `tool/deflake.dart`.
@@ -51,13 +51,18 @@ void main() async {
     expect(response['supported'], true);
   }, timeout: Timeout.none);
 
-  test('should screenshot a rectangle with specified opacity', () async {
-    await expectLater(nativeDriver.screenshot(), matchesGoldenFile('$goldenPrefix.opacity.png'));
+  test('should screenshot a platform view with no rect clipping', () async {
+    await expectLater(
+      nativeDriver.screenshot(),
+      matchesGoldenFile('$goldenPrefix.no_rect_surfaceview.png'),
+    );
   }, timeout: Timeout.none);
 
-  test('should start with opacity, and toggle to no opacity', () async {
-    await expectLater(nativeDriver.screenshot(), matchesGoldenFile('$goldenPrefix.opacity.png'));
-    await flutterDriver.tap(find.byValueKey('ToggleOpacity'));
-    await expectLater(nativeDriver.screenshot(), matchesGoldenFile('$goldenPrefix.no_opacity.png'));
+  test('should properly clip surfaceview', () async {
+    await flutterDriver.tap(find.byValueKey('toggle_cliprect_button'));
+    await expectLater(
+      nativeDriver.screenshot(),
+      matchesGoldenFile('$goldenPrefix.yes_rect_surfaceview.png'),
+    );
   }, timeout: Timeout.none);
 }

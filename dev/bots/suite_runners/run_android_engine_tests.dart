@@ -180,8 +180,7 @@ Future<void> runAndroidEngineTests({required ImpellerBackend impellerBackend}) a
 
 /// Whether [mainPath] is one of the mode-parameterized platform view apps (and
 /// therefore driven by [_platformViewTests] rather than the generic once-each
-/// loop). Matches both the new `core`/`hcpp_specific`/`legacy_specific` layout
-/// and the legacy `platform_view`/`hcpp` directories during migration.
+/// loop).
 bool _isPlatformViewMain(String filePath, String androidEngineTestPath) {
   final String rel = path
       .relative(filePath, from: androidEngineTestPath)
@@ -190,14 +189,8 @@ bool _isPlatformViewMain(String filePath, String androidEngineTestPath) {
     'lib/core/',
     'lib/hcpp_specific/',
     'lib/legacy_specific/',
-    'lib/platform_view/',
-    'lib/hcpp/',
   ];
-  if (platformViewDirs.any(rel.startsWith)) {
-    return true;
-  }
-  // Legacy top-level platform view main.
-  return rel == 'lib/platform_view_tap_color_change_main.dart';
+  return platformViewDirs.any(rel.startsWith);
 }
 
 /// The platform view composition modes. Mirrors `PvMode` in the test app's

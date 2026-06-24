@@ -23,125 +23,74 @@ SHARD=android_engine_vulkan_tests bin/cache/dart-sdk/bin/dart dev/bots/test.dart
 SHARD=android_engine_opengles_tests bin/cache/dart-sdk/bin/dart dev/bots/test.dart
 ```
 
+The shard axis is the **Impeller backend** (`vulkan` / `opengles`), because the
+backend is tied to the emulator image, while the platform-view composition mode
+is just a flag. The Vulkan shard runs every mode (including HCPP); the OpenGLES
+shard runs every mode except HCPP (HCPP requires Vulkan + API 34).
+
+## Platform view modes
+
+Platform view _functionality_ is written once and run under each composition
+mode that supports it, rather than being copy-pasted per mode. See
+[Android-Platform-Views.md](../../../docs/platforms/android/Android-Platform-Views.md)
+for what the modes are.
+
+- `lib/core/` — mode-agnostic functionality. Each app builds its platform view
+  via `platformViewForMode()` and is run under HC / TLHC / HCPP. Scenarios that
+  don't apply to a mode are skipped in the driver (e.g. HC can't apply
+  clip/opacity/transform, and its screenshots are unstable on CI).
+- `lib/hcpp_specific/` — tests that only make sense with HCPP (legacy-type
+  upgrade, and the "HC/TLHC-fallback errors when HCPP is enabled" negative
+  tests). Run under HCPP only.
+- `lib/legacy_specific/` — Virtual Display smoke test. VD cannot be
+  force-selected (it's only an engine fallback), so this is best-effort.
+
+The mode is chosen by the suite runner and passed to the app via
+`--dart-define=PV_MODE=<mode>` and to the driver via the `PV_MODE` environment
+variable. Goldens are keyed per `(backend, mode)` via the Skia Gold name prefix
+(`android_engine_test.<backend>.<mode>`), see
+[`test_driver/_luci_skia_gold_prelude.dart`](test_driver/_luci_skia_gold_prelude.dart).
+
+The capability matrix (which functionality runs under which modes) lives in
+`_platformViewTests` in the suite runner.
+
 ## Running the apps and tests
 
-Each `lib/{prefix}_main.dart` file is a standalone Flutter app that you can run
-on an Android device or emulator.
-
-- [`flutter_rendered_blue_rectangle`](#flutter_rendered_blue_rectangle)
-- [`external_texture/surface_producer_smiley_face`](#external_texturesurface_producer_smiley_face)
-- [`external_texture/surface_texture_smiley_face`](#external_texturesurface_texture_smiley_face)
-- [`platform_view/hybrid_composition_platform_view`](#platform_viewhybrid_composition_platform_view)
-- [`platform_view/texture_layer_hybrid_composition_platform_view`](#platform_viewtexture_layer_hybrid_composition_platform_view)
-- [`platform_view/virtual_display_platform_view`](#platform_viewvirtual_display_platform_view)
-- [`platform_view_tap_color_change`](#platform_view_tap_color_change)
-
-### `flutter_rendered_blue_rectangle`
-
-This app displays a full screen blue rectangle. It mostly serves as a test that
-Flutter can run at all on the target device, and that the Flutter (native)
-driver can take a screenshot and compare it to a golden image. If this app or
-test fails, it's likely none of the other apps or tests will work either.
+Each `lib/**/*_main.dart` file is a standalone Flutter app that you can run on an
+Android device or emulator. For platform-view apps, pass the mode you want
+(defaults to TLHC if omitted):
 
 ```sh
-# Run the app
-$ flutter run lib/flutter_rendered_blue_rectangle_main.dart
+# Run a core functionality app under a specific mode.
+flutter run --dart-define=PV_MODE=tlhc lib/core/gradient_main.dart
+flutter run --dart-define=PV_MODE=hcpp --enable-hcpp lib/core/gradient_main.dart
 
-# Run the test
-$ flutter drive lib/flutter_rendered_blue_rectangle_main.dart
+# Drive it (a local golden baseline is required first; see below).
+flutter drive --dart-define=PV_MODE=tlhc lib/core/gradient_main.dart
 ```
 
-### `external_texture/surface_producer_smiley_face`
+Non-platform-view apps (run once, no mode):
 
-This app displays a full screen rectangular deformed smiley face with a yellow
-background. It tests the [`SurfaceProducer`](https://api.flutter.dev/javadoc/io/flutter/view/TextureRegistry.SurfaceProducer.html) API end-to-end, including historic regression cases around
-backgrounding the app, trimming memory, and resuming the app.
+- `flutter_rendered_blue_rectangle` — smoke test that Flutter runs and the native
+  driver can screenshot and compare to a golden.
+- `external_texture/surface_producer_smiley_face` — exercises the
+  `SurfaceProducer` API end-to-end.
+- `external_texture/surface_texture_smiley_face` — exercises the `SurfaceTexture`
+  API end-to-end.
+
+## Generating golden baselines locally
 
 ```sh
-# Run the app
-$ flutter run lib/external_texture/surface_producer_smiley_face_main.dart
+# Checkout HEAD, i.e. *before* the changes you want to test.
+UPDATE_GOLDENS=1 flutter drive --dart-define=PV_MODE=tlhc lib/core/gradient_main.dart
 
-# Run the test
-$ flutter drive lib/external_texture/surface_producer_smiley_face_main.dart
+# Make your changes, then run against the baseline.
+flutter drive --dart-define=PV_MODE=tlhc lib/core/gradient_main.dart
 ```
 
-### `external_texture/surface_texture_image_smiley_face`
-
-This app displays a full screen rectangular deformed smiley face with a yellow
-background. It tests `getImageFromTexture` API in dart:ui.
-
-```sh
-# Run the app
-$ flutter run lib/external_texture/surface_texture_image_smiley_face_main.dart
-
-# Run the test
-$ flutter drive lib/external_texture/surface_texture_image_smiley_face_main.dart
-```
-
-### `external_texture/surface_texture_smiley_face`
-
-This app displays a full screen rectangular deformed smiley face with a yellow
-background. It tests the [`SurfaceTexture`](https://api.flutter.dev/javadoc/io/flutter/view/TextureRegistry.SurfaceTexture.html) API end-to-end.
-
-```sh
-# Run the app
-$ flutter run lib/external_texture/surface_texture_smiley_face_main.dart
-
-# Run the test
-$ flutter drive lib/external_texture/surface_texture_smiley_face_main.dart
-```
-
-### `platform_view/hybrid_composition_platform_view`
-
-This app displays a blue orange gradient, the app is backgrounded, and then
-resumed. It tests the [Hybrid Composition](../../../docs/platforms/android/Android-Platform-Views.md#hybrid-composition) implementation.
-
-```sh
-# Run the app
-$ flutter run lib/platform_view/hybrid_composition_platform_view_main.dart
-
-# Run the test
-$ flutter drive lib/platform_view/hybrid_composition_platform_view_main.dart
-```
-
-### `platform_view/texture_layer_hybrid_composition_platform_view`
-
-This app displays a blue orange gradient, the app is backgrounded, and then
-resumed. It tests the [Texture Layer Hybrid Composition](../../../docs/platforms/android/Android-Platform-Views.md#texture-layer-hybrid-composition) implementation.
-
-```sh
-# Run the app
-$ flutter run lib/platform_view/texture_layer_hybrid_composition_platform_view_main.dart
-
-# Run the test
-$ flutter drive lib/platform_view/texture_layer_hybrid_composition_platform_view_main.dart
-```
-
-### `platform_view/virtual_display_platform_view`
-
-This app displays a blue orange gradient, the app is backgrounded, and then
-resumed. It tests the [Virtual Display](../../../docs/platforms/android/Android-Platform-Views.md#virtual-display) implementation.
-
-```sh
-# Run the app
-$ flutter run lib/platform_view/virtual_display_platform_view_main.dart
-
-# Run the test
-$ flutter drive lib/platform_view/virtual_display_platform_view_main.dart
-```
-
-### `platform_view_tap_color_change`
-
-This app displays a blue rectangle, using platform views, which upon
-being tapped (natively, not by Flutter), changes from blue to red.
-
-```sh
-# Run the app
-$ flutter run lib/platform_view_tap_color_change_main.dart
-
-# Run the test
-$ flutter drive lib/platform_view_tap_color_change_main_test.dart
-```
+Note: local golden _files_ are not mode-suffixed, so running different modes
+locally overwrites the same file. The per-mode distinction only exists in Skia
+Gold (via the name prefix) on CI.
 
 ## Deflaking
 
@@ -154,7 +103,7 @@ Use `tool/deflake.dart <path/to/lib/main.dart>` to, in 1-command:
 For example:
 
 ```sh
-dart tool/deflake.dart lib/flutter_rendered_blue_rectangle_main.dart
+dart tool/deflake.dart lib/core/gradient_main.dart
 ```
 
 For more options, see `dart tool/deflake.dart --help`.
