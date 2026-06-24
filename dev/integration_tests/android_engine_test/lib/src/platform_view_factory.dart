@@ -54,6 +54,7 @@ Widget platformViewForMode(
   PvMode mode, {
   required PvContent content,
   TextDirection layoutDirection = TextDirection.ltr,
+  PlatformViewHitTestBehavior hitTestBehavior = PlatformViewHitTestBehavior.opaque,
 }) {
   final String viewType = viewTypeFor(mode, content);
   switch (mode) {
@@ -62,17 +63,23 @@ Widget platformViewForMode(
     // cannot be forced (see [PvMode.vd]).
     case PvMode.tlhc:
     case PvMode.vd:
-      return AndroidView(viewType: viewType, layoutDirection: layoutDirection);
+      return AndroidView(
+        viewType: viewType,
+        layoutDirection: layoutDirection,
+        hitTestBehavior: hitTestBehavior,
+      );
     case PvMode.hc:
       return _ControllerPlatformView(
         viewType: viewType,
         layoutDirection: layoutDirection,
+        hitTestBehavior: hitTestBehavior,
         factory: PlatformViewsService.initExpensiveAndroidView,
       );
     case PvMode.hcpp:
       return _ControllerPlatformView(
         viewType: viewType,
         layoutDirection: layoutDirection,
+        hitTestBehavior: hitTestBehavior,
         factory: PlatformViewsService.initHybridAndroidView,
       );
   }
@@ -84,11 +91,13 @@ final class _ControllerPlatformView extends StatelessWidget {
   const _ControllerPlatformView({
     required this.viewType,
     required this.layoutDirection,
+    required this.hitTestBehavior,
     required this.factory,
   });
 
   final String viewType;
   final TextDirection layoutDirection;
+  final PlatformViewHitTestBehavior hitTestBehavior;
   final _AndroidViewControllerFactory factory;
 
   @override
@@ -99,7 +108,7 @@ final class _ControllerPlatformView extends StatelessWidget {
         return AndroidViewSurface(
           controller: controller as AndroidViewController,
           gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-          hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+          hitTestBehavior: hitTestBehavior,
         );
       },
       onCreatePlatformView: (PlatformViewCreationParams params) {
