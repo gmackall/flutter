@@ -4,48 +4,87 @@
 > commit needs for verification while it's built/tested commit-by-commit on a
 > Mac + connected Android device. Remove before opening the PR.
 
-## Environment
-
 Implementation happens on Windows (which can't build Android-*target* binaries),
-so build + run happen on a Mac with a connected Android device.
+so build + run happen on a Mac with a connected Android device. Run all commands
+from the **repo root**, with `et` and `adb` on your `PATH`.
 
-Common commands:
+---
+
+## Copy-paste commands
+
+### A. Compile-check everything implemented so far
+
+Compiles the new `egl` + `gles` code (this is the main "did it build" gate for
+every commit below):
 
 ```sh
-# Compile-check everything implemented so far (compiles the gles + egl code):
 et build -c android_debug_arm64 //flutter/impeller
-
-# Build the on-device gtest executable:
-et build -c android_debug_arm64 //flutter/impeller/toolkit/android:unittests
-
-# Run the building-block functional tests on the connected device:
-adb push engine/src/out/android_debug_arm64/impeller_toolkit_android_unittests /data/local/tmp/
-adb shell /data/local/tmp/impeller_toolkit_android_unittests --gtest_filter='GLESAHBFenceTest.*'
-#   (adjust the out/ path to your variant; or use testing/run_tests.py --type android)
 ```
 
-A test reporting `SKIPPED` means the device/emulator lacks a required capability
-(GLES context, hardware buffers, or the native-fence EGL extensions) — not a
-failure, but it means that path wasn't actually exercised.
+### B. Build + run the on-device functional tests
 
-## Per-commit status
+```sh
+et build -c android_debug_arm64 //flutter/impeller/toolkit/android:unittests
+adb push engine/src/out/android_debug_arm64/impeller_toolkit_android_unittests /data/local/tmp/
+adb shell /data/local/tmp/impeller_toolkit_android_unittests --gtest_filter='GLESAHBFenceTest.*'
+```
 
-| Commit (subject) | What to verify | How |
+What to look for in the output: both `GLESAHBFenceTest.CanExportAndImportNativeFence`
+and `GLESAHBFenceTest.CanRenderIntoHardwareBuffer` should print **`[ PASSED ]`**.
+If they print `[ SKIPPED ]`, the device/emulator lacks a required capability
+(GLES context, hardware buffers, or the `EGL_ANDROID_native_fence_sync` /
+`EGL_KHR_fence_sync` extensions) — the code path was *not* actually exercised, so
+try a different device.
+
+### C. Build the whole engine (broader compile check)
+
+```sh
+et build -c android_debug_arm64
+```
+
+---
+
+## Per-commit checklist
+
+Each row says exactly what to run. "Build-only" means: if command **A** succeeds,
+the commit is verified — there is nothing to run or inspect.
+
+| Commit (subject) | Run | Pass criteria |
 |---|---|---|
-| `[Impeller] Add egl::Fence native fence sync wrapper` (piece 1) | Compiles. Functional fence behavior. | `//flutter/impeller` build; run `GLESAHBFenceTest.CanExportAndImportNativeFence` |
-| `[Impeller] Add AHBTextureSourceGLES ...` (piece 2) | Compiles. AHB→EGLImage→FBO render technique. | `//flutter/impeller` build; run `GLESAHBFenceTest.CanRenderIntoHardwareBuffer` |
-| `[Impeller] Add on-device tests ...` | Both functional tests PASS (not SKIPPED) on the device. | build `:unittests` + run `GLESAHBFenceTest.*` |
-| `[Impeller] Add AHBTexturePoolGLES ...` (piece 3) | Compiles only (no caller/test yet). | `//flutter/impeller` build |
-| `[Impeller] Add AHBSwapchainGLES ...` (piece 4) | Compiles only. Not exercised until integration. | `//flutter/impeller` build |
-| `[Impeller] Wire AHBSwapchainGLES into the Android GLES surface (inert)` (piece 5) | Compiles; **default GLES rendering is unchanged** (swapchain gated off). Smoke-test a normal GLES-backend app still renders. | build the engine; run any app on the GLES backend |
-| _(piece 6: enable the gate — pending)_ | Real app renders via the swapchain; HCPP platform views work on a non-Vulkan device. | run a Flutter app forcing the GLES backend + HCPP; visual check |
+| `Add egl::Fence native fence sync wrapper` (piece 1) | **A** | compiles |
+| `Add AHBTextureSourceGLES ...` (piece 2) | **A** | compiles |
+| `Add on-device tests ...` | **A**, then **B** | both `GLESAHBFenceTest.*` print `[ PASSED ]` (not `[ SKIPPED ]`) |
+| `Add AHBTexturePoolGLES ...` (piece 3) | **A** | compiles (no caller/test yet) |
+| `Add AHBSwapchainGLES ...` (piece 4) | **A** | compiles (not exercised yet) |
+| `Wire AHBSwapchainGLES into the Android GLES surface (inert)` (piece 5) | **A** (+ optional **C**) | compiles; default rendering unchanged — see note below |
+| _(piece 6: enable the gate — not yet implemented)_ | **run-and-inspect** (no simple command) | see below |
+
+### Piece 5 note (no functional change to verify)
+
+Piece 5 is gated off (`ShouldUseSurfaceControlSwapchain()` returns `false`), so
+there is **no behavior change and nothing new to functionally test** — a
+successful build (**A**, or the full engine via **C**) is the whole check.
+Optionally, run any existing Flutter app on the GLES backend and confirm it still
+renders normally; there's no pass/fail command for that, it's a visual smoke test.
+
+### Piece 6 will be run-and-inspect
+
+Once piece 6 turns the swapchain on, verification is **not** a simple pass/fail
+command — it's: build the engine (**C**), run a Flutter app that (a) is forced
+onto the OpenGL ES backend and (b) shows an HCPP platform view, then **visually
+confirm** the UI and the platform view composite correctly (no black frames,
+flicker, or z-order glitches). Exact run flags / manifest settings to force the
+GLES backend + enable surface control will be added here when piece 6 lands.
+
+---
 
 ## Notes / known gaps (intentional, pre-PR)
 
 - Single-sample only; MSAA is a follow-up.
 - Depth/stencil is allocated per drawable; caching (Vulkan's `SwapchainTransientsVK`
   equivalent) is a follow-up.
-- `AHBTextureSourceGLES` (the class) and `AHBTexturePoolGLES` / `AHBSwapchainGLES`
-  have no standalone gtests — they need a full `ContextGLES`. They get real
-  coverage once piece 5 runs them in an app. The fence + AHB-render *technique*
-  they rely on is covered by `GLESAHBFenceTest.*`.
+- `AHBTextureSourceGLES` / `AHBTexturePoolGLES` / `AHBSwapchainGLES` have no
+  standalone gtests — they need a full `ContextGLES`. They get real coverage once
+  piece 6 runs them in an app. The fence + AHB-render *technique* they rely on is
+  covered by `GLESAHBFenceTest.*` (command **B**).
+```
