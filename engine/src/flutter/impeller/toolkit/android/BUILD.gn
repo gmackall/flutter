@@ -47,12 +47,23 @@ source_set("unittests_lib") {
 
   testonly = true
 
-  sources = [ "toolkit_android_unittests.cc" ]
+  sources = [
+    "gles_ahb_unittests.cc",
+    "toolkit_android_unittests.cc",
+  ]
 
   deps = [
     ":android",
     ":unittests_fixtures",
+    "../egl",
     "//flutter/testing",
+  ]
+
+  # The gles_ahb_unittests bootstrap a real OpenGL ES context and make direct
+  # GL/EGL calls.
+  libs = [
+    "EGL",
+    "GLESv2",
   ]
 
   defines = [ "TESTING" ]
