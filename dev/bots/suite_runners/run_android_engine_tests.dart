@@ -32,11 +32,23 @@ import '../utils.dart';
 /// then apply the commit (or flag), and then run step (4). If you are trying
 /// to determine flakiness in the *same* state, or want better debugging, see
 /// `dev/integration_tests/android_engine_test/README.md`.
+///
+/// ## Platform view modes
+///
+/// Platform view functionality tests live under `lib/core`, `lib/hcpp_specific`,
+/// and `lib/legacy_specific`. Each "core" functionality is written once and run
+/// under every [PvMode] that supports it (see [_platformViewTests]). The mode is
+/// passed to the app via `--dart-define=PV_MODE` and to the driver via the
+/// `PV_MODE` environment variable, so goldens are keyed per `(backend, mode)`.
+///
+/// HCPP requires Vulkan + API 34, so it is only exercised on the Vulkan shard.
 Future<void> runAndroidEngineTests({required ImpellerBackend impellerBackend}) async {
   print('Running Flutter Driver Android tests (backend=$impellerBackend)');
 
   final String androidEngineTestPath = path.join('dev', 'integration_tests', 'android_engine_test');
-  final List<FileSystemEntity> mains = Glob('$androidEngineTestPath/lib/**_main.dart').listSync();
+  final List<FileSystemEntity> allMains = Glob(
+    '$androidEngineTestPath/lib/**_main.dart',
+  ).listSync();
 
   final File androidManifestXml = const LocalFileSystem().file(
     path.join(androidEngineTestPath, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'),
@@ -53,27 +65,35 @@ Future<void> runAndroidEngineTests({required ImpellerBackend impellerBackend}) a
       ),
     );
 
-    // Stdout will produce: "Using the Impeller rendering backend (.*)"
-    // TODO(matanlurey): Enable once `flutter drive` retains error logs.
-    // final RegExp impellerStdoutPattern = RegExp('Using the Imepller rendering backend (.*)');
-
-    Future<void> runTest(FileSystemEntity file, {bool useHCPPFlag = false}) async {
+    // Runs a single `flutter drive` for [relativeMainPath]. When [mode] is set,
+    // the composition mode is forwarded to both the app (`--dart-define`) and
+    // the driver (environment), and goldens are tagged with it via the driver's
+    // `goldenVariant`.
+    Future<void> runTest(
+      String relativeMainPath, {
+      PvMode? mode,
+      bool useHCPPFlag = false,
+    }) async {
       final CommandResult result = await runCommand(
         'flutter',
         <String>[
           'drive',
-          path.relative(file.path, from: androidEngineTestPath),
+          relativeMainPath,
           // There are no reason to enable development flags for this test.
           // Disable them to work around flakiness issues, and in general just
           // make less things start up unnecessarily.
           '--no-dds',
           '--no-enable-dart-profiling',
+          if (mode != null) '--dart-define=PV_MODE=${mode.name}',
           if (useHCPPFlag) '--enable-hcpp',
           '--test-arguments=test',
           '--test-arguments=--reporter=expanded',
         ],
         workingDirectory: androidEngineTestPath,
-        environment: <String, String>{'ANDROID_ENGINE_TEST_GOLDEN_VARIANT': impellerBackend.name},
+        environment: <String, String>{
+          'ANDROID_ENGINE_TEST_GOLDEN_VARIANT': impellerBackend.name,
+          if (mode != null) 'PV_MODE': mode.name,
+        },
       );
       final String? stdout = result.flattenedStdout;
       if (stdout == null) {
@@ -83,58 +103,73 @@ Future<void> runAndroidEngineTests({required ImpellerBackend impellerBackend}) a
 
       // TODO(matanlurey): Enable once `flutter drive` retains error logs.
       // https://github.com/flutter/flutter/issues/162087.
-      //
-      // final Match? stdoutMatch = impellerStdoutPattern.firstMatch(stdout);
-      // if (stdoutMatch == null) {
-      //   foundError(<String>['Could not find pattern ${impellerStdoutPattern.pattern}.', stdout]);
-      //   return;
-      // }
-
-      // final String reportedBackend = stdoutMatch.group(1)!.toLowerCase();
-      // if (reportedBackend != impellerBackend.name) {
-      //   foundError(<String>[
-      //     'Reported Imepller backend was $reportedBackend, expected ${impellerBackend.name}',
-      //   ]);
-      //   return;
-      // }
     }
 
-    for (final file in mains) {
-      if (file.path.contains('hcpp')) {
+    // Whether the app for [test] has been migrated/exists yet. Lets the registry
+    // describe the full matrix while migration is in progress; missing apps are
+    // skipped with a warning rather than failing the shard.
+    bool exists(_PvTest test) {
+      final bool found = allMains.any(
+        (FileSystemEntity f) =>
+            path.equals(f.path, path.join(androidEngineTestPath, test.mainPath)),
+      );
+      if (!found) {
+        print('WARNING: skipping ${test.mainPath} (file not found).');
+      }
+      return found;
+    }
+
+    // 1. Non-platform-view apps (external textures, blue rectangle, etc.) run
+    //    once, with no mode.
+    for (final FileSystemEntity file in allMains) {
+      if (_isPlatformViewMain(file.path, androidEngineTestPath)) {
         continue;
       }
-      await runTest(file);
+      await runTest(path.relative(file.path, from: androidEngineTestPath));
     }
 
-    // Test HCPP Platform Views on Vulkan.
-    if (impellerBackend == ImpellerBackend.vulkan) {
-      final runFirstTests = <String>[
-        // Run upgrade_legacy_pv_types first, as it is testing the flag and not the manifest
-        'upgrade_legacy_pv_types',
-      ];
+    // 2. Platform-view tests under the non-HCPP modes (manifest HCPP disabled).
+    for (final _PvTest test in _platformViewTests) {
+      if (!exists(test)) {
+        continue;
+      }
+      for (final PvMode mode in test.modes) {
+        if (mode == PvMode.hcpp) {
+          continue; // Handled in the Vulkan-only HCPP phases below.
+        }
+        await runTest(test.mainPath, mode: mode);
+      }
+    }
 
-      for (final testName in runFirstTests) {
-        await runTest(
-          mains.firstWhere((FileSystemEntity file) => file.path.contains(testName)),
-          useHCPPFlag: true,
-        );
+    // HCPP requires Vulkan + API 34, so only exercise it on the Vulkan shard.
+    if (impellerBackend == ImpellerBackend.vulkan) {
+      // 3. HCPP tests that exercise the `--enable-hcpp` *flag* (not the
+      //    manifest) must run while the manifest is still disabled.
+      for (final _PvTest test in _platformViewTests) {
+        if (!test.modes.contains(PvMode.hcpp) || !test.hcppViaFlagOnly) {
+          continue;
+        }
+        if (!exists(test)) {
+          continue;
+        }
+        await runTest(test.mainPath, mode: PvMode.hcpp, useHCPPFlag: true);
       }
 
+      // 4. Remaining HCPP tests run with the manifest flag enabled.
       androidManifestXml.writeAsStringSync(
         androidManifestXml.readAsStringSync().replaceFirst(
           kHcppMetadataDisabled,
           kHcppMetadataEnabled,
         ),
       );
-      for (final file in mains) {
-        // This statement is attempting to catch all tests inside of the
-        // dev/integration_tests/android_engine_test/lib/hcpp
-        // directory, except for upgrade_legacy_pv_types which we already ran.
-        if (!file.path.contains('hcpp') ||
-            runFirstTests.any((String name) => file.path.contains(name))) {
+      for (final _PvTest test in _platformViewTests) {
+        if (!test.modes.contains(PvMode.hcpp) || test.hcppViaFlagOnly) {
           continue;
         }
-        await runTest(file);
+        if (!exists(test)) {
+          continue;
+        }
+        await runTest(test.mainPath, mode: PvMode.hcpp);
       }
     }
   } finally {
@@ -142,6 +177,92 @@ Future<void> runAndroidEngineTests({required ImpellerBackend impellerBackend}) a
     androidManifestXml.writeAsStringSync(androidManifestContents);
   }
 }
+
+/// Whether [mainPath] is one of the mode-parameterized platform view apps (and
+/// therefore driven by [_platformViewTests] rather than the generic once-each
+/// loop). Matches both the new `core`/`hcpp_specific`/`legacy_specific` layout
+/// and the legacy `platform_view`/`hcpp` directories during migration.
+bool _isPlatformViewMain(String filePath, String androidEngineTestPath) {
+  final String rel = path
+      .relative(filePath, from: androidEngineTestPath)
+      .replaceAll(r'\', '/');
+  const List<String> platformViewDirs = <String>[
+    'lib/core/',
+    'lib/hcpp_specific/',
+    'lib/legacy_specific/',
+    'lib/platform_view/',
+    'lib/hcpp/',
+  ];
+  if (platformViewDirs.any(rel.startsWith)) {
+    return true;
+  }
+  // Legacy top-level platform view main.
+  return rel == 'lib/platform_view_tap_color_change_main.dart';
+}
+
+/// The platform view composition modes. Mirrors `PvMode` in the test app's
+/// `lib/src/platform_view_mode.dart`; kept in sync by name.
+enum PvMode { vd, hc, tlhc, hcpp }
+
+/// A platform view functionality test and the [PvMode]s it should run under.
+class _PvTest {
+  const _PvTest(this.mainPath, this.modes, {this.hcppViaFlagOnly = false});
+
+  /// Path to the app entrypoint, relative to the test package root.
+  final String mainPath;
+
+  /// The modes this functionality is run under. HCPP entries only run on the
+  /// Vulkan shard.
+  final Set<PvMode> modes;
+
+  /// When true, the HCPP run uses the `--enable-hcpp` flag with the manifest
+  /// *disabled* (to validate the flag path / legacy-type upgrade), instead of
+  /// the manifest meta-data.
+  final bool hcppViaFlagOnly;
+}
+
+/// The capability matrix.
+///
+/// * `core/` functionality that is purely mode-agnostic runs under
+///   {hc, tlhc, hcpp}. Scenarios that don't apply to a mode are skipped inside
+///   the driver (e.g. HC screenshots).
+/// * `core/` functionality that relies on framework-side compositing
+///   (clip/opacity/transform/overlay) runs under {tlhc, hcpp} only — HC
+///   composites in the native hierarchy where these can't be applied.
+/// * `hcpp_specific/` tests run under {hcpp} only.
+/// * `legacy_specific/` tests run under {vd} only.
+const List<_PvTest> _platformViewTests = <_PvTest>[
+  // Mode-agnostic core.
+  _PvTest('lib/core/gradient_main.dart', <PvMode>{PvMode.hc, PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/hide_show_hide_main.dart', <PvMode>{PvMode.hc, PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/tap_color_change_main.dart', <PvMode>{PvMode.hc, PvMode.tlhc, PvMode.hcpp}),
+
+  // Core requiring framework-side compositing (not applicable to HC).
+  _PvTest('lib/core/transform_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/clippath_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/opacity_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/clear_hidden_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/overlay_layer_cleared_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/overlapping_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+  _PvTest('lib/core/rtl_mirror_main.dart', <PvMode>{PvMode.tlhc, PvMode.hcpp}),
+
+  // HCPP-specific.
+  _PvTest(
+    'lib/hcpp_specific/upgrade_legacy_pv_types_main.dart',
+    <PvMode>{PvMode.hcpp},
+    hcppViaFlagOnly: true,
+  ),
+  _PvTest('lib/hcpp_specific/cliprect_surfaceview_main.dart', <PvMode>{PvMode.hcpp}),
+  _PvTest('lib/hcpp_specific/hc_errors_with_hcpp_enabled_main.dart', <PvMode>{PvMode.hcpp}),
+  _PvTest(
+    'lib/hcpp_specific/tlhc_with_fallback_to_hc_errors_main.dart',
+    <PvMode>{PvMode.hcpp},
+  ),
+
+  // Legacy-specific (Virtual Display smoke test; VD cannot be force-selected, so
+  // this is best-effort — see PvMode.vd).
+  _PvTest('lib/legacy_specific/virtual_display_gradient_main.dart', <PvMode>{PvMode.vd}),
+];
 
 const String kHcppMetadataDisabled =
     '<meta-data android:name="io.flutter.embedding.android.EnableHcpp" android:value="false" />';
