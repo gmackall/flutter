@@ -37,7 +37,8 @@ failure, but it means that path wasn't actually exercised.
 | `[Impeller] Add on-device tests ...` | Both functional tests PASS (not SKIPPED) on the device. | build `:unittests` + run `GLESAHBFenceTest.*` |
 | `[Impeller] Add AHBTexturePoolGLES ...` (piece 3) | Compiles only (no caller/test yet). | `//flutter/impeller` build |
 | `[Impeller] Add AHBSwapchainGLES ...` (piece 4) | Compiles only. Not exercised until integration. | `//flutter/impeller` build |
-| _(piece 5: integration — pending)_ | Real app renders via the swapchain; HCPP works on a non-Vulkan device. | run a Flutter app forcing the GLES backend; visual check |
+| `[Impeller] Wire AHBSwapchainGLES into the Android GLES surface (inert)` (piece 5) | Compiles; **default GLES rendering is unchanged** (swapchain gated off). Smoke-test a normal GLES-backend app still renders. | build the engine; run any app on the GLES backend |
+| _(piece 6: enable the gate — pending)_ | Real app renders via the swapchain; HCPP platform views work on a non-Vulkan device. | run a Flutter app forcing the GLES backend + HCPP; visual check |
 
 ## Notes / known gaps (intentional, pre-PR)
 
