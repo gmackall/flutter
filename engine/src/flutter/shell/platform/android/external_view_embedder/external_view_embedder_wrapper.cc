@@ -31,9 +31,7 @@ void AndroidExternalViewEmbedderWrapper::EnsureInitialized() {
     return;
   }
   if (meets_hcpp_criteria_ &&
-      android_context_.RenderingApi() == AndroidRenderingAPI::kImpellerVulkan &&
-      impeller::ContextVK::Cast(*android_context_.GetImpellerContext())
-          .GetShouldEnableSurfaceControlSwapchain()) {
+      android_context_.ShouldEnableSurfaceControlSwapchain()) {
     hcpp_view_embedder_ = std::make_unique<AndroidExternalViewEmbedder2>(
         android_context_, jni_facade_, surface_factory_, task_runners_);
   } else {

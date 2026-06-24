@@ -54,4 +54,8 @@ bool AndroidContext::IsDynamicSelection() const {
   return false;
 }
 
+bool AndroidContext::ShouldEnableSurfaceControlSwapchain() const {
+  return false;
+}
+
 }  // namespace flutter

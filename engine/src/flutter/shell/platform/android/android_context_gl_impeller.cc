@@ -7,7 +7,9 @@
 #include "flutter/impeller/renderer/backend/gles/context_gles.h"
 #include "flutter/impeller/renderer/backend/gles/proc_table_gles.h"
 #include "flutter/impeller/renderer/backend/gles/reactor_gles.h"
+#include "flutter/impeller/renderer/backend/gles/swapchain/ahb/ahb_swapchain_gles.h"
 #include "flutter/impeller/toolkit/egl/context.h"
+#include "flutter/impeller/toolkit/egl/fence.h"
 #include "flutter/impeller/toolkit/egl/surface.h"
 #include "impeller/entity/gles/entity_shaders_gles.h"
 #include "impeller/entity/gles/framebuffer_blend_shaders_gles.h"
@@ -107,10 +109,12 @@ static std::shared_ptr<impeller::Context> CreateImpellerContext(
 
 AndroidContextGLImpeller::AndroidContextGLImpeller(
     std::unique_ptr<impeller::egl::Display> display,
-    bool enable_gpu_tracing)
+    bool enable_gpu_tracing,
+    bool enable_surface_control)
     : AndroidContext(AndroidRenderingAPI::kImpellerOpenGLES),
       reactor_worker_(std::shared_ptr<ReactorWorker>(new ReactorWorker())),
-      display_(std::move(display)) {
+      display_(std::move(display)),
+      should_enable_surface_control_(enable_surface_control) {
   if (!display_ || !display_->IsValid()) {
     FML_LOG(ERROR) << "Could not create context with invalid EGL display.";
     return;
@@ -269,6 +273,12 @@ AndroidRenderingAPI AndroidContextGLImpeller::RenderingApi() const {
 
 EGLDisplay AndroidContextGLImpeller::GetGLDisplay() const {
   return display_ ? display_->GetHandle() : EGL_NO_DISPLAY;
+}
+
+bool AndroidContextGLImpeller::ShouldEnableSurfaceControlSwapchain() const {
+  return should_enable_surface_control_ &&
+         impeller::AHBSwapchainGLES::IsAvailableOnPlatform() &&
+         impeller::egl::Fence::IsAvailableOnDisplay(GetGLDisplay());
 }
 
 }  // namespace flutter

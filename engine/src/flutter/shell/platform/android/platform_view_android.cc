@@ -124,7 +124,7 @@ static std::shared_ptr<flutter::AndroidContext> CreateAndroidContext(
     case AndroidRenderingAPI::kImpellerOpenGLES:
       return std::make_unique<AndroidContextGLImpeller>(
           std::make_unique<impeller::egl::Display>(),
-          enable_opengl_gpu_tracing);
+          enable_opengl_gpu_tracing, settings.enable_surface_control);
     case AndroidRenderingAPI::kImpellerAutoselect:
       // Determine if we're using GL or Vulkan.
       return std::make_unique<AndroidContextDynamicImpeller>(settings);
@@ -555,12 +555,11 @@ double PlatformViewAndroid::GetScaledFontSize(double unscaled_font_size,
 }
 
 bool PlatformViewAndroid::IsSurfaceControlEnabled() const {
-  // This needs to know if we're actually using HCPP.
+  // This needs to know if we're actually using HCPP. Both the Vulkan and
+  // OpenGL ES backends can present the main layer through a SurfaceControl
+  // swapchain; the context answers for its active backend.
   return android_meets_hcpp_criteria_ &&
-         android_context_->RenderingApi() ==
-             AndroidRenderingAPI::kImpellerVulkan &&
-         impeller::ContextVK::Cast(*android_context_->GetImpellerContext())
-             .GetShouldEnableSurfaceControlSwapchain();
+         android_context_->ShouldEnableSurfaceControlSwapchain();
 }
 
 void PlatformViewAndroid::SetupImpellerContext() {

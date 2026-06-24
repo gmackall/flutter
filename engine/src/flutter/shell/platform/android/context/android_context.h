@@ -44,6 +44,15 @@ class AndroidContext {
   virtual bool IsValid() const;
 
   //----------------------------------------------------------------------------
+  /// @brief      Whether the main Flutter layer should be presented through a
+  ///             hardware buffer swapchain on a SurfaceControl. This is
+  ///             required for HCPP platform views and is renderer specific
+  ///             (Vulkan or OpenGL ES, when opted in and supported by the
+  ///             device). Defaults to `false`.
+  ///
+  virtual bool ShouldEnableSurfaceControlSwapchain() const;
+
+  //----------------------------------------------------------------------------
   /// @brief      Setter for the Skia context to be used by subsequent
   ///             AndroidSurfaces.
   /// @details    This is useful to reduce memory consumption when creating

@@ -305,12 +305,8 @@ std::unique_ptr<impeller::Surface> AndroidSurfaceGLImpeller::AcquireImpellerSurf
 }
 
 bool AndroidSurfaceGLImpeller::ShouldUseSurfaceControlSwapchain() const {
-  // TODO(flutter/flutter#164252): enable when HCPP is active for the OpenGL ES
-  // backend. This requires generalizing the HCPP gate (currently Vulkan-only)
-  // and plumbing the enable_surface_control setting through to the GLES
-  // context. Disabled for now so the default EGL window-surface path is
-  // unaffected.
-  return false;
+  return android_context_ &&
+         android_context_->ShouldEnableSurfaceControlSwapchain();
 }
 
 }  // namespace flutter

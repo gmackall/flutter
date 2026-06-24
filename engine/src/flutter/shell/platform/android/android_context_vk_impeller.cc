@@ -90,4 +90,13 @@ AndroidRenderingAPI AndroidContextVKImpeller::RenderingApi() const {
   return AndroidRenderingAPI::kImpellerVulkan;
 }
 
+bool AndroidContextVKImpeller::ShouldEnableSurfaceControlSwapchain() const {
+  auto context = GetImpellerContext();
+  if (!context) {
+    return false;
+  }
+  return impeller::ContextVK::Cast(*context)
+      .GetShouldEnableSurfaceControlSwapchain();
+}
+
 }  // namespace flutter

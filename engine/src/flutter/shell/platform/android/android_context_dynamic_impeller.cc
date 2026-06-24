@@ -191,8 +191,18 @@ void AndroidContextDynamicImpeller::SetupImpellerContext() {
   if (!vk_context_) {
     gl_context_ = std::make_shared<AndroidContextGLImpeller>(
         std::make_unique<impeller::egl::Display>(),
-        settings_.enable_gpu_tracing);
+        settings_.enable_gpu_tracing, settings_.enable_surface_control);
   }
+}
+
+bool AndroidContextDynamicImpeller::ShouldEnableSurfaceControlSwapchain() const {
+  if (vk_context_) {
+    return vk_context_->ShouldEnableSurfaceControlSwapchain();
+  }
+  if (gl_context_) {
+    return gl_context_->ShouldEnableSurfaceControlSwapchain();
+  }
+  return false;
 }
 
 }  // namespace flutter

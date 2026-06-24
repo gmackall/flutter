@@ -24,6 +24,9 @@ class AndroidContextVKImpeller : public AndroidContext {
   // |AndroidContext|
   AndroidRenderingAPI RenderingApi() const override;
 
+  // |AndroidContext|
+  bool ShouldEnableSurfaceControlSwapchain() const override;
+
  private:
   fml::RefPtr<fml::NativeLibrary> vulkan_dylib_;
   bool is_valid_ = false;

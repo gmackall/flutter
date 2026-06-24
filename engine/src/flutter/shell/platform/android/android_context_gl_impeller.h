@@ -14,7 +14,8 @@ namespace flutter {
 class AndroidContextGLImpeller : public AndroidContext {
  public:
   AndroidContextGLImpeller(std::unique_ptr<impeller::egl::Display> display,
-                           bool enable_gpu_tracing);
+                           bool enable_gpu_tracing,
+                           bool enable_surface_control = false);
 
   ~AndroidContextGLImpeller();
 
@@ -23,6 +24,9 @@ class AndroidContextGLImpeller : public AndroidContext {
 
   // |AndroidContext|
   AndroidRenderingAPI RenderingApi() const override;
+
+  // |AndroidContext|
+  bool ShouldEnableSurfaceControlSwapchain() const override;
 
   bool ResourceContextMakeCurrent(impeller::egl::Surface* offscreen_surface);
   bool ResourceContextClearCurrent();
@@ -51,6 +55,7 @@ class AndroidContextGLImpeller : public AndroidContext {
   std::unique_ptr<impeller::egl::Context> onscreen_context_;
   std::unique_ptr<impeller::egl::Context> offscreen_context_;
   bool is_valid_ = false;
+  bool should_enable_surface_control_ = false;
 
   FML_DISALLOW_COPY_AND_ASSIGN(AndroidContextGLImpeller);
 };

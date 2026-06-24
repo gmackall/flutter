@@ -45,6 +45,9 @@ class AndroidContextDynamicImpeller : public AndroidContext {
   // |AndroidContext|
   void SetupImpellerContext() override;
 
+  // |AndroidContext|
+  bool ShouldEnableSurfaceControlSwapchain() const override;
+
   std::shared_ptr<impeller::Context> GetImpellerContext() const override;
 
  private:
