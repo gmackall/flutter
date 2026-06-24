@@ -95,6 +95,13 @@ impeller_component("gles") {
     "unique_handle_gles.h",
   ]
 
+  if (is_android) {
+    sources += [
+      "android/ahb_texture_source_gles.cc",
+      "android/ahb_texture_source_gles.h",
+    ]
+  }
+
   if (!is_android && !is_fuchsia) {
     public_configs = [ ":gles_config" ]
     sources += [
@@ -112,4 +119,11 @@ impeller_component("gles") {
     "//flutter/fml",
     "//third_party/abseil-cpp/absl/container:flat_hash_map",
   ]
+
+  if (is_android) {
+    public_deps += [
+      "../../../toolkit/android",
+      "../../../toolkit/egl",
+    ]
+  }
 }
