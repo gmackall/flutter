@@ -14,6 +14,8 @@ impeller_component("egl") {
     "display.h",
     "egl.cc",
     "egl.h",
+    "fence.cc",
+    "fence.h",
     "image.cc",
     "image.h",
     "surface.cc",
