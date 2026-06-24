@@ -25,6 +25,20 @@ class SurfaceGLES final : public Surface {
       PixelFormat color_format,
       ISize fbo_size);
 
+  //----------------------------------------------------------------------------
+  /// @brief      Wrap an already-constructed render target (for instance, a
+  ///             swapchain image backed by an AHardwareBuffer) as a presentable
+  ///             surface. The swap callback is invoked when the surface is
+  ///             presented.
+  ///
+  /// @param[in]  render_target  The render target to present.
+  /// @param[in]  swap_callback  Invoked when the surface is presented.
+  ///
+  /// @return     A surface if one could be created. `nullptr` otherwise.
+  ///
+  static std::unique_ptr<Surface> WrapRenderTarget(RenderTarget render_target,
+                                                   SwapCallback swap_callback);
+
   // |Surface|
   ~SurfaceGLES() override;
 

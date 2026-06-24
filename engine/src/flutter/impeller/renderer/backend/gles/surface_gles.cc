@@ -79,6 +79,17 @@ std::unique_ptr<Surface> SurfaceGLES::WrapFBO(
       new SurfaceGLES(std::move(swap_callback), render_target_desc));
 }
 
+std::unique_ptr<Surface> SurfaceGLES::WrapRenderTarget(
+    RenderTarget render_target,
+    SwapCallback swap_callback) {
+  if (!swap_callback) {
+    return nullptr;
+  }
+  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+  return std::unique_ptr<SurfaceGLES>(
+      new SurfaceGLES(std::move(swap_callback), render_target));
+}
+
 SurfaceGLES::SurfaceGLES(SwapCallback swap_callback,
                          const RenderTarget& target_desc)
     : Surface(target_desc), swap_callback_(std::move(swap_callback)) {}
