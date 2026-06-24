@@ -99,6 +99,8 @@ impeller_component("gles") {
     sources += [
       "android/ahb_texture_source_gles.cc",
       "android/ahb_texture_source_gles.h",
+      "swapchain/ahb/ahb_texture_pool_gles.cc",
+      "swapchain/ahb/ahb_texture_pool_gles.h",
     ]
   }
 
