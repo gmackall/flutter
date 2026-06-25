@@ -75,6 +75,36 @@ the commit is verified — there is nothing to run or inspect.
   is reasonable hygiene (the window surface is vestigial in HCPP mode) but did
   **not** address this — the contended resource is the context, not the surface.
 
+### E. EGL_BAD_ACCESS thread diagnostic (temporary — revert before PR)
+
+A temporary diagnostic is in the tree to identify the offending thread. It logs
+the **thread name** at every onscreen-context make/clear, plus a marker when the
+snapshot path runs:
+
+```sh
+# Reproduce with HCPP on, then watch logcat:
+adb logcat | grep "AHB-DIAG"
+```
+
+Reproduce the error (rotate, or background/foreground, or trigger whatever made
+it fire — IME show/hide seemed to). Then look at the `AHB-DIAG` lines **around**
+an `EGL Error: Bad Access`:
+
+- The line with `OnscreenContextMakeCurrent result=0` is the failing call — the
+  bracketed **thread name** is the culprit (thread B). Expected raster thread is
+  `io.flutter.raster`; if B is something else (e.g. `io.flutter.io`,
+  `io.flutter.ui`, a binder/`hwbinder` thread) that's the smoking gun.
+- If an `AHB-DIAG [...] CreateSnapshotSurface` line appears just before the
+  failure on that same thread, it confirms the **snapshot path** is the cause
+  (the fix is then to route snapshots through the resource context, not the
+  raster thread's onscreen context).
+- If the failure happens with **no** `CreateSnapshotSurface` line, B reached the
+  onscreen context another way (e.g. a snapshot via the main surface) — the
+  thread name still tells us which subsystem.
+
+Paste the `AHB-DIAG` + `Bad Access` lines and we can pinpoint the fix. (All of
+this logging is marked `TODO(flutter#164252): TEMPORARY ... revert before PR`.)
+
 ### Piece 5 note (no functional change to verify)
 
 Piece 5 is gated off (`ShouldUseSurfaceControlSwapchain()` returns `false`), so
