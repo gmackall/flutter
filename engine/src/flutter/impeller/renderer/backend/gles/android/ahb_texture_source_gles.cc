@@ -4,6 +4,7 @@
 
 #include "impeller/renderer/backend/gles/android/ahb_texture_source_gles.h"
 
+#include "flutter/fml/make_copyable.h"
 #include "impeller/base/validation.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
 #include "impeller/renderer/backend/gles/gles.h"
@@ -103,9 +104,9 @@ AHBTextureSourceGLES::AHBTextureSourceGLES(
 
   // Create a GL texture and associate the EGLImage with it. This issues GL
   // commands and therefore requires the context to be current on this thread.
+  auto reactor = ContextGLES::Cast(*context).GetReactor();
   auto texture = std::make_shared<TextureGLES>(
-      ContextGLES::Cast(*context).GetReactor(),
-      ToTextureDescriptor(backing_store_->GetDescriptor()));
+      reactor, ToTextureDescriptor(backing_store_->GetDescriptor()));
   // The contents are provided by the EGLImage association below rather than
   // being initialized by Impeller.
   texture->MarkContentsInitialized();
@@ -118,11 +119,29 @@ AHBTextureSourceGLES::AHBTextureSourceGLES(
       GL_TEXTURE_2D, static_cast<GLeglImageOES>(egl_image.get().image));
 
   egl_image_ = std::move(egl_image);
+  reactor_ = std::move(reactor);
   texture_ = std::move(texture);
   is_valid_ = true;
 }
 
-AHBTextureSourceGLES::~AHBTextureSourceGLES() = default;
+AHBTextureSourceGLES::~AHBTextureSourceGLES() {
+  // Mali and PowerVR Rogue drivers can crash if the EGLImage is destroyed
+  // before the GL texture that wraps it. TextureGLES defers its GL texture
+  // deletion to the reactor (the deletion happens on the next reaction), so
+  // defer EGLImage destruction onto the reactor as well. ReactorGLES::ReactOnce
+  // runs ConsolidateHandles() (which deletes pending GL textures) before
+  // FlushOps() (which runs reactor operations), so the texture is freed first;
+  // the captured UniqueEGLImageKHR is then destroyed when this operation's
+  // lambda is destroyed.
+  if (!reactor_ || !egl_image_.is_valid()) {
+    return;
+  }
+  // Drop our reference to the texture so its handle is queued for collection,
+  // then schedule the EGLImage destruction to run after that collection.
+  texture_.reset();
+  [[maybe_unused]] auto scheduled = reactor_->AddOperation(fml::MakeCopyable(
+      [egl_image = std::move(egl_image_)](const ReactorGLES&) {}));
+}
 
 bool AHBTextureSourceGLES::IsValid() const {
   return is_valid_;

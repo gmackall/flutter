@@ -80,6 +80,9 @@ class AHBTextureSourceGLES {
  private:
   std::unique_ptr<android::HardwareBuffer> backing_store_;
   UniqueEGLImageKHR egl_image_;
+  // Retained so the destructor can defer EGLImage destruction onto the reactor,
+  // after the GL texture that wraps it has been deleted (see the destructor).
+  std::shared_ptr<ReactorGLES> reactor_;
   std::shared_ptr<TextureGLES> texture_;
   bool is_swapchain_image_ = false;
   bool is_valid_ = false;

@@ -160,6 +160,12 @@ command **B**'s tests `PASSED`.
 
 ## Notes / known gaps (intentional, pre-PR)
 
+- 🛠️ Mali/PowerVR deletion-order fix (from external review): `AHBTextureSourceGLES`
+  now defers `eglDestroyImageKHR` onto the reactor so the GL texture (also reactor-
+  deferred) is freed *before* the EGLImage — those drivers can crash on the reverse
+  order. **Needs verification on a Mali/PowerVR device** (no crash on
+  resize/background/teardown); on other GPUs it should be a no-op behaviorally.
+
 - ⏪ MSAA: attempted (separate 4x multisample color texture + resolve into the AHB,
   matching the Vulkan swapchain) but **reverted — it rendered Flutter content black**
   on device. Root cause: on devices with `EXT_multisampled_render_to_texture`
