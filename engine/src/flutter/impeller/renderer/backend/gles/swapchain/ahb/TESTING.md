@@ -74,8 +74,6 @@ the commit is verified — there is nothing to run or inspect.
   impact**, but it should not ship. The earlier "skip EGL window surface" change
   is reasonable hygiene (the window surface is vestigial in HCPP mode) but did
   **not** address this — the contended resource is the context, not the surface.
-- Rotation flicker (brief mis-sized intermediate frame) also occurs on Vulkan and
-  legacy HC — pre-existing platform-views issue, not this work.
 
 ### Piece 5 note (no functional change to verify)
 
@@ -128,9 +126,15 @@ command **B**'s tests `PASSED`.
 
 ## Notes / known gaps (intentional, pre-PR)
 
-- Single-sample only; MSAA is a follow-up.
-- Depth/stencil is allocated per drawable; caching (Vulkan's `SwapchainTransientsVK`
-  equivalent) is a follow-up.
+- ✅ MSAA implemented (4x, matching the Vulkan AHB swapchain's default), gated off
+  per-device when offscreen MSAA isn't supported. **Needs visual verification** —
+  compare edge/text antialiasing against the non-HCPP GLES path. Watch logcat for
+  allocation failures of the multisample color/depth-stencil textures.
+- ✅ Depth/stencil (and the MSAA color) are now memoized for the swapchain's
+  lifetime instead of allocated per drawable (the OpenGL ES analog of Vulkan's
+  `SwapchainTransientsVK`).
+- ⚠️ Open: the cross-thread `EGL_BAD_ACCESS` (see Device-testing findings) — root
+  cause identified, fix pending. Benign (no visual impact).
 - `AHBTextureSourceGLES` / `AHBTexturePoolGLES` / `AHBSwapchainGLES` have no
   standalone gtests — they need a full `ContextGLES`. They get real coverage once
   piece 6 runs them in an app. The fence + AHB-render *technique* they rely on is
