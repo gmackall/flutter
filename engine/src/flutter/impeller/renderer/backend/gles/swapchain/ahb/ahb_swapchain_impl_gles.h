@@ -55,7 +55,8 @@ class AHBSwapchainImplGLES final
       EGLDisplay display,
       std::weak_ptr<android::SurfaceControl> surface_control,
       const CreateTransactionCB& cb,
-      const ISize& size);
+      const ISize& size,
+      bool enable_msaa);
 
   ~AHBSwapchainImplGLES();
 
@@ -101,17 +102,31 @@ class AHBSwapchainImplGLES final
   std::shared_ptr<AHBTextureSourceGLES> currently_displayed_texture_
       IPLR_GUARDED_BY(currently_displayed_texture_mutex_);
 
+  // Device-transient render target resources that are memoized for the lifetime
+  // of the swapchain (which is constant in size). These are the OpenGL ES
+  // analog of `SwapchainTransientsVK` and the same instances are shared by all
+  // swapchain images.
+  bool enable_msaa_ = false;
+  std::shared_ptr<Texture> msaa_texture_;
+  std::shared_ptr<Texture> depth_stencil_texture_;
+
   bool is_valid_ = false;
 
   AHBSwapchainImplGLES(const std::weak_ptr<Context>& context,
                        EGLDisplay display,
                        std::weak_ptr<android::SurfaceControl> surface_control,
                        const CreateTransactionCB& cb,
-                       const ISize& size);
+                       const ISize& size,
+                       bool enable_msaa);
+
+  // The MSAA color texture (when MSAA is enabled) and depth-stencil texture,
+  // created lazily and cached.
+  const std::shared_ptr<Texture>& GetMSAATexture();
+  const std::shared_ptr<Texture>& GetDepthStencilTexture();
 
   RenderTarget BuildRenderTarget(
       const std::shared_ptr<Context>& context,
-      const std::shared_ptr<AHBTextureSourceGLES>& texture) const;
+      const std::shared_ptr<AHBTextureSourceGLES>& texture);
 
   bool Present(const std::shared_ptr<AHBTextureSourceGLES>& texture);
 

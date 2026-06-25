@@ -36,7 +36,8 @@ class AHBSwapchainGLES final {
       EGLDisplay display,
       const std::shared_ptr<android::SurfaceControl>& surface_control,
       const CreateTransactionCB& cb,
-      const ISize& size);
+      const ISize& size,
+      bool enable_msaa = true);
 
   ~AHBSwapchainGLES();
 
@@ -65,6 +66,7 @@ class AHBSwapchainGLES final {
   EGLDisplay display_ = EGL_NO_DISPLAY;
   std::shared_ptr<android::SurfaceControl> surface_control_;
   CreateTransactionCB cb_;
+  bool enable_msaa_ = true;
   std::shared_ptr<AHBSwapchainImplGLES> impl_;
 };
 
