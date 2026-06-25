@@ -295,9 +295,8 @@ bool AndroidSurfaceGLImpeller::
     return false;
   }
   onscreen_surface_.reset();
-  const bool use_swapchain = ShouldUseSurfaceControlSwapchain();
   std::unique_ptr<impeller::egl::Surface> onscreen_surface;
-  if (use_swapchain) {
+  if (ShouldUseSurfaceControlSwapchain()) {
     // In HCPP mode the main Flutter layer is presented through the AHB
     // swapchain on a SurfaceControl created from this ANativeWindow; the raster
     // thread renders into hardware-buffer FBOs and never presents to an EGL
@@ -315,18 +314,6 @@ bool AndroidSurfaceGLImpeller::
     return false;
   }
   onscreen_surface_ = std::move(onscreen_surface);
-
-  if (use_swapchain) {
-    // In HCPP mode this may run on the platform thread (the external view
-    // embedder creates overlay surfaces there via SurfacePool), while the
-    // raster thread holds the shared onscreen context current. Making the
-    // context current here would contend for it across threads
-    // (EGL_BAD_ACCESS). It is also unnecessary: the onscreen context is made
-    // current by the render path (GPUSurfaceGLImpeller::AcquireFrame) on the
-    // raster thread, and GPU surface construction defers all GL through the
-    // reactor, so no current context is required at this point.
-    return true;
-  }
   return OnGLContextMakeCurrent();
 }
 

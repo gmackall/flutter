@@ -65,21 +65,19 @@ the commit is verified — there is nothing to run or inspect.
 - ✅ Renders correctly on the GLES backend (confirmed via logcat
   `Using the Impeller rendering backend (OpenGLES).`), HCPP engaged, better perf
   than the legacy fallback, scrolling smooth.
-- 🛠️ `EGL Error: Bad Access` on rotate + background/foreground — **fix
-  implemented, needs device verification.** Root cause (confirmed by thread-name
-  diagnostics): the HC++ embedder creates overlay surfaces on the *platform*
-  thread (`SurfacePool::GetLayer` via `external_view_embedder_2.cc:112`), whose
-  `SetNativeWindow` made the *shared* onscreen GL context current there while the
-  raster thread still held it → `EGL_BAD_ACCESS`. Benign (overlay still renders
-  on the raster thread), but shouldn't ship. **Fix:** in HC++ mode,
-  `RecreateOnscreenSurfaceAndMakeOnscreenContextCurrent` no longer makes the
-  context current — GPU-surface construction defers all GL through the reactor
-  (verified: `PipelineLibraryGLES::GetPipeline` queues compiles via
-  `reactor_->AddOperation`), and the render path makes the context current on the
-  raster thread. **Verify:** rotate + background/foreground with the thread
-  diagnostic still in the tree — the `AHB-DIAG ... OnscreenContextMakeCurrent
-  result=0` line and the `Bad Access` should be **gone**, and Flutter content
-  must still render correctly.
+- ⚠️ `EGL Error: Bad Access` — **root cause confirmed, fix still open.** Cause
+  (thread-name diagnostics): the HC++ embedder creates overlay surfaces on the
+  *platform* thread (`SurfacePool::GetLayer` via `external_view_embedder_2.cc:112`),
+  whose `SetNativeWindow` makes the *shared* onscreen GL context current there
+  while the raster thread still holds it → `EGL_BAD_ACCESS`. Benign (overlay still
+  renders on the raster thread). Attempted fix (Option 1: skip the onscreen
+  make-current in HC++ mode) **regressed — the app hung on the loading screen** and
+  was reverted: the main surface evidently needs the setup-time make-current for
+  more than pipeline compilation (pipeline creation *does* defer via the reactor,
+  but something else in first-frame setup does not). Next attempt must be
+  **scoped to overlay surfaces only** (flag overlays, or release the raster
+  context around the platform-thread overlay setup) so the main surface is
+  untouched.
 
 ### E. EGL_BAD_ACCESS thread diagnostic (temporary — revert before PR)
 
