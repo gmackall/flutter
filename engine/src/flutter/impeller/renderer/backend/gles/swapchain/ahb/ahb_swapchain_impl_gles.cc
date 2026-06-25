@@ -6,11 +6,9 @@
 
 #include "flutter/fml/trace_event.h"
 #include "impeller/base/validation.h"
-#include "impeller/core/allocator.h"
 #include "impeller/geometry/color.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
 #include "impeller/renderer/backend/gles/surface_gles.h"
-#include "impeller/renderer/capabilities.h"
 #include "impeller/toolkit/android/surface_transaction_stats.h"
 #include "impeller/toolkit/egl/fence.h"
 
@@ -21,10 +19,9 @@ std::shared_ptr<AHBSwapchainImplGLES> AHBSwapchainImplGLES::Create(
     EGLDisplay display,
     std::weak_ptr<android::SurfaceControl> surface_control,
     const CreateTransactionCB& cb,
-    const ISize& size,
-    bool enable_msaa) {
+    const ISize& size) {
   auto impl = std::shared_ptr<AHBSwapchainImplGLES>(new AHBSwapchainImplGLES(
-      context, display, std::move(surface_control), cb, size, enable_msaa));
+      context, display, std::move(surface_control), cb, size));
   return impl->IsValid() ? impl : nullptr;
 }
 
@@ -33,8 +30,7 @@ AHBSwapchainImplGLES::AHBSwapchainImplGLES(
     EGLDisplay display,
     std::weak_ptr<android::SurfaceControl> surface_control,
     const CreateTransactionCB& cb,
-    const ISize& size,
-    bool enable_msaa)
+    const ISize& size)
     : context_(context),
       display_(display),
       surface_control_(std::move(surface_control)),
@@ -50,13 +46,6 @@ AHBSwapchainImplGLES::AHBSwapchainImplGLES(
                       "OpenGL ES AHB swapchain.";
     return;
   }
-  auto ctx = context_.lock();
-  if (!ctx) {
-    return;
-  }
-  // Only use MSAA if it was requested and the device supports offscreen MSAA
-  // resolves (older OpenGL ES drivers may not).
-  enable_msaa_ = enable_msaa && ctx->GetCapabilities()->SupportsOffscreenMSAA();
   desc_ = android::HardwareBufferDescriptor::MakeForSwapchainImage(size);
   pool_ = std::make_shared<AHBTexturePoolGLES>(context, display_, desc_);
   if (!pool_->IsValid()) {
@@ -81,86 +70,30 @@ const android::HardwareBufferDescriptor& AHBSwapchainImplGLES::GetDescriptor()
   return desc_;
 }
 
-const std::shared_ptr<Texture>& AHBSwapchainImplGLES::GetMSAATexture() {
-  if (msaa_texture_ || !enable_msaa_) {
-    return msaa_texture_;
-  }
-  auto context = context_.lock();
-  if (!context) {
-    return msaa_texture_;
-  }
-  TextureDescriptor desc;
-  desc.storage_mode = StorageMode::kDeviceTransient;
-  desc.type = TextureType::kTexture2DMultisample;
-  desc.sample_count = SampleCount::kCount4;
-  // Swapchain images are always RGBA8 (see HardwareBufferFormat).
-  desc.format = PixelFormat::kR8G8B8A8UNormInt;
-  desc.size = desc_.size;
-  desc.usage = TextureUsage::kRenderTarget;
-  msaa_texture_ = context->GetResourceAllocator()->CreateTexture(desc);
-  if (msaa_texture_) {
-    msaa_texture_->SetLabel("GLESAHBSwapchainMSAA");
-  }
-  return msaa_texture_;
-}
-
-const std::shared_ptr<Texture>& AHBSwapchainImplGLES::GetDepthStencilTexture() {
-  if (depth_stencil_texture_) {
-    return depth_stencil_texture_;
-  }
-  auto context = context_.lock();
-  if (!context) {
-    return depth_stencil_texture_;
-  }
-  TextureDescriptor desc;
-  desc.storage_mode = StorageMode::kDeviceTransient;
-  if (enable_msaa_) {
-    desc.type = TextureType::kTexture2DMultisample;
-    desc.sample_count = SampleCount::kCount4;
-  } else {
-    desc.type = TextureType::kTexture2D;
-    desc.sample_count = SampleCount::kCount1;
-  }
-  desc.format = context->GetCapabilities()->GetDefaultDepthStencilFormat();
-  desc.size = desc_.size;
-  desc.usage = TextureUsage::kRenderTarget;
-  depth_stencil_texture_ = context->GetResourceAllocator()->CreateTexture(desc);
-  if (depth_stencil_texture_) {
-    depth_stencil_texture_->SetLabel("GLESAHBSwapchainDepthStencil");
-  }
-  return depth_stencil_texture_;
-}
-
 RenderTarget AHBSwapchainImplGLES::BuildRenderTarget(
     const std::shared_ptr<Context>& context,
-    const std::shared_ptr<AHBTextureSourceGLES>& texture) {
+    const std::shared_ptr<AHBTextureSourceGLES>& texture) const {
   RenderTarget render_target;
 
-  // The hardware buffer texture is always single-sample. When MSAA is enabled
-  // it becomes the resolve target for a memoized multisample color texture;
-  // otherwise it is the color attachment directly. The depth-stencil texture is
-  // also memoized for the lifetime of the swapchain.
   ColorAttachment color0;
+  color0.texture = texture->GetTexture();
   color0.clear_color = Color::DarkSlateGray();
   color0.load_action = LoadAction::kClear;
-  if (enable_msaa_) {
-    color0.texture = GetMSAATexture();
-    color0.store_action = StoreAction::kMultisampleResolve;
-    color0.resolve_texture = texture->GetTexture();
-  } else {
-    color0.texture = texture->GetTexture();
-    color0.store_action = StoreAction::kStore;
-  }
+  color0.store_action = StoreAction::kStore;
   render_target.SetColorAttachment(color0, 0u);
 
+  // TODO(flutter/flutter#164252): cache the depth-stencil texture across
+  // drawables (as the Vulkan swapchain does via SwapchainTransientsVK) and add
+  // MSAA support. For now a fresh single-sample depth-stencil is created per
+  // drawable.
   render_target.SetupDepthStencilAttachments(
-      *context,                                       //
-      *context->GetResourceAllocator(),               //
-      desc_.size,                                     //
-      enable_msaa_,                                   //
-      "GLESAHBSwapchain",                             //
+      *context,                            //
+      *context->GetResourceAllocator(),    //
+      desc_.size,                          //
+      /*msaa=*/false,                      //
+      "GLESAHBSwapchain",                  //
       RenderTarget::kDefaultStencilAttachmentConfig,  //
-      GetDepthStencilTexture()                        //
+      /*depth_stencil_texture=*/nullptr    //
   );
 
   return render_target;

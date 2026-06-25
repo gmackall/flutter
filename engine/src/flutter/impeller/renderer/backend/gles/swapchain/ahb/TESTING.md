@@ -156,13 +156,17 @@ command **B**'s tests `PASSED`.
 
 ## Notes / known gaps (intentional, pre-PR)
 
-- ✅ MSAA implemented (4x, matching the Vulkan AHB swapchain's default), gated off
-  per-device when offscreen MSAA isn't supported. **Needs visual verification** —
-  compare edge/text antialiasing against the non-HCPP GLES path. Watch logcat for
-  allocation failures of the multisample color/depth-stencil textures.
-- ✅ Depth/stencil (and the MSAA color) are now memoized for the swapchain's
-  lifetime instead of allocated per drawable (the OpenGL ES analog of Vulkan's
-  `SwapchainTransientsVK`).
+- ⏪ MSAA: attempted (separate 4x multisample color texture + resolve into the AHB,
+  matching the Vulkan swapchain) but **reverted — it rendered Flutter content black**
+  on device. Root cause: on devices with `EXT_multisampled_render_to_texture`
+  (`SupportsImplicitResolvingMSAA()` true), `render_pass_gles.cc` **skips** the
+  explicit blit-resolve into the AHB (line ~638) and expects implicit resolve into a
+  *single-sample* color attachment — but we supplied a separate multisample texture +
+  AHB resolve target, so content never reached the AHB. Currently single-sample (the
+  non-HCPP GLES path also relies on its EGL config's MSAA, not impeller MSAA). Redo
+  needs a device with implicit-resolve to branch on `SupportsImplicitResolvingMSAA()`.
+- ⏪ Depth/stencil transient caching was bundled in the same commit and reverted with
+  it; it's low-risk and can be re-landed on its own, with verification.
 - ⚠️ Open: the cross-thread `EGL_BAD_ACCESS` (see Device-testing findings) — root
   cause identified, fix pending. Benign (no visual impact).
 - `AHBTextureSourceGLES` / `AHBTexturePoolGLES` / `AHBSwapchainGLES` have no

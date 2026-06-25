@@ -20,13 +20,11 @@ AHBSwapchainGLES::AHBSwapchainGLES(
     EGLDisplay display,
     const std::shared_ptr<android::SurfaceControl>& surface_control,
     const CreateTransactionCB& cb,
-    const ISize& size,
-    bool enable_msaa)
+    const ISize& size)
     : context_(context),
       display_(display),
       surface_control_(surface_control),
-      cb_(cb),
-      enable_msaa_(enable_msaa) {
+      cb_(cb) {
   UpdateSurfaceSize(size);
 }
 
@@ -53,8 +51,7 @@ void AHBSwapchainGLES::UpdateSurfaceSize(const ISize& size) {
                                            display_,          //
                                            surface_control_,  //
                                            cb_,               //
-                                           size,              //
-                                           enable_msaa_       //
+                                           size               //
   );
   if (!impl || !impl->IsValid()) {
     VALIDATION_LOG << "Could not resize swapchain to size: " << size;
