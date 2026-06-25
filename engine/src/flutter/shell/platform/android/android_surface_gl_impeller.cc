@@ -284,8 +284,20 @@ bool AndroidSurfaceGLImpeller::
     return false;
   }
   onscreen_surface_.reset();
-  auto onscreen_surface =
-      android_context_->CreateOnscreenSurface(native_window_->handle());
+  std::unique_ptr<impeller::egl::Surface> onscreen_surface;
+  if (ShouldUseSurfaceControlSwapchain()) {
+    // In HCPP mode the main Flutter layer is presented through the AHB
+    // swapchain on a SurfaceControl created from this ANativeWindow; the raster
+    // thread renders into hardware-buffer FBOs and never presents to an EGL
+    // window surface. Creating an EGL window surface on the same ANativeWindow
+    // as the SurfaceControl makes them contend as buffer producers, which
+    // surfaces as EGL_BAD_ACCESS on eglMakeCurrent during resize/teardown. Use
+    // an offscreen pbuffer purely to give the context a current surface.
+    onscreen_surface = android_context_->CreateOffscreenSurface();
+  } else {
+    onscreen_surface =
+        android_context_->CreateOnscreenSurface(native_window_->handle());
+  }
   if (!onscreen_surface) {
     FML_DLOG(ERROR) << "Could not create onscreen surface.";
     return false;
