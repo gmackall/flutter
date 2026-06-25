@@ -57,7 +57,20 @@ the commit is verified — there is nothing to run or inspect.
 | `Add AHBTexturePoolGLES ...` (piece 3) | **A** | compiles (no caller/test yet) | ✅ builds |
 | `Add AHBSwapchainGLES ...` (piece 4) | **A** | compiles (not exercised yet) | ✅ builds |
 | `Wire AHBSwapchainGLES into the Android GLES surface (inert)` (piece 5) | **A** (+ optional **C**) | compiles; default rendering unchanged — see note below | ✅ builds |
-| `Enable HCPP + AHB swapchain on the OpenGL ES backend` (piece 6) | **D** (run-and-inspect) | app renders + HCPP platform view composites correctly on the GLES backend | ⏳ pending |
+| `Enable HCPP + AHB swapchain on the OpenGL ES backend` (piece 6) | **D** (run-and-inspect) | app renders + HCPP platform view composites correctly on the GLES backend | ✅ renders correctly + better perf than fallback; scrolling clean |
+| `Fix EGL_BAD_ACCESS: skip EGL window surface in GLES HCPP mode` | **D**, focus on rotate + background/foreground | logcat shows **no** `EGL Error: Bad Access` during rotation or background/foreground | ⏳ re-test needed |
+
+### Device-testing findings so far
+
+- ✅ Renders correctly on the GLES backend (confirmed via logcat
+  `Using the Impeller rendering backend (OpenGLES).`), HCPP engaged, better perf
+  than the legacy fallback, scrolling smooth.
+- 🐛→✅ `EGL Error: Bad Access` on rotate + background/foreground was the
+  vestigial EGL window surface contending with the SurfaceControl on the same
+  ANativeWindow. Fixed by binding the context to an offscreen pbuffer in HCPP
+  mode. **Re-run D (rotate + background/foreground) and confirm the error is gone.**
+- Rotation flicker (brief mis-sized intermediate frame) also occurs on Vulkan and
+  legacy HC — pre-existing platform-views issue, not this work.
 
 ### Piece 5 note (no functional change to verify)
 
