@@ -49,15 +49,15 @@ et build -c android_debug_arm64
 Each row says exactly what to run. "Build-only" means: if command **A** succeeds,
 the commit is verified — there is nothing to run or inspect.
 
-| Commit (subject) | Run | Pass criteria |
-|---|---|---|
-| `Add egl::Fence native fence sync wrapper` (piece 1) | **A** | compiles |
-| `Add AHBTextureSourceGLES ...` (piece 2) | **A** | compiles |
-| `Add on-device tests ...` | **A**, then **B** | both `GLESAHBFenceTest.*` print `[ PASSED ]` (not `[ SKIPPED ]`) |
-| `Add AHBTexturePoolGLES ...` (piece 3) | **A** | compiles (no caller/test yet) |
-| `Add AHBSwapchainGLES ...` (piece 4) | **A** | compiles (not exercised yet) |
-| `Wire AHBSwapchainGLES into the Android GLES surface (inert)` (piece 5) | **A** (+ optional **C**) | compiles; default rendering unchanged — see note below |
-| _(piece 6: enable the gate — not yet implemented)_ | **run-and-inspect** (no simple command) | see below |
+| Commit (subject) | Run | Pass criteria | Status |
+|---|---|---|---|
+| `Add egl::Fence native fence sync wrapper` (piece 1) | **A** | compiles | ✅ builds + functionally verified via **B** |
+| `Add AHBTextureSourceGLES ...` (piece 2) | **A** | compiles | ✅ builds + technique verified via **B** |
+| `Add on-device tests ...` | **A**, then **B** | both `GLESAHBFenceTest.*` print `[ PASSED ]` (not `[ SKIPPED ]`) | ✅ 2/2 PASSED on device |
+| `Add AHBTexturePoolGLES ...` (piece 3) | **A** | compiles (no caller/test yet) | ✅ builds |
+| `Add AHBSwapchainGLES ...` (piece 4) | **A** | compiles (not exercised yet) | ✅ builds |
+| `Wire AHBSwapchainGLES into the Android GLES surface (inert)` (piece 5) | **A** (+ optional **C**) | compiles; default rendering unchanged — see note below | ✅ builds |
+| `Enable HCPP + AHB swapchain on the OpenGL ES backend` (piece 6) | **D** (run-and-inspect) | app renders + HCPP platform view composites correctly on the GLES backend | ⏳ pending |
 
 ### Piece 5 note (no functional change to verify)
 
@@ -67,14 +67,44 @@ successful build (**A**, or the full engine via **C**) is the whole check.
 Optionally, run any existing Flutter app on the GLES backend and confirm it still
 renders normally; there's no pass/fail command for that, it's a visual smoke test.
 
-### Piece 6 will be run-and-inspect
+### D. Piece 6 — run-and-inspect (no pass/fail command)
 
-Once piece 6 turns the swapchain on, verification is **not** a simple pass/fail
-command — it's: build the engine (**C**), run a Flutter app that (a) is forced
-onto the OpenGL ES backend and (b) shows an HCPP platform view, then **visually
-confirm** the UI and the platform view composite correctly (no black frames,
-flicker, or z-order glitches). Exact run flags / manifest settings to force the
-GLES backend + enable surface control will be added here when piece 6 lands.
+Piece 6 turns the swapchain on, so verification is **visual**, not a command.
+
+1. Build the engine (**C**) and point a Flutter app at this local engine
+   (`--local-engine=android_debug_arm64 --local-engine-host=host_debug` — adjust
+   to your host build dir).
+2. Force the **OpenGL ES** backend **and** enable **HCPP + surface control** for
+   the app. Either add these to the app's `AndroidManifest.xml` under
+   `<application>`:
+
+   ```xml
+   <meta-data android:name="io.flutter.embedding.android.ImpellerBackend" android:value="opengles" />
+   <meta-data android:name="io.flutter.embedding.android.EnableHcpp" android:value="true" />
+   ```
+
+   …or pass the equivalent engine switches if your run setup allows it:
+   `--impeller-backend=opengles --enable-hcpp-and-surface-control`.
+3. Run the app on a device (a non-Vulkan device/emulator is the real target, but
+   any device works since the backend is forced), ideally one whose UI **shows a
+   platform view** (e.g. a `WebView`, `GoogleMap`, or any `AndroidView`).
+4. **Inspect visually:**
+   - The Flutter UI renders normally (the main layer now goes through the AHB /
+     SurfaceControl swapchain) — no black screen, flicker, tearing, or stale
+     frames.
+   - The platform view composites in the correct **z-order** with Flutter
+     content drawn over/under it, and stays aligned while scrolling/animating.
+   - Logcat shows no `VALIDATION_LOG` spam about failing to create the swapchain,
+     set surface contents, or import/export fences.
+
+   To confirm it actually took the new path (not a silent fallback): on the Dart
+   side `FlutterJNI.IsSurfaceControlEnabled()` should return `true`, or check
+   logcat for the OpenGL ES backend being selected.
+
+If the device lacks the native-fence EGL extensions or SurfaceControl, the gate
+returns false and the app falls back to the normal EGL path + non-HCPP platform
+views (still correct, just not exercising this work) — so pick a device where
+command **B**'s tests `PASSED`.
 
 ---
 
