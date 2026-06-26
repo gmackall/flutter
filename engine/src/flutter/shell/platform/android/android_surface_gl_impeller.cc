@@ -8,9 +8,6 @@
 #include <sys/system_properties.h>
 #endif
 
-#include <pthread.h>
-#include <string>
-
 #include "flutter/common/graphics/gl_context_switch.h"
 #include "flutter/fml/logging.h"
 #include "flutter/impeller/renderer/backend/gles/swapchain/ahb/ahb_swapchain_gles.h"
@@ -181,14 +178,6 @@ bool AndroidSurfaceGLImpeller::SetNativeWindow(
 
 // |AndroidSurface|
 std::unique_ptr<Surface> AndroidSurfaceGLImpeller::CreateSnapshotSurface() {
-  // TODO(flutter#164252): TEMPORARY diagnostic, revert before PR. The snapshot
-  // path is the prime suspect for the cross-thread EGL_BAD_ACCESS (it makes the
-  // onscreen context current off the raster thread).
-  {
-    char thread_name[32] = {};
-    pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name));
-    FML_LOG(ERROR) << "AHB-DIAG [" << thread_name << "] CreateSnapshotSurface";
-  }
   if (!onscreen_surface_ || !onscreen_surface_->IsValid()) {
     onscreen_surface_ = android_context_->CreateOffscreenSurface();
     if (!onscreen_surface_) {

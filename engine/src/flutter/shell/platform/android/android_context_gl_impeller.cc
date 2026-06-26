@@ -4,9 +4,6 @@
 
 #include "flutter/shell/platform/android/android_context_gl_impeller.h"
 
-#include <pthread.h>
-#include <string>
-
 #include "flutter/impeller/renderer/backend/gles/context_gles.h"
 #include "flutter/impeller/renderer/backend/gles/proc_table_gles.h"
 #include "flutter/impeller/renderer/backend/gles/reactor_gles.h"
@@ -22,15 +19,6 @@
 #endif  // !SLIMPELLER
 
 namespace flutter {
-
-// TODO(flutter#164252): TEMPORARY diagnostic, revert before PR. Returns the
-// name of the calling thread (e.g. "io.flutter.raster", "io.flutter.io") so the
-// cross-thread EGL_BAD_ACCESS can be attributed to a specific Flutter thread.
-static std::string AHBDiagThreadName() {
-  char name[32] = {};
-  pthread_getname_np(pthread_self(), name, sizeof(name));
-  return std::string(name);
-}
 
 class AndroidContextGLImpeller::ReactorWorker final
     : public impeller::ReactorGLES::Worker {
@@ -263,11 +251,7 @@ bool AndroidContextGLImpeller::OnscreenContextMakeCurrent(
     return false;
   }
 
-  bool result = onscreen_context_->MakeCurrent(*onscreen_surface);
-  // TODO(flutter#164252): TEMPORARY diagnostic, revert before PR.
-  FML_LOG(ERROR) << "AHB-DIAG [" << AHBDiagThreadName()
-                 << "] OnscreenContextMakeCurrent result=" << result;
-  return result;
+  return onscreen_context_->MakeCurrent(*onscreen_surface);
 }
 
 bool AndroidContextGLImpeller::OnscreenContextClearCurrent() {
@@ -275,11 +259,7 @@ bool AndroidContextGLImpeller::OnscreenContextClearCurrent() {
     return false;
   }
 
-  bool result = onscreen_context_->ClearCurrent();
-  // TODO(flutter#164252): TEMPORARY diagnostic, revert before PR.
-  FML_LOG(ERROR) << "AHB-DIAG [" << AHBDiagThreadName()
-                 << "] OnscreenContextClearCurrent result=" << result;
-  return result;
+  return onscreen_context_->ClearCurrent();
 }
 
 std::unique_ptr<impeller::egl::Surface>
