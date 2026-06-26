@@ -179,6 +179,12 @@ command **B**'s tests `PASSED`.
   it; it's low-risk and can be re-landed on its own, with verification.
 - ⚠️ Open: the cross-thread `EGL_BAD_ACCESS` (see Device-testing findings) — root
   cause identified, fix pending. Benign (no visual impact).
+- ⚠️ No CPU backpressure / uncapped pool: the Vulkan swapchain bounds in-flight
+  frames to `kMaxPendingPresents = 2` via per-frame acquire fences; the GLES
+  `AcquireNextDrawable` has no equivalent throttle, and the pool never trims.
+  Steady-state vsync pacing keeps it small, but a stalled compositor could let
+  the raster thread accumulate buffers. Follow-up: wire `egl::Fence::WaitOnCPU`
+  (already exists) or otherwise bound it. Documented on `AHBTexturePoolGLES`.
 - `AHBTextureSourceGLES` / `AHBTexturePoolGLES` / `AHBSwapchainGLES` have no
   standalone gtests — they need a full `ContextGLES`. They get real coverage once
   piece 6 runs them in an app. The fence + AHB-render *technique* they rely on is

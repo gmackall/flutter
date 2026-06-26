@@ -171,6 +171,14 @@ bool AHBSwapchainImplGLES::Present(
   if (present_ready) {
     present_ready_fd = present_ready->CreateSyncFD();
   }
+  if (!present_ready_fd.is_valid()) {
+    // Without a present-ready fence the surface control has no acquire fence to
+    // wait on and the compositor may sample the hardware buffer before the GPU
+    // has finished rendering into it. Surface the failure; the frame is still
+    // presented (best effort).
+    VALIDATION_LOG << "Could not create a present-ready fence for the swapchain "
+                      "image.";
+  }
 
   android::SurfaceTransaction transaction =
       cb_ ? cb_() : android::SurfaceTransaction();

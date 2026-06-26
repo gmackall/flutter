@@ -15,14 +15,24 @@
 namespace impeller {
 
 //------------------------------------------------------------------------------
-/// @brief      Maintains a bounded pool of hardware buffer backed texture
-///             sources that can be used as swapchain images.
+/// @brief      A recycling pool of hardware buffer backed texture sources that
+///             can be used as swapchain images.
 ///
 ///             If a previously cached entry cannot be obtained from the pool, a
 ///             new entry is created. The only case where a valid texture source
 ///             cannot be obtained is due to resource exhaustion.
 ///
 ///             Pools are thread-safe.
+///
+/// @warning    The pool is not explicitly capped: `Push` always caches the
+///             returned texture and `Pop` allocates a new one when empty.
+///             Steady-state vsync pacing keeps the working set small (~the
+///             number of in-flight frames), but unlike the Vulkan swapchain
+///             (which bounds in-flight frames via per-frame acquire fences,
+///             `kMaxPendingPresents`), this pool has no CPU backpressure, so a
+///             stalled compositor could let the raster thread accumulate
+///             buffers. Adding an explicit bound (the `egl::Fence::WaitOnCPU`
+///             primitive already exists) is a follow-up (flutter#164252).
 ///
 /// @warning    `Pop` may create a new texture source which issues OpenGL
 ///             commands. Callers must ensure a context is current on the

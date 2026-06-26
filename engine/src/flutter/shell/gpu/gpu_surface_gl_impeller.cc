@@ -139,7 +139,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
                                     cull_rect,                          //
                                     /*reset_host_buffer=*/true          //
     );
-    return true;
   };
 
   return std::make_unique<SurfaceFrame>(
