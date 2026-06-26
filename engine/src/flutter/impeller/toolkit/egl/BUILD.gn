@@ -14,8 +14,6 @@ impeller_component("egl") {
     "display.h",
     "egl.cc",
     "egl.h",
-    "fence.cc",
-    "fence.h",
     "image.cc",
     "image.h",
     "surface.cc",
@@ -29,6 +27,14 @@ impeller_component("egl") {
 
   libs = []
   if (is_android) {
+    # egl::Fence wraps EGL_ANDROID_native_fence_sync and produces sync file
+    # descriptors; it is Android only (and `fml::UniqueFD` is an fd only on
+    # POSIX). Nothing outside Android references it, so keep it gated to avoid
+    # breaking host builds that lack fd-based EGL.
+    sources += [
+      "fence.cc",
+      "fence.h",
+    ]
     libs = [ "EGL" ]
   }
 }
