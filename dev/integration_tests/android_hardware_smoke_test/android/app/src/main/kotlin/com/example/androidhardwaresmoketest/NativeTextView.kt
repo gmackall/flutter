@@ -1,6 +1,5 @@
 package com.example.androidhardwaresmoketest
 
-
 import android.content.Context
 import android.graphics.Color
 import android.view.Gravity

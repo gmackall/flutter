@@ -1,6 +1,5 @@
 package com.example.androidhardwaresmoketest
 
-
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
