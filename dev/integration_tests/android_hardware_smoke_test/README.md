@@ -108,7 +108,7 @@ This mode is used to execute visual assertions locally on your PC or in CI pipel
   # Execute from the 'android' subdirectory
   cd android
   ./gradlew :app:connectedDebugAndroidTest \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.example.android_hardware_smoke_test.FlutterActivityTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.example.androidhardwaresmoketest.FlutterActivityTest \
     -s
   ```
 
@@ -158,14 +158,14 @@ If you prefer to bypass Gradle entirely for custom debugging, you can manually b
 2. **Manually launch the native Android instrumentation test**:
    ```sh
    adb shell am instrument -w \
-     -e class com.example.android_hardware_smoke_test.FlutterActivityTest \
-     com.example.android_hardware_smoke_test.test/androidx.test.runner.AndroidJUnitRunner
+     -e class com.example.androidhardwaresmoketest.FlutterActivityTest \
+     com.example.androidhardwaresmoketest.test/androidx.test.runner.AndroidJUnitRunner
    ```
 
 3. **Manually pull the generated snapshot off the device's sandbox**:
    Since the app remains installed during raw `adb` runs, you can copy the rendering result files manually:
    ```sh
-   adb exec-out "run-as com.example.android_hardware_smoke_test cat cache/results/blueRectangleTest.png" \
+   adb exec-out "run-as com.example.androidhardwaresmoketest cat cache/results/blueRectangleTest.png" \
      > test_driver/results/blueRectangleTest.png
    ```
 
