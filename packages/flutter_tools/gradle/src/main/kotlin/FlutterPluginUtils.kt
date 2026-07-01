@@ -306,6 +306,25 @@ object FlutterPluginUtils {
         project.findProperty(PROP_FORCE_VERSION_CODE_IGNORING_ABI)?.toString()?.toBoolean() ?: false
 
     /**
+     * Computes the version code to use for a per-ABI split APK, or `null` if [abiIdentifier] is not
+     * a known Flutter ABI (e.g. the universal APK output, which has no ABI filter and keeps its base
+     * version code).
+     *
+     * Each ABI is given a distinct multiplier so that the split APKs have distinct version codes; the
+     * Play Store rejects APK variants that share a version code. See
+     * [FlutterPluginConstants.ABI_VERSION].
+     */
+    @JvmStatic
+    @JvmName("versionCodeOverrideForAbi")
+    internal fun versionCodeOverrideForAbi(
+        abiIdentifier: String?,
+        baseVersionCode: Int
+    ): Int? {
+        val abiVersionCode: Int = FlutterPluginConstants.ABI_VERSION[abiIdentifier] ?: return null
+        return abiVersionCode * 1000 + baseVersionCode
+    }
+
+    /**
      * TODO: Remove this AGP hack. https://github.com/flutter/flutter/issues/109560
      *
      * In AGP 4.0, the Android linter task depends on the JAR tasks that generate `libapp.so`.

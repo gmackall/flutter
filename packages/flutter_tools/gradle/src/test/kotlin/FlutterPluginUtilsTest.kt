@@ -50,6 +50,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -350,6 +351,25 @@ class FlutterPluginUtilsTest {
     }
 
     // shouldProjectUseLocalEngine skipped as it is a wrapper for a single getter
+
+    // versionCodeOverrideForAbi
+    @Test
+    fun `versionCodeOverrideForAbi offsets the base version code per known abi`() {
+        // ABI multipliers: armeabi-v7a=1, arm64-v8a=2, x86_64=4 (see FlutterPluginConstants.ABI_VERSION).
+        assertEquals(1100, FlutterPluginUtils.versionCodeOverrideForAbi("armeabi-v7a", 100))
+        assertEquals(2100, FlutterPluginUtils.versionCodeOverrideForAbi("arm64-v8a", 100))
+        assertEquals(4100, FlutterPluginUtils.versionCodeOverrideForAbi("x86_64", 100))
+    }
+
+    @Test
+    fun `versionCodeOverrideForAbi returns null for the universal apk (no abi filter)`() {
+        assertNull(FlutterPluginUtils.versionCodeOverrideForAbi(null, 100))
+    }
+
+    @Test
+    fun `versionCodeOverrideForAbi returns null for an unknown abi`() {
+        assertNull(FlutterPluginUtils.versionCodeOverrideForAbi("riscv64", 100))
+    }
 
     // isProjectVerbose
     @Test

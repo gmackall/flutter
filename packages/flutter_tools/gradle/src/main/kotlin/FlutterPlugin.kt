@@ -7,9 +7,10 @@ package com.flutter.gradle
 import com.android.build.api.dsl.ApplicationExtension
 import com.android.build.api.dsl.BuildType
 import com.android.build.api.variant.AndroidComponentsExtension
+import com.android.build.api.variant.ApplicationVariant
+import com.android.build.api.variant.FilterConfiguration
 import com.android.build.gradle.AbstractAppExtension
 import com.android.build.gradle.LibraryExtension
-import com.android.build.gradle.api.ApkVariant
 import com.android.build.gradle.tasks.PackageAndroidArtifact
 import com.android.build.gradle.tasks.ProcessAndroidResources
 import com.flutter.gradle.FlutterPluginConstants.PLATFORM_ABI_LIST
@@ -344,6 +345,34 @@ class FlutterPlugin : Plugin<Project> {
             )
         }
 
+        // When building split-per-abi APKs, override each per-ABI APK's version code so that they
+        // are distinct - the Play Store rejects APK variants that share a version code. This uses
+        // AGP's variant API (`onVariants`) rather than the legacy `variant.outputs` /
+        // `versionCodeOverride` handling.
+        if (FlutterPluginUtils.shouldProjectSplitPerAbi(projectToAddTasksTo) &&
+            !FlutterPluginUtils.shouldForceVersionCodeIgnoringAbi(projectToAddTasksTo)
+        ) {
+            androidComponents.onVariants { variant ->
+                // Version code overrides only apply to APKs, i.e. application variants.
+                if (variant is ApplicationVariant) {
+                    variant.outputs.forEach { output ->
+                        val abiIdentifier: String? =
+                            output.filters
+                                .firstOrNull { it.filterType == FilterConfiguration.FilterType.ABI }
+                                ?.identifier
+                        val baseVersionCode: Int? = output.versionCode.orNull
+                        if (baseVersionCode != null) {
+                            val overriddenVersionCode: Int? =
+                                FlutterPluginUtils.versionCodeOverrideForAbi(abiIdentifier, baseVersionCode)
+                            if (overriddenVersionCode != null) {
+                                output.versionCode.set(overriddenVersionCode)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         val flutterPlugin = this
 
         if (FlutterPluginUtils.isFlutterAppProject(projectToAddTasksTo)) {
@@ -652,30 +681,6 @@ class FlutterPlugin : Plugin<Project> {
                 project.findProperty("deferred-components")?.toString()?.toBoolean() ?: false
             val validateDeferredComponentsValue: Boolean =
                 project.findProperty("validate-deferred-components")?.toString()?.toBoolean() ?: true
-
-            if (FlutterPluginUtils.shouldProjectSplitPerAbi(project)) {
-                variant.outputs.forEach { output ->
-                    // need to force this as the API does not return the right thing for our use.
-                    // TODO(gmackall): Migrate to AGPs variant api.
-                    //    https://github.com/flutter/flutter/issues/166550
-                    @Suppress("DEPRECATION")
-                    output as com.android.build.gradle.api.ApkVariantOutput
-                    val versionCodeIfPresent: Int? = if (variant is ApkVariant) variant.versionCode else null
-
-                    // TODO(gmackall): Migrate to AGPs variant api.
-                    //    https://github.com/flutter/flutter/issues/166550
-                    @Suppress("DEPRECATION")
-                    val filterIdentifier: String? =
-                        output.getFilter(com.android.build.VariantOutput.FilterType.ABI)
-                    val abiVersionCode: Int? = FlutterPluginConstants.ABI_VERSION[filterIdentifier]
-                    if (abiVersionCode != null && !FlutterPluginUtils.shouldForceVersionCodeIgnoringAbi(project)) {
-                        output.versionCodeOverride = abiVersionCode * 1000 + (
-                            versionCodeIfPresent
-                                ?: variant.mergedFlavor.versionCode as Int
-                        )
-                    }
-                }
-            }
 
             // Build an AAR when this property is defined.
             val isBuildingAar: Boolean = project.hasProperty("is-plugin")
