@@ -306,6 +306,38 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
   FML_DISALLOW_COPY_ASSIGN_AND_MOVE(ImageFilterEntry);
 };
 
+class StretchEffectEntry : public LayerStateStack::StateEntry {
+ public:
+  StretchEffectEntry(const DlRect& bounds,
+                     DlScalar stretch_x,
+                     DlScalar stretch_y,
+                     DlScalar interpolation_strength)
+      : bounds_(bounds),
+        stretch_x_(stretch_x),
+        stretch_y_(stretch_y),
+        interpolation_strength_(interpolation_strength) {}
+  ~StretchEffectEntry() override = default;
+
+  // This entry only exists to forward the stretch parameters to embedded
+  // platform views via |LayerStateStack::fill|. The visual stretch of
+  // Flutter-rendered content is applied separately as an image filter by
+  // the StretchEffectLayer, so there is nothing to apply to the delegate.
+  void apply(LayerStateStack* stack) const override {}
+
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    mutators_stack->PushStretchEffect(stretch_x_, stretch_y_,
+                                      interpolation_strength_, bounds_);
+  }
+
+ private:
+  const DlRect bounds_;
+  const DlScalar stretch_x_;
+  const DlScalar stretch_y_;
+  const DlScalar interpolation_strength_;
+
+  FML_DISALLOW_COPY_ASSIGN_AND_MOVE(StretchEffectEntry);
+};
+
 class ColorFilterEntry : public LayerStateStack::StateEntry {
  public:
   ColorFilterEntry(const DlRect& bounds,
@@ -567,6 +599,16 @@ void MutatorContext::applyBackdropFilter(
   layer_state_stack_->push_backdrop(bounds, filter, blend_mode, backdrop_id);
 }
 
+void MutatorContext::applyStretchEffect(const DlRect& bounds,
+                                        DlScalar stretch_x,
+                                        DlScalar stretch_y,
+                                        DlScalar interpolation_strength) {
+  if (stretch_x != 0 || stretch_y != 0) {
+    layer_state_stack_->push_stretch_effect(bounds, stretch_x, stretch_y,
+                                            interpolation_strength);
+  }
+}
+
 void MutatorContext::translate(SkScalar tx, SkScalar ty) {
   if (!(tx == 0 && ty == 0)) {
     layer_state_stack_->maybe_save_layer_for_transform(save_needed_);
@@ -702,6 +744,15 @@ void LayerStateStack::push_image_filter(
   maybe_save_layer(filter);
   state_stack_.emplace_back(
       std::make_unique<ImageFilterEntry>(bounds, filter, outstanding_));
+  apply_last_entry();
+}
+
+void LayerStateStack::push_stretch_effect(const DlRect& bounds,
+                                          DlScalar stretch_x,
+                                          DlScalar stretch_y,
+                                          DlScalar interpolation_strength) {
+  state_stack_.emplace_back(std::make_unique<StretchEffectEntry>(
+      bounds, stretch_x, stretch_y, interpolation_strength));
   apply_last_entry();
 }
 

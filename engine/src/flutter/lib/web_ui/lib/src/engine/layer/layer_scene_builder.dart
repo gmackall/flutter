@@ -182,6 +182,23 @@ class LayerSceneBuilder implements ui.SceneBuilder {
   }
 
   @override
+  StretchEffectEngineLayer pushStretchEffect(
+    ui.ImageFilter filter, {
+    required ui.Rect bounds,
+    double stretchStrengthX = 0.0,
+    double stretchStrengthY = 0.0,
+    double interpolationStrength = 0.0,
+    ui.Offset offset = ui.Offset.zero,
+    ui.StretchEffectEngineLayer? oldLayer,
+  }) {
+    // There are no embedded Android views on the web; the stretch is fully
+    // described by the image filter.
+    return pushLayer<StretchEffectEngineLayer>(
+      StretchEffectEngineLayer(filter as LayerImageFilter, offset),
+    );
+  }
+
+  @override
   OffsetEngineLayer pushOffset(double dx, double dy, {ui.EngineLayer? oldLayer}) {
     return pushLayer<OffsetEngineLayer>(OffsetEngineLayer(dx, dy));
   }

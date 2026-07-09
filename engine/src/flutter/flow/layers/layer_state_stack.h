@@ -200,6 +200,15 @@ class LayerStateStack {
                              DlBlendMode blend_mode,
                              std::optional<int64_t> backdrop_id);
 
+    // Records an Android overscroll stretch effect so that it can be
+    // forwarded to embedded platform views via |LayerStateStack::fill|.
+    // This entry has no effect on Flutter's own rendering; the visual
+    // stretch of Flutter content is applied separately as an image filter.
+    void applyStretchEffect(const DlRect& bounds,
+                            DlScalar stretch_x,
+                            DlScalar stretch_y,
+                            DlScalar interpolation_strength);
+
     void translate(DlScalar tx, DlScalar ty);
     void translate(const DlPoint& tp) { translate(tp.x, tp.y); }
     void transform(const DlMatrix& matrix);
@@ -328,6 +337,10 @@ class LayerStateStack {
                      const std::shared_ptr<DlImageFilter>& filter,
                      DlBlendMode blend_mode,
                      std::optional<int64_t> backdrop_id);
+  void push_stretch_effect(const DlRect& bounds,
+                           DlScalar stretch_x,
+                           DlScalar stretch_y,
+                           DlScalar interpolation_strength);
 
   void push_translate(DlScalar tx, DlScalar ty);
   void push_transform(const DlMatrix& matrix);
@@ -403,6 +416,7 @@ class LayerStateStack {
   friend class OpacityEntry;
   friend class ImageFilterEntry;
   friend class ColorFilterEntry;
+  friend class StretchEffectEntry;
   friend class TranslateEntry;
   friend class TransformMatrixEntry;
   friend class TransformM44Entry;

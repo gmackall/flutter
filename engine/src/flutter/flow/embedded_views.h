@@ -44,6 +44,7 @@ enum class MutatorType {
   kBackdropClipRRect,
   kBackdropClipRSuperellipse,
   kBackdropClipPath,
+  kStretchEffect,
 };
 
 // Represents an image filter mutation.
@@ -103,6 +104,39 @@ struct BackdropClipPath {
   }
 };
 
+// Represents an Android overscroll stretch effect mutation.
+//
+// The stretch remaps content non-linearly within `stretch_rect` (the bounds
+// of the stretched container, e.g. a scrollable's viewport) according to the
+// normalized overscroll vector (`stretch_x`, `stretch_y`). `stretch_rect` is
+// recorded in the coordinate space active at this mutator's position in the
+// stack, mirroring how clip mutators are recorded.
+//
+// The math must stay in sync with the fragment shader used by the framework
+// to stretch Flutter-rendered content
+// (packages/flutter/lib/src/widgets/shaders/stretch_effect.frag).
+struct StretchEffectMutation {
+  DlScalar stretch_x;
+  DlScalar stretch_y;
+  DlScalar interpolation_strength;
+  DlRect stretch_rect;
+
+  StretchEffectMutation(DlScalar x,
+                        DlScalar y,
+                        DlScalar interpolation,
+                        const DlRect& rect)
+      : stretch_x(x),
+        stretch_y(y),
+        interpolation_strength(interpolation),
+        stretch_rect(rect) {}
+
+  bool operator==(const StretchEffectMutation& other) const {
+    return stretch_x == other.stretch_x && stretch_y == other.stretch_y &&
+           interpolation_strength == other.interpolation_strength &&
+           stretch_rect == other.stretch_rect;
+  }
+};
+
 // Stores mutation information like clipping or kTransform.
 //
 // The `type` indicates the type of the mutation: kClipRect, kTransform and etc.
@@ -131,6 +165,7 @@ class Mutator {
       : data_(backdrop_rse) {}
   explicit Mutator(const BackdropClipPath& backdrop_path)
       : data_(backdrop_path) {}
+  explicit Mutator(const StretchEffectMutation& stretch) : data_(stretch) {}
 
   MutatorType GetType() const {
     return static_cast<MutatorType>(data_.index());
@@ -161,6 +196,9 @@ class Mutator {
   const BackdropClipPath& GetBackdropClipPath() const {
     return std::get<BackdropClipPath>(data_);
   }
+  const StretchEffectMutation& GetStretchEffectMutation() const {
+    return std::get<StretchEffectMutation>(data_);
+  }
   const uint8_t& GetAlpha() const { return std::get<uint8_t>(data_); }
   float GetAlphaFloat() const { return DlColor::toOpacity(GetAlpha()); }
 
@@ -180,6 +218,7 @@ class Mutator {
       case MutatorType::kOpacity:
       case MutatorType::kTransform:
       case MutatorType::kBackdropFilter:
+      case MutatorType::kStretchEffect:
         return false;
     }
   }
@@ -195,7 +234,8 @@ class Mutator {
                BackdropClipRect,
                BackdropClipRRect,
                BackdropClipRSuperellipse,
-               BackdropClipPath>
+               BackdropClipPath,
+               StretchEffectMutation>
       data_;
 };  // Mutator
 
@@ -221,6 +261,12 @@ class MutatorsStack {
   // `filter_rect` is in global coordinates.
   void PushBackdropFilter(const std::shared_ptr<DlImageFilter>& filter,
                           const DlRect& filter_rect);
+  // `stretch_rect` is in the coordinate space active at this position in the
+  // stack.
+  void PushStretchEffect(DlScalar stretch_x,
+                         DlScalar stretch_y,
+                         DlScalar interpolation_strength,
+                         const DlRect& stretch_rect);
   void PushPlatformViewClipRect(const DlRect& rect);
   void PushPlatformViewClipRRect(const DlRoundRect& rrect);
   void PushPlatformViewClipRSuperellipse(const DlRoundSuperellipse& rse);

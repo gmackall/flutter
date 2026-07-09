@@ -20,6 +20,7 @@
 #include "flutter/flow/layers/performance_overlay_layer.h"
 #include "flutter/flow/layers/platform_view_layer.h"
 #include "flutter/flow/layers/shader_mask_layer.h"
+#include "flutter/flow/layers/stretch_effect_layer.h"
 #include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/fml/build_config.h"
@@ -170,6 +171,33 @@ void SceneBuilder::pushImageFilter(Dart_Handle layer_handle,
   auto layer = std::make_shared<flutter::ImageFilterLayer>(
       image_filter->filter(DlTileMode::kDecal),
       DlPoint(SafeNarrow(dx), SafeNarrow(dy)));
+  PushLayer(layer);
+  EngineLayer::MakeRetained(layer_handle, layer);
+
+  if (old_layer && old_layer->Layer()) {
+    layer->AssignOldLayer(old_layer->Layer().get());
+  }
+}
+
+void SceneBuilder::pushStretchEffect(Dart_Handle layer_handle,
+                                     const ImageFilter* image_filter,
+                                     double dx,
+                                     double dy,
+                                     double bounds_left,
+                                     double bounds_top,
+                                     double bounds_right,
+                                     double bounds_bottom,
+                                     double stretch_strength_x,
+                                     double stretch_strength_y,
+                                     double interpolation_strength,
+                                     const fml::RefPtr<EngineLayer>& old_layer) {
+  auto layer = std::make_shared<flutter::StretchEffectLayer>(
+      image_filter->filter(DlTileMode::kDecal),
+      DlPoint(SafeNarrow(dx), SafeNarrow(dy)),
+      DlRect::MakeLTRB(SafeNarrow(bounds_left), SafeNarrow(bounds_top),
+                       SafeNarrow(bounds_right), SafeNarrow(bounds_bottom)),
+      SafeNarrow(stretch_strength_x), SafeNarrow(stretch_strength_y),
+      SafeNarrow(interpolation_strength));
   PushLayer(layer);
   EngineLayer::MakeRetained(layer_handle, layer);
 

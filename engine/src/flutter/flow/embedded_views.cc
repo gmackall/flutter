@@ -96,6 +96,16 @@ void MutatorsStack::PushBackdropFilter(
   vector_.push_back(element);
 }
 
+void MutatorsStack::PushStretchEffect(DlScalar stretch_x,
+                                      DlScalar stretch_y,
+                                      DlScalar interpolation_strength,
+                                      const DlRect& stretch_rect) {
+  std::shared_ptr<Mutator> element = std::make_shared<Mutator>(
+      StretchEffectMutation(stretch_x, stretch_y, interpolation_strength,
+                            stretch_rect));
+  vector_.push_back(element);
+}
+
 void MutatorsStack::PushPlatformViewClipRect(const DlRect& rect) {
   std::shared_ptr<Mutator> element =
       std::make_shared<Mutator>(BackdropClipRect(rect));

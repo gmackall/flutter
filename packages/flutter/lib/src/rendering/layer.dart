@@ -2030,6 +2030,134 @@ class ImageFilterLayer extends OffsetLayer {
   }
 }
 
+/// A composited layer that applies the Android overscroll stretch effect to
+/// its children.
+///
+/// Flutter-rendered children are filtered with [imageFilter] (the framework's
+/// port of the Android stretch overscroll fragment shader), exactly like an
+/// [ImageFilterLayer]. In addition, the stretch parameters are forwarded to
+/// any platform view embedded in the subtree so that the platform-side
+/// embedding can apply an equivalent stretch to the native view.
+class StretchEffectLayer extends OffsetLayer {
+  /// Creates a layer that applies the Android overscroll stretch effect to
+  /// its children.
+  ///
+  /// The [imageFilter] and [bounds] properties must be non-null before the
+  /// compositing phase of the pipeline.
+  StretchEffectLayer({
+    ui.ImageFilter? imageFilter,
+    Rect? bounds,
+    double stretchStrengthX = 0.0,
+    double stretchStrengthY = 0.0,
+    double interpolationStrength = 0.0,
+    super.offset,
+  }) : _imageFilter = imageFilter,
+       _bounds = bounds,
+       _stretchStrengthX = stretchStrengthX,
+       _stretchStrengthY = stretchStrengthY,
+       _interpolationStrength = interpolationStrength;
+
+  /// The stretch image filter to apply to children.
+  ///
+  /// The scene must be explicitly recomposited after this property is changed
+  /// (as described at [Layer]).
+  ui.ImageFilter? get imageFilter => _imageFilter;
+  ui.ImageFilter? _imageFilter;
+  set imageFilter(ui.ImageFilter? value) {
+    assert(value != null);
+    if (value != _imageFilter) {
+      _imageFilter = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  /// The bounds of the stretched container (typically the scrollable's
+  /// viewport) in this layer's coordinate space after [offset] is applied.
+  ///
+  /// The stretch curve is normalized over these bounds; an embedded platform
+  /// view needs them to evaluate its own span of the curve.
+  ///
+  /// The scene must be explicitly recomposited after this property is changed
+  /// (as described at [Layer]).
+  Rect? get bounds => _bounds;
+  Rect? _bounds;
+  set bounds(Rect? value) {
+    assert(value != null);
+    if (value != _bounds) {
+      _bounds = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  /// The normalized overscroll amount in the horizontal direction, between
+  /// -1.0 and 1.0.
+  ///
+  /// The scene must be explicitly recomposited after this property is changed
+  /// (as described at [Layer]).
+  double get stretchStrengthX => _stretchStrengthX;
+  double _stretchStrengthX;
+  set stretchStrengthX(double value) {
+    if (value != _stretchStrengthX) {
+      _stretchStrengthX = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  /// The normalized overscroll amount in the vertical direction, between
+  /// -1.0 and 1.0.
+  ///
+  /// The scene must be explicitly recomposited after this property is changed
+  /// (as described at [Layer]).
+  double get stretchStrengthY => _stretchStrengthY;
+  double _stretchStrengthY;
+  set stretchStrengthY(double value) {
+    if (value != _stretchStrengthY) {
+      _stretchStrengthY = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  /// The intensity of the position-based interpolation of the stretch curve.
+  ///
+  /// The scene must be explicitly recomposited after this property is changed
+  /// (as described at [Layer]).
+  double get interpolationStrength => _interpolationStrength;
+  double _interpolationStrength;
+  set interpolationStrength(double value) {
+    if (value != _interpolationStrength) {
+      _interpolationStrength = value;
+      markNeedsAddToScene();
+    }
+  }
+
+  @override
+  void addToScene(ui.SceneBuilder builder) {
+    assert(imageFilter != null);
+    assert(bounds != null);
+    engineLayer = builder.pushStretchEffect(
+      imageFilter!,
+      bounds: bounds!,
+      stretchStrengthX: stretchStrengthX,
+      stretchStrengthY: stretchStrengthY,
+      interpolationStrength: interpolationStrength,
+      offset: offset,
+      oldLayer: _engineLayer as ui.StretchEffectEngineLayer?,
+    );
+    addChildrenToScene(builder);
+    builder.pop();
+  }
+
+  @override
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(DiagnosticsProperty<ui.ImageFilter>('imageFilter', imageFilter));
+    properties.add(DiagnosticsProperty<Rect>('bounds', bounds));
+    properties.add(DoubleProperty('stretchStrengthX', stretchStrengthX));
+    properties.add(DoubleProperty('stretchStrengthY', stretchStrengthY));
+    properties.add(DoubleProperty('interpolationStrength', interpolationStrength));
+  }
+}
+
 /// A composited layer that applies a given transformation matrix to its
 /// children.
 ///

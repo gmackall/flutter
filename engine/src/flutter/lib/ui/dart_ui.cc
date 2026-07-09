@@ -308,6 +308,7 @@ typedef CanvasPath Path;
   V(SceneBuilder, pushOffset)                    \
   V(SceneBuilder, pushOpacity)                   \
   V(SceneBuilder, pushShaderMask)                \
+  V(SceneBuilder, pushStretchEffect)             \
   V(SceneBuilder, pushTransformHandle)           \
   V(Scene, dispose)                              \
   V(Scene, toImage)                              \

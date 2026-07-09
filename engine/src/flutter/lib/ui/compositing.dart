@@ -219,6 +219,15 @@ class ImageFilterEngineLayer extends _EngineLayerWrapper {
   ImageFilterEngineLayer._(super.nativeLayer) : super._();
 }
 
+/// An opaque handle to a stretch effect engine layer.
+///
+/// Instances of this class are created by [SceneBuilder.pushStretchEffect].
+///
+/// {@macro dart.ui.sceneBuilder.oldLayerCompatibility}
+class StretchEffectEngineLayer extends _EngineLayerWrapper {
+  StretchEffectEngineLayer._(super.nativeLayer) : super._();
+}
+
 /// An opaque handle to a backdrop filter engine layer.
 ///
 /// Instances of this class are created by [SceneBuilder.pushBackdropFilter].
@@ -410,6 +419,37 @@ abstract class SceneBuilder {
     ImageFilter filter, {
     Offset offset = Offset.zero,
     ImageFilterEngineLayer? oldLayer,
+  });
+
+  /// Pushes an Android overscroll stretch effect onto the operation stack.
+  ///
+  /// The children's rasterization is filtered with the given [filter] (the
+  /// framework's port of the Android stretch overscroll fragment shader)
+  /// before compositing into the scene, exactly like [pushImageFilter].
+  ///
+  /// In addition, the stretch parameters are recorded for any platform view
+  /// embedded in the subtree so that the platform-side embedding can apply
+  /// an equivalent stretch to the native view. [bounds] is the rect of the
+  /// stretched container (typically the scrollable's viewport) in this
+  /// layer's coordinate space after [offset] is applied; the stretch curve
+  /// is normalized over these bounds. [stretchStrengthX] and
+  /// [stretchStrengthY] are the normalized overscroll amounts in the range
+  /// -1.0 to 1.0, and [interpolationStrength] is the intensity of the
+  /// position-based interpolation of the stretch curve.
+  ///
+  /// {@macro dart.ui.sceneBuilder.oldLayer}
+  ///
+  /// {@macro dart.ui.sceneBuilder.oldLayerVsRetained}
+  ///
+  /// See [pop] for details about the operation stack.
+  StretchEffectEngineLayer pushStretchEffect(
+    ImageFilter filter, {
+    required Rect bounds,
+    double stretchStrengthX = 0.0,
+    double stretchStrengthY = 0.0,
+    double interpolationStrength = 0.0,
+    Offset offset = Offset.zero,
+    StretchEffectEngineLayer? oldLayer,
   });
 
   /// Pushes a backdrop filter operation onto the operation stack.
@@ -864,6 +904,70 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     _ImageFilter filter,
     double dx,
     double dy,
+    EngineLayer? oldLayer,
+  );
+
+  @override
+  StretchEffectEngineLayer pushStretchEffect(
+    ImageFilter filter, {
+    required Rect bounds,
+    double stretchStrengthX = 0.0,
+    double stretchStrengthY = 0.0,
+    double interpolationStrength = 0.0,
+    Offset offset = Offset.zero,
+    StretchEffectEngineLayer? oldLayer,
+  }) {
+    assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushStretchEffect'));
+    final _ImageFilter nativeFilter = filter._toNativeImageFilter();
+    final EngineLayer engineLayer = _NativeEngineLayer._();
+    _pushStretchEffect(
+      engineLayer,
+      nativeFilter,
+      offset.dx,
+      offset.dy,
+      bounds.left,
+      bounds.top,
+      bounds.right,
+      bounds.bottom,
+      stretchStrengthX,
+      stretchStrengthY,
+      interpolationStrength,
+      oldLayer?._nativeLayer,
+    );
+    final layer = StretchEffectEngineLayer._(engineLayer);
+    assert(_debugPushLayer(layer));
+    return layer;
+  }
+
+  @Native<
+    Void Function(
+      Pointer<Void>,
+      Handle,
+      Pointer<Void>,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Handle,
+    )
+  >(symbol: 'SceneBuilder::pushStretchEffect')
+  external void _pushStretchEffect(
+    EngineLayer outEngineLayer,
+    _ImageFilter filter,
+    double dx,
+    double dy,
+    double boundsLeft,
+    double boundsTop,
+    double boundsRight,
+    double boundsBottom,
+    double stretchStrengthX,
+    double stretchStrengthY,
+    double interpolationStrength,
     EngineLayer? oldLayer,
   );
 

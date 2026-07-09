@@ -194,6 +194,16 @@ class ImageFilterEngineLayer extends ContainerLayer implements ui.ImageFilterEng
   // https://github.com/flutter/flutter/issues/82832
 }
 
+/// A layer that applies the Android overscroll stretch effect to its children.
+///
+/// There are no embedded Android views on the web, so this behaves identically
+/// to an [ImageFilterEngineLayer]: the stretch is fully described by the
+/// image filter and the remaining stretch parameters are ignored.
+class StretchEffectEngineLayer extends ImageFilterEngineLayer
+    implements ui.StretchEffectEngineLayer {
+  StretchEffectEngineLayer(super.filter, super.offset);
+}
+
 class ShaderMaskEngineLayer extends ContainerLayer implements ui.ShaderMaskEngineLayer {
   ShaderMaskEngineLayer(this.shader, this.maskRect, this.blendMode, this.filterQuality);
 

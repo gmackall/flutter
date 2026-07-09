@@ -31,7 +31,41 @@ public class FlutterMutatorsStack {
     CLIP_RRECT,
     CLIP_PATH,
     TRANSFORM,
-    OPACITY
+    OPACITY,
+    STRETCH_EFFECT
+  }
+
+  /**
+   * The Android overscroll stretch effect to apply to a platform view.
+   *
+   * <p>The stretch remaps content non-linearly within {@code rect} (the bounds of the stretched
+   * container, e.g. a scrollable's viewport) according to the normalized overscroll amounts. The
+   * math must stay in sync with the fragment shader the Flutter framework uses to stretch
+   * Flutter-rendered content (packages/flutter/lib/src/widgets/shaders/stretch_effect.frag).
+   */
+  public static class FlutterStretchEffect {
+    /** Normalized overscroll amount in the horizontal direction, between -1 and 1. */
+    public final float stretchX;
+
+    /** Normalized overscroll amount in the vertical direction, between -1 and 1. */
+    public final float stretchY;
+
+    /** The intensity of the position-based interpolation of the stretch curve. */
+    public final float interpolationStrength;
+
+    /**
+     * The bounds of the stretched container, in the same coordinate space as the final clipping
+     * paths (i.e. transformed by the matrix accumulated up to this mutator's stack position).
+     */
+    @NonNull public final RectF rect;
+
+    public FlutterStretchEffect(
+        float stretchX, float stretchY, float interpolationStrength, @NonNull RectF rect) {
+      this.stretchX = stretchX;
+      this.stretchY = stretchY;
+      this.interpolationStrength = interpolationStrength;
+      this.rect = rect;
+    }
   }
 
   /**
@@ -155,6 +189,7 @@ public class FlutterMutatorsStack {
   private List<Path> finalClippingPaths;
   private Matrix finalMatrix;
   private float finalOpacity;
+  @Nullable private FlutterStretchEffect finalStretchEffect;
 
   /** Initialize the mutator stack. */
   public FlutterMutatorsStack() {
@@ -162,6 +197,7 @@ public class FlutterMutatorsStack {
     finalMatrix = new Matrix();
     finalClippingPaths = new ArrayList<Path>();
     finalOpacity = 1.f;
+    finalStretchEffect = null;
   }
 
   /**
@@ -233,6 +269,34 @@ public class FlutterMutatorsStack {
   }
 
   /**
+   * Push a stretch effect to the stack.
+   *
+   * <p>The container rect is transformed with the matrix accumulated up to this stack position,
+   * matching how clipping paths are recorded. If multiple stretch effects are pushed (nested
+   * stretched scrollables), the innermost one wins.
+   *
+   * @param stretchX normalized overscroll amount in the horizontal direction, between -1 and 1.
+   * @param stretchY normalized overscroll amount in the vertical direction, between -1 and 1.
+   * @param interpolationStrength the intensity of the position-based interpolation.
+   * @param left left of the stretched container rect.
+   * @param top top of the stretched container rect.
+   * @param right right of the stretched container rect.
+   * @param bottom bottom of the stretched container rect.
+   */
+  public void pushStretchEffect(
+      float stretchX,
+      float stretchY,
+      float interpolationStrength,
+      float left,
+      float top,
+      float right,
+      float bottom) {
+    RectF rect = new RectF(left, top, right, bottom);
+    finalMatrix.mapRect(rect);
+    finalStretchEffect = new FlutterStretchEffect(stretchX, stretchY, interpolationStrength, rect);
+  }
+
+  /**
    * Get a list of all the raw mutators. The 0 index of the returned list is the top of the stack.
    */
   public List<FlutterMutator> getMutators() {
@@ -266,5 +330,15 @@ public class FlutterMutatorsStack {
    */
   public float getFinalOpacity() {
     return finalOpacity;
+  }
+
+  /**
+   * Returns the final stretch effect to apply to the view, or null if no stretch effect is
+   * active. The rect of the returned stretch effect is in the same coordinate space as the final
+   * clipping paths.
+   */
+  @Nullable
+  public FlutterStretchEffect getFinalStretchEffect() {
+    return finalStretchEffect;
   }
 }

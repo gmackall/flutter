@@ -736,6 +736,9 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
         // TODO(https://github.com/flutter/flutter/issues/179127)
         break;
       }
+      case flutter::MutatorType::kStretchEffect:
+        // The Android overscroll stretch effect does not apply on iOS.
+        break;
     }
     ++iter;
   }

@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+/// @docImport 'image_filter.dart';
+library;
+
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -9,7 +12,6 @@ import 'package:flutter/rendering.dart';
 
 import 'basic.dart';
 import 'framework.dart';
-import 'image_filter.dart';
 
 /// A widget that applies a stretching visual effect to its child.
 ///
@@ -199,9 +201,19 @@ class _StretchOverscrollEffectState extends State<_StretchOverscrollEffect> {
       imageFilter = _emptyFilter;
     }
 
-    return ImageFiltered(
+    // While the fragment program is still loading, Flutter content is not
+    // stretched (the filter is a no-op), so platform views must not be
+    // stretched either or the two would visibly disagree.
+    final double effectiveStrength = _StretchEffectShader._initialized
+        ? widget.stretchStrength
+        : 0.0;
+
+    return _StretchEffectFiltered(
       imageFilter: imageFilter,
       enabled: isShaderNeeded,
+      stretchStrengthX: widget.axis == Axis.horizontal ? effectiveStrength : 0.0,
+      stretchStrengthY: widget.axis == Axis.vertical ? effectiveStrength : 0.0,
+      interpolationStrength: interpolationStrength,
       // A nearly-transparent pixels is used to ensure the shader gets applied,
       // even when the child is visually transparent or has no paint operations.
       child: CustomPaint(
@@ -209,6 +221,137 @@ class _StretchOverscrollEffectState extends State<_StretchOverscrollEffect> {
         child: widget.child,
       ),
     );
+  }
+}
+
+/// Applies the stretch [imageFilter] to its child, like [ImageFiltered], but
+/// through a [StretchEffectLayer] so that the stretch parameters are also
+/// forwarded to any platform view embedded in the subtree.
+///
+/// On Android, the embedding uses those parameters to apply an equivalent
+/// stretch to the native view (which is not covered by the image filter,
+/// since its content is not part of Flutter's rasterization in Hybrid
+/// Composition modes).
+class _StretchEffectFiltered extends SingleChildRenderObjectWidget {
+  const _StretchEffectFiltered({
+    required this.imageFilter,
+    required this.enabled,
+    required this.stretchStrengthX,
+    required this.stretchStrengthY,
+    required this.interpolationStrength,
+    super.child,
+  });
+
+  /// The stretch image filter to apply to the child of this widget.
+  final ui.ImageFilter imageFilter;
+
+  /// Whether or not to apply the stretch effect to the child of this widget.
+  final bool enabled;
+
+  /// The normalized overscroll amount in the horizontal direction.
+  final double stretchStrengthX;
+
+  /// The normalized overscroll amount in the vertical direction.
+  final double stretchStrengthY;
+
+  /// The intensity of the position-based interpolation of the stretch curve.
+  final double interpolationStrength;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) => _RenderStretchEffectFiltered(
+    imageFilter,
+    enabled,
+    stretchStrengthX,
+    stretchStrengthY,
+    interpolationStrength,
+  );
+
+  @override
+  void updateRenderObject(BuildContext context, RenderObject renderObject) {
+    (renderObject as _RenderStretchEffectFiltered)
+      ..enabled = enabled
+      ..imageFilter = imageFilter
+      ..stretchStrengthX = stretchStrengthX
+      ..stretchStrengthY = stretchStrengthY
+      ..interpolationStrength = interpolationStrength;
+  }
+}
+
+class _RenderStretchEffectFiltered extends RenderProxyBox {
+  _RenderStretchEffectFiltered(
+    this._imageFilter,
+    this._enabled,
+    this._stretchStrengthX,
+    this._stretchStrengthY,
+    this._interpolationStrength,
+  );
+
+  bool get enabled => _enabled;
+  bool _enabled;
+  set enabled(bool value) {
+    if (enabled == value) {
+      return;
+    }
+    final bool wasRepaintBoundary = isRepaintBoundary;
+    _enabled = value;
+    if (isRepaintBoundary != wasRepaintBoundary) {
+      markNeedsCompositingBitsUpdate();
+    }
+    markNeedsPaint();
+  }
+
+  ui.ImageFilter get imageFilter => _imageFilter;
+  ui.ImageFilter _imageFilter;
+  set imageFilter(ui.ImageFilter value) {
+    if (value != _imageFilter) {
+      _imageFilter = value;
+      markNeedsCompositedLayerUpdate();
+    }
+  }
+
+  double get stretchStrengthX => _stretchStrengthX;
+  double _stretchStrengthX;
+  set stretchStrengthX(double value) {
+    if (value != _stretchStrengthX) {
+      _stretchStrengthX = value;
+      markNeedsCompositedLayerUpdate();
+    }
+  }
+
+  double get stretchStrengthY => _stretchStrengthY;
+  double _stretchStrengthY;
+  set stretchStrengthY(double value) {
+    if (value != _stretchStrengthY) {
+      _stretchStrengthY = value;
+      markNeedsCompositedLayerUpdate();
+    }
+  }
+
+  double get interpolationStrength => _interpolationStrength;
+  double _interpolationStrength;
+  set interpolationStrength(double value) {
+    if (value != _interpolationStrength) {
+      _interpolationStrength = value;
+      markNeedsCompositedLayerUpdate();
+    }
+  }
+
+  @override
+  bool get alwaysNeedsCompositing => child != null && enabled;
+
+  @override
+  bool get isRepaintBoundary => alwaysNeedsCompositing;
+
+  @override
+  OffsetLayer updateCompositedLayer({required covariant StretchEffectLayer? oldLayer}) {
+    final StretchEffectLayer layer = oldLayer ?? StretchEffectLayer();
+    layer
+      ..imageFilter = imageFilter
+      ..bounds = Offset.zero & size
+      ..stretchStrengthX = stretchStrengthX
+      ..stretchStrengthY = stretchStrengthY
+      ..interpolationStrength = interpolationStrength;
+    return layer;
   }
 }
 
@@ -242,12 +385,11 @@ class _StretchEffectShader {
 
   static void initializeShader() {
     if (!_initCalled) {
-      ui.FragmentProgram.fromAsset('shaders/stretch_effect.frag').then((
-        ui.FragmentProgram program,
-      ) {
-        _program = program;
-        _initialized = true;
-      });
+      ui.FragmentProgram.fromAsset('shaders/stretch_effect.frag')
+          .then((ui.FragmentProgram program) {
+            _program = program;
+            _initialized = true;
+          });
       _initCalled = true;
     }
   }

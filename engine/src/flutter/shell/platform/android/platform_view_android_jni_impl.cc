@@ -165,6 +165,7 @@ static jmethodID g_mutators_stack_push_cliprect_method = nullptr;
 static jmethodID g_mutators_stack_push_cliprrect_method = nullptr;
 static jmethodID g_mutators_stack_push_opacity_method = nullptr;
 static jmethodID g_mutators_stack_push_clippath_method = nullptr;
+static jmethodID g_mutators_stack_push_stretch_effect_method = nullptr;
 
 // android.graphics.Path class, methods, and nested classes.
 static fml::jni::ScopedJavaGlobalRef<jclass>* path_class = nullptr;
@@ -1116,6 +1117,14 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
+  g_mutators_stack_push_stretch_effect_method = env->GetMethodID(
+      g_mutators_stack_class->obj(), "pushStretchEffect", "(FFFFFFF)V");
+  if (g_mutators_stack_push_stretch_effect_method == nullptr) {
+    FML_LOG(ERROR)
+        << "Could not locate FlutterMutatorsStack.pushStretchEffect method";
+    return false;
+  }
+
   g_java_weak_reference_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
       env, env->FindClass("java/lang/ref/WeakReference"));
   if (g_java_weak_reference_class->is_null()) {
@@ -1821,6 +1830,21 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
                             radiisArray.obj());
         break;
       }
+      case MutatorType::kStretchEffect: {
+        const StretchEffectMutation& stretch =
+            (*iter)->GetStretchEffectMutation();
+        const DlRect& rect = stretch.stretch_rect;
+        env->CallVoidMethod(mutatorsStack,
+                            g_mutators_stack_push_stretch_effect_method,
+                            static_cast<jfloat>(stretch.stretch_x),
+                            static_cast<jfloat>(stretch.stretch_y),
+                            static_cast<jfloat>(stretch.interpolation_strength),
+                            static_cast<jfloat>(rect.GetLeft()),
+                            static_cast<jfloat>(rect.GetTop()),
+                            static_cast<jfloat>(rect.GetRight()),
+                            static_cast<jfloat>(rect.GetBottom()));
+        break;
+      }
       // TODO(cyanglaz): Implement other mutators.
       // https://github.com/flutter/flutter/issues/58426
       case MutatorType::kClipPath:
@@ -2334,6 +2358,21 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_clippath_method,
                             receiver.TakePath());
+        break;
+      }
+      case MutatorType::kStretchEffect: {
+        const StretchEffectMutation& stretch =
+            (*iter)->GetStretchEffectMutation();
+        const DlRect& rect = stretch.stretch_rect;
+        env->CallVoidMethod(mutatorsStack,
+                            g_mutators_stack_push_stretch_effect_method,
+                            static_cast<jfloat>(stretch.stretch_x),
+                            static_cast<jfloat>(stretch.stretch_y),
+                            static_cast<jfloat>(stretch.interpolation_strength),
+                            static_cast<jfloat>(rect.GetLeft()),
+                            static_cast<jfloat>(rect.GetTop()),
+                            static_cast<jfloat>(rect.GetRight()),
+                            static_cast<jfloat>(rect.GetBottom()));
         break;
       }
       // TODO(cyanglaz): Implement other mutators.

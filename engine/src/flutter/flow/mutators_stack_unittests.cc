@@ -160,6 +160,19 @@ TEST(MutatorsStack, PushBackdropFilter) {
   ASSERT_EQ(i, num_of_mutators);
 }
 
+TEST(MutatorsStack, PushStretchEffect) {
+  MutatorsStack stack;
+  auto rect = DlRect::MakeXYWH(0, 0, 100, 200);
+  stack.PushStretchEffect(0.0, 0.5, 0.7, rect);
+  auto iter = stack.Bottom();
+  ASSERT_TRUE(iter->get()->GetType() == MutatorType::kStretchEffect);
+  const StretchEffectMutation& stretch = iter->get()->GetStretchEffectMutation();
+  ASSERT_EQ(stretch.stretch_x, 0.0);
+  ASSERT_EQ(stretch.stretch_y, 0.5);
+  ASSERT_EQ(stretch.interpolation_strength, 0.7f);
+  ASSERT_TRUE(stretch.stretch_rect == rect);
+}
+
 TEST(MutatorsStack, Pop) {
   MutatorsStack stack;
   DlMatrix matrix;
