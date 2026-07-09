@@ -27,7 +27,8 @@ public class FlutterShellArgsTest {
     intent.putExtra("trace-skia-allowlist", "skia.a,skia.b");
 
     // Execute the behavior under test.
-    FlutterShellArgs args = FlutterShellArgs.fromIntent(intent);
+    // Execute the behavior under test.
+    FlutterShellArgs args = io.flutter.embedding.engine.launchargs.FlutterLaunchArgsSupport.toFlutterShellArgs(intent);
     HashSet<String> argValues = new HashSet<String>(Arrays.asList(args.toArray()));
 
     // Verify results.
@@ -40,13 +41,13 @@ public class FlutterShellArgsTest {
   @SuppressWarnings("deprecation")
   public void itPropagatesEnableFlutterGpuFromIntent() {
     Intent intent = new Intent();
-    intent.putExtra(FlutterShellArgs.ARG_KEY_ENABLE_FLUTTER_GPU, true);
+    intent.putExtra("enable-flutter-gpu", true);
 
-    FlutterShellArgs args = FlutterShellArgs.fromIntent(intent);
+    FlutterShellArgs args = io.flutter.embedding.engine.launchargs.FlutterLaunchArgsSupport.toFlutterShellArgs(intent);
     HashSet<String> argValues = new HashSet<String>(Arrays.asList(args.toArray()));
 
     assertEquals(1, argValues.size());
-    assertTrue(argValues.contains(FlutterShellArgs.ARG_ENABLE_FLUTTER_GPU));
+    assertTrue(argValues.contains("--enable-flutter-gpu"));
   }
 
   @Test
@@ -54,7 +55,7 @@ public class FlutterShellArgsTest {
   public void itDoesNotPropagateEnableFlutterGpuWhenAbsent() {
     Intent intent = new Intent();
 
-    FlutterShellArgs args = FlutterShellArgs.fromIntent(intent);
+    FlutterShellArgs args = io.flutter.embedding.engine.launchargs.FlutterLaunchArgsSupport.toFlutterShellArgs(intent);
     HashSet<String> argValues = new HashSet<String>(Arrays.asList(args.toArray()));
 
     assertEquals(0, argValues.size());

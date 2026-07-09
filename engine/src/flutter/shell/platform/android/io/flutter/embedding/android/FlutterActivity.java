@@ -1043,7 +1043,7 @@ public class FlutterActivity extends Activity
   @NonNull
   @Override
   public FlutterShellArgs getFlutterShellArgs() {
-    return FlutterShellArgs.fromIntent(getIntent());
+    return io.flutter.embedding.engine.launchargs.FlutterLaunchArgsSupport.toFlutterShellArgs(getIntent());
   }
 
   /**

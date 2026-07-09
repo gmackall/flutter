@@ -591,7 +591,9 @@ public class FlutterFragmentActivity extends FragmentActivity
           .dartEntrypointArgs(getDartEntrypointArgs())
           .initialRoute(getInitialRoute())
           .appBundlePath(getAppBundlePath())
-          .flutterShellArgs(FlutterShellArgs.fromIntent(getIntent()))
+          .flutterShellArgs(
+              io.flutter.embedding.engine.launchargs.FlutterLaunchArgsSupport.toFlutterShellArgs(
+                  getIntent()))
           .handleDeeplinking(shouldHandleDeeplinking())
           .renderMode(renderMode)
           .transparencyMode(transparencyMode)
