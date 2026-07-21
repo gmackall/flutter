@@ -15,6 +15,7 @@ import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.view.Gravity;
 import android.view.Surface;
 import android.view.View;
 import android.view.View.OnFocusChangeListener;
@@ -46,6 +47,66 @@ public class PlatformViewWrapperTest {
 
     // Verify.
     verify(wrapper, times(1)).invalidate();
+  }
+
+  @Test
+  public void updateOffset_syncsMarginsAndGravityWithoutRequestingLayout() {
+    final PlatformViewWrapper wrapper = spy(new PlatformViewWrapper(ctx));
+    wrapper.setLayoutParams(new FrameLayout.LayoutParams(100, 100));
+    // setLayoutParams() above calls requestLayout(); forget that so the assertion below only sees
+    // what updateOffset() does.
+    clearInvocations(wrapper);
+
+    wrapper.updateOffset(10, 20);
+
+    final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) wrapper.getLayoutParams();
+    assertEquals(10, params.leftMargin);
+    assertEquals(20, params.topMargin);
+    assertEquals(Gravity.LEFT | Gravity.TOP, params.gravity);
+    // The whole point of updateOffset() is to reposition *without* requestLayout() (which would
+    // force a texture re-render). It must never call it.
+    verify(wrapper, never()).requestLayout();
+  }
+
+  @Test
+  public void updateOffset_skipsDirectLayoutBeforeMeasured() {
+    // A wrapper that has not been measured/laid out yet has no valid dimensions.
+    final PlatformViewWrapper wrapper = spy(new PlatformViewWrapper(ctx));
+    wrapper.setLayoutParams(new FrameLayout.LayoutParams(100, 100));
+    clearInvocations(wrapper);
+
+    wrapper.updateOffset(10, 20);
+
+    // Margins are still synced so a later full layout pass will position the wrapper correctly...
+    final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) wrapper.getLayoutParams();
+    assertEquals(10, params.leftMargin);
+    assertEquals(20, params.topMargin);
+    // ...but the direct layout() is skipped, because getWidth()/getHeight() are still 0 and laying
+    // out to a zero size would collapse the view.
+    verify(wrapper, never()).layout(anyInt(), anyInt(), anyInt(), anyInt());
+  }
+
+  @Test
+  public void updateOffset_repositionsInPlaceWhenMeasured() {
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    wrapper.setLayoutParams(new FrameLayout.LayoutParams(100, 100));
+    // Give the wrapper a real size and a clean (non-pending) layout state, as it would have after a
+    // normal layout pass. layout() clears the pending-layout flag set by setLayoutParams() above.
+    wrapper.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    wrapper.layout(0, 0, 100, 100);
+    assertFalse(wrapper.isLayoutRequested());
+
+    wrapper.updateOffset(10, 20);
+
+    // Repositioned in place, size preserved.
+    assertEquals(10, wrapper.getLeft());
+    assertEquals(20, wrapper.getTop());
+    assertEquals(110, wrapper.getRight());
+    assertEquals(120, wrapper.getBottom());
+    // Still no pending layout: the reposition did not schedule a new traversal.
+    assertFalse(wrapper.isLayoutRequested());
   }
 
   @Test

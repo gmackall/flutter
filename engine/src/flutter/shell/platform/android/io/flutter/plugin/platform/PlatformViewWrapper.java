@@ -112,6 +112,9 @@ public class PlatformViewWrapper extends FrameLayout {
     this.left = left;
     this.top = top;
 
+    // Keep the LayoutParams margins in sync so that any *full* layout pass triggered elsewhere (a
+    // resize, a rotation/config change, or a relayout requested by an ancestor) still positions the
+    // wrapper correctly from its margins.
     final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) getLayoutParams();
     if (params != null) {
       params.leftMargin = left;
@@ -119,9 +122,25 @@ public class PlatformViewWrapper extends FrameLayout {
       params.gravity = Gravity.LEFT | Gravity.TOP;
     }
 
-    // Reposition the view directly, bypassing requestLayout() and the measure/layout traversal it
-    // schedules (along with the texture re-render that traversal causes).
-    layout(left, top, left + getWidth(), top + getHeight());
+    // Reposition the wrapper directly rather than via setLayoutParams()/requestLayout().
+    // requestLayout() sets PFLAG_INVALIDATED on the wrapper, forcing its render node display list to
+    // be re-recorded on the next draw -- that runs PlatformViewWrapper.draw(), which re-renders the
+    // embedded view into its texture. A direct layout() that changes only the position (width and
+    // height unchanged) goes through setFrame() -> invalidate(false), which does NOT set
+    // PFLAG_INVALIDATED: the display list is reused and the texture is not re-rendered. That is the
+    // win during a scroll, where only the position changes every frame.
+    //
+    // Only lay out directly when it is safe, matching the guard proposed in flutter/flutter#183626:
+    //   * If a layout is already pending, defer to it -- it will position the wrapper from the
+    //     margins synced above, and laying out here would be redundant and could race that pass.
+    //   * If the wrapper has not been measured yet, getWidth()/getHeight() are stale (often 0);
+    //     laying out would collapse it and, because the size would change, defeat the
+    //     invalidate(false) fast path. The pending initial layout positions it instead.
+    final int width = getWidth();
+    final int height = getHeight();
+    if (!isLayoutRequested() && width > 0 && height > 0) {
+      layout(left, top, left + width, top + height);
+    }
   }
 
   public void resizeRenderTarget(int width, int height) {
