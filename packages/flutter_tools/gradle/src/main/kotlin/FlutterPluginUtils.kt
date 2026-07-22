@@ -33,17 +33,16 @@ import java.util.Properties
  * A collection of static utility functions used by the Flutter Gradle Plugin.
  */
 object FlutterPluginUtils {
-    // Gradle properties. These must correspond to the values used in
-    // flutter/packages/flutter_tools/lib/src/android/gradle.dart, and therefore it is not
-    // recommended to use these const values in tests.
-    internal const val PROP_SHOULD_SHRINK_RESOURCES = "shrink"
-    internal const val PROP_SPLIT_PER_ABI = "split-per-abi"
-    internal const val PROP_LOCAL_ENGINE_REPO = "local-engine-repo"
-    internal const val PROP_IS_VERBOSE = "verbose"
-    internal const val PROP_TARGET = "target"
-    internal const val PROP_LOCAL_ENGINE_BUILD_MODE = "local-engine-build-mode"
-    internal const val PROP_TARGET_PLATFORM = "target-platform"
-    internal const val PROP_DISABLE_ABI_FILTERING = "disable-abi-filtering"
+    // Gradle properties. These are generated from Dart single source of truth:
+    // packages/flutter_tools/lib/src/android/android_build_constants.dart
+    internal const val PROP_SHOULD_SHRINK_RESOURCES = GeneratedAndroidBuildConstants.PROP_SHOULD_SHRINK_RESOURCES
+    internal const val PROP_SPLIT_PER_ABI = GeneratedAndroidBuildConstants.PROP_SPLIT_PER_ABI
+    internal const val PROP_LOCAL_ENGINE_REPO = GeneratedAndroidBuildConstants.PROP_LOCAL_ENGINE_REPO
+    internal const val PROP_IS_VERBOSE = GeneratedAndroidBuildConstants.PROP_IS_VERBOSE
+    internal const val PROP_TARGET = GeneratedAndroidBuildConstants.PROP_TARGET
+    internal const val PROP_LOCAL_ENGINE_BUILD_MODE = GeneratedAndroidBuildConstants.PROP_LOCAL_ENGINE_BUILD_MODE
+    internal const val PROP_TARGET_PLATFORM = GeneratedAndroidBuildConstants.PROP_TARGET_PLATFORM
+    internal const val PROP_DISABLE_ABI_FILTERING = GeneratedAndroidBuildConstants.PROP_DISABLE_ABI_FILTERING
     internal const val PROP_SDK_MANAGER_PATH = "flutter.sdkManagerPath"
     internal const val PROP_ANDROID_SDK_ROOT = "flutter.androidSdkRoot"
     internal const val PROP_INSTALLED_NDK_VERSIONS = "flutter.installedNdkVersions"

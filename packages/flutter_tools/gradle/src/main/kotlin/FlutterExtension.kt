@@ -10,9 +10,8 @@ import org.gradle.api.GradleException
  * For apps only. Provides the flutter extension used in the app-level Gradle
  * build file (app/build.gradle or app/build.gradle.kts).
  *
- * The versions specified here should match the values in
- * packages/flutter_tools/lib/src/android/gradle_utils.dart, so when bumping,
- * make sure to update the versions specified there.
+ * Default SDK versions are generated from Dart single source of truth:
+ * packages/flutter_tools/lib/src/android/android_build_constants.dart
  *
  * Learn more about extensions in Gradle:
  *  * https://docs.gradle.org/8.0.2/userguide/custom_plugins.html#sec:getting_input_from_the_build
@@ -20,10 +19,10 @@ import org.gradle.api.GradleException
 @Suppress("unused") // The values in this class are used in Flutter developers app-level build.gradle file.
 open class FlutterExtension {
     /** Sets the compileSdkVersion used by default in Flutter app projects. */
-    val compileSdkVersion: Int = 36
+    val compileSdkVersion: Int = GeneratedAndroidBuildConstants.COMPILE_SDK_VERSION
 
     /** Sets the minSdkVersion used by default in Flutter app projects. */
-    val minSdkVersion: Int = 24
+    val minSdkVersion: Int = GeneratedAndroidBuildConstants.MIN_SDK_VERSION
 
     /**
      * Sets the targetSdkVersion used by default in Flutter app projects.
@@ -31,7 +30,7 @@ open class FlutterExtension {
      *
      * See https://developer.android.com/guide/topics/manifest/uses-sdk-element.
      */
-    val targetSdkVersion: Int = 36
+    val targetSdkVersion: Int = GeneratedAndroidBuildConstants.TARGET_SDK_VERSION
 
     /**
      * Sets the ndkVersion used by default in Flutter app projects.
@@ -39,7 +38,7 @@ open class FlutterExtension {
      * and in packages/flutter_tools/gradle/build.gradle.kts as found in
      * https://developer.android.com/studio/projects/install-ndk#default-ndk-per-agp.
      */
-    val ndkVersion: String = "28.2.13676358"
+    val ndkVersion: String = GeneratedAndroidBuildConstants.NDK_VERSION
 
     /**
      * Specifies the relative directory to the Flutter project directory.

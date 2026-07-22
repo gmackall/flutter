@@ -10,14 +10,14 @@ import org.gradle.api.GradleException
 //                 kotlin conversion is complete.
 object FlutterPluginConstants {
     /** The platforms that can be passed to the `--Ptarget-platform` flag. */
-    private const val PLATFORM_ARM32 = "android-arm"
-    private const val PLATFORM_ARM64 = "android-arm64"
-    private const val PLATFORM_X86_64 = "android-x64"
+    private const val PLATFORM_ARM32 = GeneratedAndroidBuildConstants.PLATFORM_ARM32
+    private const val PLATFORM_ARM64 = GeneratedAndroidBuildConstants.PLATFORM_ARM64
+    private const val PLATFORM_X86_64 = GeneratedAndroidBuildConstants.PLATFORM_X86_64
 
     /** The ABI architectures supported by Flutter. */
-    private const val ARCH_ARM32 = "armeabi-v7a"
-    private const val ARCH_ARM64 = "arm64-v8a"
-    private const val ARCH_X86_64 = "x86_64"
+    private const val ARCH_ARM32 = GeneratedAndroidBuildConstants.ARCH_ARM32
+    private const val ARCH_ARM64 = GeneratedAndroidBuildConstants.ARCH_ARM64
+    private const val ARCH_X86_64 = GeneratedAndroidBuildConstants.ARCH_X86_64
 
     const val INTERMEDIATES_DIR = "intermediates"
     const val FLUTTER_STORAGE_BASE_URL = "FLUTTER_STORAGE_BASE_URL"

@@ -19,6 +19,7 @@ import '../build_info.dart';
 import '../cache.dart';
 import '../globals.dart' as globals;
 import '../project.dart';
+import 'android_build_constants.dart';
 import 'android_sdk.dart';
 
 // These are the versions used in the project templates.
@@ -57,16 +58,14 @@ const templateKotlinGradlePluginVersion = '2.4.0';
 // ephemeral directory `.android` is always regenerated after `flutter pub get`,
 // so new versions are picked up after a Flutter upgrade.
 //
-// Please see the README before changing any of these values.
-const compileSdkVersionInt = 36;
-const compileSdkVersion = '$compileSdkVersionInt';
-const minSdkVersionInt = 24;
-const minSdkVersion = '$minSdkVersionInt';
-const targetSdkVersion = '36';
-// When bumping, also update:
-//  * ndkVersion constant in this file
-//  * ndkVersion in FlutterExtension in packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt
-const ndkVersion = '28.2.13676358';
+// Shared values are defined in AndroidBuildConstants (lib/src/android/android_build_constants.dart).
+const int compileSdkVersionInt = AndroidBuildConstants.compileSdkVersion;
+const String compileSdkVersion = '$compileSdkVersionInt';
+const int minSdkVersionInt = AndroidBuildConstants.minSdkVersion;
+const String minSdkVersion = '$minSdkVersionInt';
+const int targetSdkVersionInt = AndroidBuildConstants.targetSdkVersion;
+const String targetSdkVersion = '$targetSdkVersionInt';
+const String ndkVersion = AndroidBuildConstants.ndkVersion;
 final minBuildToolsVersion = Version(28, 0, 3);
 // Align with packages/flutter_tools/gradle/src/main/kotlin/DependencyVersionChecker.kt.
 final errorJavaMinVersionAndroid = Version(17, 0, 0);
