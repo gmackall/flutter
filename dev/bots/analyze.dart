@@ -375,6 +375,11 @@ List<Validation> _getValidations({
       () => verifyMaterialFilesAreUpToDateWithTemplateFiles(flutterRoot, dart),
     ),
     Validation(
+      'gen-constants-up-to-date',
+      'Generated native constants are up-to-date with their Dart sources of truth...',
+      () => verifyGeneratedConstantsAreUpToDate(flutterRoot, dart),
+    ),
+    Validation(
       'integration-templates',
       'Up to date integration test template files...',
       () => verifyIntegrationTestTemplateFiles(flutterRoot),
@@ -626,6 +631,42 @@ Future<void> verifyMaterialFilesAreUpToDateWithTemplateFiles(
     foundError(<String>[
       ...errors,
       '${bold}See: https://github.com/flutter/flutter/blob/main/dev/tools/gen_defaults to update the token template files.$reset',
+    ]);
+  }
+}
+
+/// Verify the generated native copies of Dart-declared constants are up-to-date
+/// when running dev/tools/gen_constants/bin/gen_constants.dart.
+Future<void> verifyGeneratedConstantsAreUpToDate(
+  String workingDirectory,
+  String dartExecutable,
+) async {
+  const generatedFiles = <String>[
+    'packages/flutter_tools/gradle/src/main/kotlin/GradleProperties.kt',
+  ];
+
+  final before = <String, String>{
+    for (final String relativePath in generatedFiles)
+      relativePath: File(path.join(workingDirectory, relativePath)).readAsStringSync(),
+  };
+
+  await runCommand(dartExecutable, <String>[
+    '--enable-asserts',
+    path.join('dev', 'tools', 'gen_constants', 'bin', 'gen_constants.dart'),
+  ], workingDirectory: workingDirectory);
+
+  final errors = <String>[];
+  for (final relativePath in generatedFiles) {
+    final String after = File(path.join(workingDirectory, relativePath)).readAsStringSync();
+    if (before[relativePath] != after) {
+      errors.add('$relativePath is out of date with the Dart constants it is generated from.');
+    }
+  }
+
+  if (errors.isNotEmpty) {
+    foundError(<String>[
+      ...errors,
+      '${bold}Run "dart --enable-asserts dev/tools/gen_constants/bin/gen_constants.dart" to regenerate.$reset',
     ]);
   }
 }

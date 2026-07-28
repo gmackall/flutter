@@ -33,16 +33,20 @@ import java.util.Properties
  * A collection of static utility functions used by the Flutter Gradle Plugin.
  */
 object FlutterPluginUtils {
-    // Gradle properties. These must correspond to the values used in
-    // flutter/packages/flutter_tools/lib/src/android/gradle.dart, and therefore it is not
-    // recommended to use these const values in tests.
-    internal const val PROP_SHOULD_SHRINK_RESOURCES = "shrink"
-    internal const val PROP_SPLIT_PER_ABI = "split-per-abi"
-    internal const val PROP_LOCAL_ENGINE_REPO = "local-engine-repo"
-    internal const val PROP_IS_VERBOSE = "verbose"
-    internal const val PROP_TARGET = "target"
-    internal const val PROP_LOCAL_ENGINE_BUILD_MODE = "local-engine-build-mode"
-    internal const val PROP_TARGET_PLATFORM = "target-platform"
+    // Gradle properties the flutter tool passes with `-P`. Their values come from
+    // GradleProperties, which is generated from
+    // packages/flutter_tools/lib/src/android/gradle_properties.dart, so the tool and the
+    // plugin cannot drift apart.
+    internal const val PROP_SHOULD_SHRINK_RESOURCES = GradleProperties.SHRINK
+    internal const val PROP_SPLIT_PER_ABI = GradleProperties.SPLIT_PER_ABI
+    internal const val PROP_LOCAL_ENGINE_REPO = GradleProperties.LOCAL_ENGINE_REPO
+    internal const val PROP_IS_VERBOSE = GradleProperties.VERBOSE
+    internal const val PROP_TARGET = GradleProperties.TARGET
+    internal const val PROP_LOCAL_ENGINE_BUILD_MODE = GradleProperties.LOCAL_ENGINE_BUILD_MODE
+    internal const val PROP_TARGET_PLATFORM = GradleProperties.TARGET_PLATFORM
+
+    // Not passed by the flutter tool; set by developers in gradle.properties or on the
+    // Gradle command line.
     internal const val PROP_DISABLE_ABI_FILTERING = "disable-abi-filtering"
     internal const val PROP_SDK_MANAGER_PATH = "flutter.sdkManagerPath"
     internal const val PROP_ANDROID_SDK_ROOT = "flutter.androidSdkRoot"

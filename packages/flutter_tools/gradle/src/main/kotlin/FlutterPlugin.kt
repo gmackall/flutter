@@ -92,7 +92,7 @@ class FlutterPlugin : Plugin<Project> {
                 ?: FlutterPluginConstants.DEFAULT_MAVEN_HOST
         val repository: String? =
             if (FlutterPluginUtils.shouldProjectUseLocalEngine(project)) {
-                project.property(PROP_LOCAL_ENGINE_REPO) as String?
+                project.property(GradleProperties.LOCAL_ENGINE_REPO) as String?
             } else {
                 "$hostedRepository/${engineRealm}download.flutter.io"
             }
@@ -520,8 +520,6 @@ class FlutterPlugin : Plugin<Project> {
     }
 
     companion object {
-        const val PROP_LOCAL_ENGINE_REPO: String = "local-engine-repo"
-
         /**
          * The name prefix for flutter builds. This is used to identify gradle tasks
          * where we expect the flutter tool to provide any error output, and skip the

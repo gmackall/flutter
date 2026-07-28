@@ -57,6 +57,7 @@ workspace:
   - dev/snippets
   - dev/tools
   - dev/tools/android_driver_extensions
+  - dev/tools/gen_constants
   - dev/tools/gen_defaults
   - dev/tools/gen_keycodes
   - dev/tools/vitool

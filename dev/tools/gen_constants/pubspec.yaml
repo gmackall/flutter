@@ -1,0 +1,17 @@
+name: gen_constants
+description: Generates native (Kotlin) copies of constants declared once in Dart.
+
+environment:
+  sdk: ^3.11.0-0
+
+resolution: workspace
+
+dependencies:
+  analyzer: any
+  path: any
+
+dev_dependencies:
+  test: any
+
+
+# PUBSPEC CHECKSUM: kmrrv2

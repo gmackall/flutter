@@ -35,6 +35,7 @@ import 'android_builder.dart';
 import 'android_sdk.dart';
 import 'android_studio.dart';
 import 'gradle_errors.dart';
+import 'gradle_properties.dart';
 import 'gradle_utils.dart';
 import 'gradle_utils.dart' as gradle;
 import 'java.dart';
@@ -495,7 +496,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
     if (_logger.isVerbose) {
       options.add('--full-stacktrace');
       options.add('--info');
-      options.add('-Pverbose=true');
+      options.add('-P${GradleProperties.verbose}=true');
     } else {
       options.add('-q');
     }
@@ -516,20 +517,21 @@ class AndroidGradleBuilder implements AndroidBuilder {
         'Using local engine: ${localEngineInfo.targetOutPath}\n'
         'Local Maven repo: ${localEngineRepo.path}',
       );
-      options.add('-Plocal-engine-repo=${localEngineRepo.path}');
-      options.add('-Plocal-engine-build-mode=${buildInfo.modeName}');
+      options.add('-P${GradleProperties.localEngineRepo}=${localEngineRepo.path}');
+      options.add('-P${GradleProperties.localEngineBuildMode}=${buildInfo.modeName}');
       options.add('-Plocal-engine-out=${localEngineInfo.targetOutPath}');
       options.add('-Plocal-engine-host-out=${localEngineInfo.hostOutPath}');
       options.add(
-        '-Ptarget-platform=${_getTargetPlatformByLocalEnginePath(localEngineInfo.targetOutPath)}',
+        '-P${GradleProperties.targetPlatform}='
+        '${_getTargetPlatformByLocalEnginePath(localEngineInfo.targetOutPath)}',
       );
     } else if (androidBuildInfo.targetArchs.isNotEmpty) {
       final String targetPlatforms = androidBuildInfo.targetArchs
           .map((AndroidArch e) => e.platformName)
           .join(',');
-      options.add('-Ptarget-platform=$targetPlatforms');
+      options.add('-P${GradleProperties.targetPlatform}=$targetPlatforms');
     }
-    options.add('-Ptarget=$target');
+    options.add('-P${GradleProperties.target}=$target');
     // If using v1 embedding, we want to use FlutterApplication as the base app.
     final baseApplicationName = project.android.getEmbeddingVersion() == AndroidEmbeddingVersion.v2
         ? 'android.app.Application'
@@ -559,7 +561,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
           'when Gradle plugin 4.2+ is available in Flutter.',
           color: TerminalColor.yellow,
         );
-        options.add('-Pshrink=false');
+        options.add('-P${GradleProperties.shrink}=false');
       }
     }
     options.addAll(androidBuildInfo.buildInfo.toGradleConfig());
@@ -570,7 +572,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
       options.add('-Pfilesystem-scheme=${buildInfo.fileSystemScheme}');
     }
     if (androidBuildInfo.splitPerAbi) {
-      options.add('-Psplit-per-abi=true');
+      options.add('-P${GradleProperties.splitPerAbi}=true');
     }
 
     options.addAll(_getAndroidNdkProvisioningProperties());
@@ -815,7 +817,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
     if (_logger.isVerbose) {
       command.add('--full-stacktrace');
       command.add('--info');
-      command.add('-Pverbose=true');
+      command.add('-P${GradleProperties.verbose}=true');
     } else {
       command.add('-q');
     }
@@ -824,7 +826,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
     }
 
     if (target.isNotEmpty) {
-      command.add('-Ptarget=$target');
+      command.add('-P${GradleProperties.target}=$target');
     }
     command.addAll(androidBuildInfo.buildInfo.toGradleConfig());
     command.addAll(_getAndroidNdkProvisioningProperties());
@@ -846,8 +848,8 @@ class AndroidGradleBuilder implements AndroidBuilder {
         'Using local engine: ${localEngineInfo.targetOutPath}\n'
         'Local Maven repo: ${localEngineRepo.path}',
       );
-      command.add('-Plocal-engine-repo=${localEngineRepo.path}');
-      command.add('-Plocal-engine-build-mode=${buildInfo.modeName}');
+      command.add('-P${GradleProperties.localEngineRepo}=${localEngineRepo.path}');
+      command.add('-P${GradleProperties.localEngineBuildMode}=${buildInfo.modeName}');
       command.add('-Plocal-engine-out=${localEngineInfo.targetOutPath}');
       command.add('-Plocal-engine-host-out=${localEngineInfo.hostOutPath}');
 
@@ -861,13 +863,14 @@ class AndroidGradleBuilder implements AndroidBuilder {
         );
       }
       command.add(
-        '-Ptarget-platform=${_getTargetPlatformByLocalEnginePath(localEngineInfo.targetOutPath)}',
+        '-P${GradleProperties.targetPlatform}='
+        '${_getTargetPlatformByLocalEnginePath(localEngineInfo.targetOutPath)}',
       );
     } else if (androidBuildInfo.targetArchs.isNotEmpty) {
       final String targetPlatforms = androidBuildInfo.targetArchs
           .map((AndroidArch e) => e.platformName)
           .join(',');
-      command.add('-Ptarget-platform=$targetPlatforms');
+      command.add('-P${GradleProperties.targetPlatform}=$targetPlatforms');
     }
 
     command.add(aarTask);
