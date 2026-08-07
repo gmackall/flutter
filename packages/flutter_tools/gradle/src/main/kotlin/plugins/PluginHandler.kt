@@ -108,9 +108,9 @@ class PluginHandler(
             val pluginName =
                 requireNotNull(pluginObject["name"] as? String) { "Plugin name must be a string for plugin object: $pluginObject" }
 
-            val isMigrated = pluginObject["is_migrated"] as? Boolean ?: false
+            val pluginProject: Project? = project.rootProject.findProject(":$pluginName")
 
-            if (isMigrated) {
+            if (pluginProject == null) {
                 project.afterEvaluate {
                     getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
                         if (!(pluginObject["dev_dependency"] as Boolean) || buildType.name != "release") {
@@ -121,11 +121,11 @@ class PluginHandler(
                 return
             }
 
-            val pluginProject: Project = project.rootProject.findProject(":$pluginName") ?: return
-
             // Apply the "flutter" Gradle extension to plugins so that they can use it's vended
             // compile/target/min sdk values.
-            pluginProject.extensions.create("flutter", FlutterExtension::class.java)
+            if (!pluginProject.extensions.extraProperties.has("flutter")) {
+                pluginProject.extensions.create("flutter", FlutterExtension::class.java)
+            }
 
             // Add plugin dependency to the app project. We only want to add dependency
             // for dev dependencies in non-release builds.

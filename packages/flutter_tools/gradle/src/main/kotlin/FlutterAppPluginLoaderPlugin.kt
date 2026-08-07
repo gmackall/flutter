@@ -56,11 +56,13 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
         val localRepoDir = File(flutterProjectRoot, "build/flutter_plugins_aar_repo")
         localRepoDir.mkdirs()
         val flutterSdk = settings.extraProperties.get(FLUTTER_SDK_PATH) as String
-
         val allPlugins = NativePluginLoaderReflectionBridge
             .getPlugins(settings.extraProperties, flutterProjectRoot)
 
-        val migratedPlugins = allPlugins.filter { it["is_migrated"] == true }
+        val developmentMode = (settings.providers.gradleProperty("flutter.plugin.developmentMode").orNull == "true")
+            || (settings.extraProperties.has("flutter.developmentMode") && settings.extraProperties.get("flutter.developmentMode") == "true")
+
+        val migratedPlugins = allPlugins.filter { (it["is_migrated"] == true) && !developmentMode }
         val sortedMigratedPlugins = topologicalSortPlugins(migratedPlugins)
 
         val commonBuildArgs = mutableListOf<String>()
@@ -129,7 +131,7 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
             ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
             val pluginName = androidPlugin["name"] as String
 
-            val isMigrated = androidPlugin["is_migrated"] as? Boolean ?: false
+            val isMigrated = (androidPlugin["is_migrated"] as? Boolean ?: false) && !developmentMode
 
             if (!isMigrated) {
                 settings.include(":$pluginName")
