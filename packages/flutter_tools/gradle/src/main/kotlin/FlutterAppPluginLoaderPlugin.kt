@@ -53,28 +53,84 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
             )
         }
 
-        NativePluginLoaderReflectionBridge
+        val localRepoDir = File(flutterProjectRoot, "build/flutter_plugins_aar_repo")
+        localRepoDir.mkdirs()
+        val flutterSdk = settings.extraProperties.get(FLUTTER_SDK_PATH) as String
+
+        val allPlugins = NativePluginLoaderReflectionBridge
             .getPlugins(settings.extraProperties, flutterProjectRoot)
-            .forEach { androidPlugin ->
-                val pluginDirectory = File(androidPlugin["path"] as String, "android")
-                check(
-                    pluginDirectory.exists()
-                ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
-                val pluginName = androidPlugin["name"] as String
 
-                val isMigrated = androidPlugin["is_migrated"] as? Boolean ?: false
+        val migratedPlugins = allPlugins.filter { it["is_migrated"] == true }
+        val sortedMigratedPlugins = topologicalSortPlugins(migratedPlugins)
 
-                if (isMigrated) {
-                    settings.includeBuild(pluginDirectory) {
-                        name = pluginName
-                        dependencySubstitution {
-                            substitute(module("dev.flutter.plugins:$pluginName")).using(project(":"))
-                        }
-                    }
-                } else {
-                    settings.include(":$pluginName")
-                    settings.project(":$pluginName").projectDir = pluginDirectory
+        sortedMigratedPlugins.forEach { androidPlugin ->
+            val pluginDirectory = File(androidPlugin["path"] as String, "android")
+            check(
+                pluginDirectory.exists()
+            ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
+
+            val connector = org.gradle.tooling.GradleConnector.newConnector()
+                .forProjectDirectory(pluginDirectory)
+            val connection = connector.connect()
+            try {
+                connection.newBuild()
+                    .forTasks("publishReleasePublicationToLocalPluginsRepoRepository")
+                    .withArguments(
+                        "-Pflutter.localPluginsRepo=${localRepoDir.absolutePath}",
+                        "-Pflutter.sdk=$flutterSdk",
+                        "-q"
+                    )
+                    .setStandardError(System.err)
+                    .run()
+            } finally {
+                connection.close()
+            }
+        }
+
+        allPlugins.forEach { androidPlugin ->
+            val pluginDirectory = File(androidPlugin["path"] as String, "android")
+            check(
+                pluginDirectory.exists()
+            ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
+            val pluginName = androidPlugin["name"] as String
+
+            val isMigrated = androidPlugin["is_migrated"] as? Boolean ?: false
+
+            if (!isMigrated) {
+                settings.include(":$pluginName")
+                settings.project(":$pluginName").projectDir = pluginDirectory
+            }
+        }
+    }
+
+    private fun topologicalSortPlugins(plugins: List<Map<String?, Any?>>): List<Map<String?, Any?>> {
+        val result = mutableListOf<Map<String?, Any?>>()
+        val visited = mutableSetOf<String>()
+        val visiting = mutableSetOf<String>()
+        val pluginMap = plugins.associateBy { it["name"] as String }
+
+        fun visit(plugin: Map<String?, Any?>) {
+            val name = plugin["name"] as String
+            if (name in visited) return
+            if (name in visiting) {
+                return
+            }
+            visiting.add(name)
+            val deps = (plugin["dependencies"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+            for (dep in deps) {
+                val depPlugin = pluginMap[dep]
+                if (depPlugin != null) {
+                    visit(depPlugin)
                 }
             }
+            visiting.remove(name)
+            visited.add(name)
+            result.add(plugin)
+        }
+
+        for (plugin in plugins) {
+            visit(plugin)
+        }
+        return result
     }
 }

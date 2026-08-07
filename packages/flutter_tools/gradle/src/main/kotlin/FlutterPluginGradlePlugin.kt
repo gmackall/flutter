@@ -4,20 +4,23 @@
 
 package com.flutter.gradle
 
+import com.android.build.gradle.LibraryExtension
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.publish.maven.plugins.MavenPublishPlugin
 
 /**
  * The Flutter Plugin Gradle Plugin (FPGP) applied by Flutter plugins
- * that have migrated to use composite builds.
+ * that have migrated to use isolated AAR builds.
  *
- * Unlike the legacy model - where the app reaches across projects to configure each plugin
- * subproject - a migrated plugin is a standalone Gradle build that configures *itself*:
+ * Unlike the legacy subproject model, a migrated plugin is built as an independent AAR:
  *  1. Vends the `flutter` extension (compile/target/min sdk values).
  *  2. Adds the Flutter engine Maven repository.
- *  3. Recreates the Flutter `profile` build type so the plugin publishes a variant an app building
- *     in profile mode can resolve across the composite-build boundary.
- *  4. Adds the Flutter embedding as an API dependency of each build type.
+ *  3. Adds the local plugins Maven repository for inter-plugin dependencies.
+ *  4. Adds the Flutter embedding as a `compileOnly` dependency so it is not bundled in the AAR.
+ *  5. Configures `maven-publish` to publish the release AAR and POM metadata to the local plugins repository.
  */
 class FlutterPluginGradlePlugin : Plugin<Project> {
     override fun apply(project: Project) {
@@ -36,73 +39,65 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
             return
         }
 
-        // Add the Flutter engine repository for resolving embedding dependencies. Shared with
-        // FlutterPlugin so the realm / FLUTTER_STORAGE_BASE_URL / local engine are all honored.
+        // Add the Flutter engine repository for resolving embedding dependencies.
         FlutterPluginUtils.addFlutterEngineMavenRepository(project, flutterRoot)
 
         val engineVersion: String = FlutterPluginUtils.getFlutterEngineVersion(project, flutterRoot)
 
-        // Recreating the Flutter `profile` build type requires touching AGP's extension. In the
-        // legacy subproject model the app copied its build types (including `profile`) into each
-        // plugin; composite builds cannot, so the plugin must own a matching variant or an app
-        // building in profile mode silently falls back to the release variant (which links the
-        // wrong - release - embedding and collides on the classpath).
-        //
-        // Touching the Android extension is the one thing that may fail if AGP is loaded in an
-        // isolated classloader for this included build (the original prototype avoided it for that
-        // reason). So attempt it defensively: if it works we get a real profile variant and wire
-        // every build type by mode; if it throws we fall back to the original classloader-safe
-        // debug/release-by-name wiring, never regressing below the prototype's behavior.
-        //
-        // The profile build type must be registered synchronously here (before AGP locks the DSL
-        // and creates variants); the embedding dependencies are added in afterEvaluate once the
-        // per-build-type `*Api` configurations exist.
-        val androidExtension =
-            try {
-                FlutterPluginUtils.getLegacyAndroidExtension(project)
-            } catch (e: Throwable) {
-                project.logger.warn(
-                    "FlutterPluginGradlePlugin: could not access the Android extension for " +
-                        "project ${project.name} ($e). Falling back to debug/release embedding " +
-                        "wiring; profile builds of apps depending on this plugin may not resolve."
-                )
-                null
-            }
-
-        if (androidExtension != null) {
-            if (androidExtension.buildTypes.findByName("profile") == null) {
-                val debugBuildType = androidExtension.buildTypes.getByName("debug")
-                androidExtension.buildTypes.create("profile") {
-                    // Library-compatible subset only, matching the legacy library-plugin behavior
-                    // (app-specific properties such as applicationIdSuffix are intentionally omitted).
-                    isDebuggable = debugBuildType.isDebuggable
-                    isMinifyEnabled = debugBuildType.isMinifyEnabled
-                }
-            }
-            project.afterEvaluate {
-                androidExtension.buildTypes.forEach { buildType ->
-                    addEmbeddingDependency(project, "${buildType.name}Api", FlutterPluginUtils.buildModeFor(buildType), engineVersion)
-                }
-            }
-        } else {
-            project.afterEvaluate {
-                addEmbeddingDependency(project, "debugApi", "debug", engineVersion)
-                addEmbeddingDependency(project, "releaseApi", "release", engineVersion)
+        // Add local plugins repository if specified (for inter-plugin dependencies)
+        val localRepoPath = (project.findProperty("flutter.localPluginsRepo") as? String)
+            ?: System.getenv("FLUTTER_LOCAL_PLUGINS_REPO")
+        if (localRepoPath != null) {
+            project.repositories.maven {
+                url = project.uri(localRepoPath)
             }
         }
-    }
 
-    private fun addEmbeddingDependency(
-        project: Project,
-        configurationName: String,
-        flutterBuildMode: String,
-        engineVersion: String
-    ) {
-        if (project.configurations.findByName(configurationName) == null) {
-            return
+        // Apply maven-publish plugin
+        project.pluginManager.apply(MavenPublishPlugin::class.java)
+
+        val publishing = project.extensions.getByType(PublishingExtension::class.java)
+        if (localRepoPath != null) {
+            publishing.repositories.maven {
+                name = "localPluginsRepo"
+                url = project.uri(localRepoPath)
+            }
         }
-        val dependency = "io.flutter:flutter_embedding_$flutterBuildMode:$engineVersion"
-        project.dependencies.add(configurationName, dependency)
-        project.logger.info("Added dependency $dependency to configuration $configurationName")
+
+        // Configure AGP library publishing for release variant automatically via AndroidComponents
+        project.plugins.withId("com.android.library") {
+            val androidComponents = project.extensions.findByType(
+                com.android.build.api.variant.LibraryAndroidComponentsExtension::class.java
+            )
+            androidComponents?.finalizeDsl { extension ->
+                extension.publishing.singleVariant("release")
+            }
+        }
+
+        project.components.all(object : org.gradle.api.Action<org.gradle.api.component.SoftwareComponent> {
+            override fun execute(component: org.gradle.api.component.SoftwareComponent) {
+                if (component.name == "release" && localRepoPath != null) {
+                    if (publishing.publications.findByName("release") == null) {
+                        publishing.publications.create("release", MavenPublication::class.java) {
+                            from(component)
+                            groupId = "dev.flutter.plugins"
+                            artifactId = project.name
+                            version = (project.findProperty("flutter.pluginVersion") as? String) ?: "1.0.0"
+                        }
+                    }
+                }
+            }
+        })
+
+        project.afterEvaluate {
+            // Flutter embedding should be compileOnly for AAR library builds so it's not bundled or conflicting
+            if (project.configurations.findByName("compileOnly") != null) {
+                val dependency = "io.flutter:flutter_embedding_release:$engineVersion"
+                project.dependencies.add("compileOnly", dependency)
+                project.logger.info("Added compileOnly dependency $dependency to project ${project.name}")
+            }
+        }
     }
 }
+
+

@@ -24,12 +24,7 @@ import 'package:path/path.dart' as path;
 /// release. Profile is deliberately included: it is the mode most likely to break, because the
 /// migrated plugin builds must publish a matching `profile` variant across the composite-build
 /// boundary (the app cannot copy its build types into them as it does in the legacy model).
-const List<String> _agpVersions = <String>[
-  // TODO(gmackall): Tune these to bracket the minimum supported AGP and the AGP version that ships
-  //                 native composite-build version unification.
-  '8.7.0',
-  '9.0.1',
-];
+const List<String> _agpVersions = <String>['8.11.1', '9.0.1'];
 
 const List<String> _buildModes = <String>['debug', 'profile', 'release'];
 
@@ -42,7 +37,9 @@ Future<void> main() async {
     }
     print('\nUsing JAVA_HOME=$javaHome');
 
-    final Directory tempDir = Directory.systemTemp.createTempSync('flutter_composite_build_plugins.');
+    final Directory tempDir = Directory.systemTemp.createTempSync(
+      'flutter_composite_build_plugins.',
+    );
     try {
       // Copy the fixture into a temp dir so we can mutate the host app's AGP version without
       // dirtying the checkout. The whole directory is copied so the relative `path:` dependencies
@@ -59,9 +56,7 @@ Future<void> main() async {
       recursiveCopy(source, projectRoot);
 
       final hostApp = Directory(path.join(projectRoot.path, 'host_app'));
-      final hostAppSettings = File(
-        path.join(hostApp.path, 'android', 'settings.gradle.kts'),
-      );
+      final hostAppSettings = File(path.join(hostApp.path, 'android', 'settings.gradle.kts'));
       final String originalSettings = hostAppSettings.readAsStringSync();
 
       for (final String agpVersion in _agpVersions) {
@@ -98,7 +93,7 @@ Future<void> main() async {
             );
           });
 
-          final String stderrString = stderr.toString();
+          final stderrString = stderr.toString();
           // Surface the failure modes specific to composite builds with clear messages.
           if (stderrString.contains('No matching variant') ||
               stderrString.contains('Could not resolve') ||
@@ -119,14 +114,7 @@ Future<void> main() async {
           }
 
           final apk = File(
-            path.join(
-              hostApp.path,
-              'build',
-              'app',
-              'outputs',
-              'flutter-apk',
-              'app-$mode.apk',
-            ),
+            path.join(hostApp.path, 'build', 'app', 'outputs', 'flutter-apk', 'app-$mode.apk'),
           );
           if (!exists(apk)) {
             return TaskResult.failure(

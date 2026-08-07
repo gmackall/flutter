@@ -57,6 +57,11 @@ class PluginHandler(
     }
 
     internal fun configurePlugins(engineVersionValue: String) {
+        val localRepoDir = File(FlutterPluginUtils.getFlutterSourceDirectory(project), "build/flutter_plugins_aar_repo")
+        project.repositories.maven {
+            url = project.uri(localRepoDir)
+        }
+
         val pluginList: List<Map<String?, Any?>> = getPluginList()
         pluginList.forEach { plugin: Map<String?, Any?> ->
             configurePluginProject(
@@ -109,7 +114,7 @@ class PluginHandler(
                 project.afterEvaluate {
                     getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
                         if (!(pluginObject["dev_dependency"] as Boolean) || buildType.name != "release") {
-                            project.dependencies.add("${buildType.name}Api", "dev.flutter.plugins:$pluginName")
+                            project.dependencies.add("${buildType.name}Implementation", "dev.flutter.plugins:$pluginName:1.0.0")
                         }
                     }
                 }

@@ -50,17 +50,6 @@ class FlutterPlugin : Plugin<Project> {
         val rootProject = project.rootProject
         if (FlutterPluginUtils.isFlutterAppProject(project)) {
             addTaskForLockfileGeneration(rootProject)
-            if (project.hasProperty("flutter.hasMigratedPlugins") &&
-                project.property("flutter.hasMigratedPlugins") == "true"
-            ) {
-                project.pluginManager.withPlugin("com.android.application") {
-                    val agpVersion = VersionFetcher.getAGPVersion(project)
-                    if (agpVersion != null) {
-                        val versionStr = "${agpVersion.major}.${agpVersion.minor}.${agpVersion.micro}"
-                        System.setProperty("flutter.agp.version", versionStr)
-                    }
-                }
-            }
         }
 
         val flutterRootSystemVal: String? = System.getenv("FLUTTER_ROOT")
