@@ -63,11 +63,50 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
         val migratedPlugins = allPlugins.filter { it["is_migrated"] == true }
         val sortedMigratedPlugins = topologicalSortPlugins(migratedPlugins)
 
+        val commonBuildArgs = mutableListOf<String>()
+        commonBuildArgs.add("-Pflutter.localPluginsRepo=${localRepoDir.absolutePath}")
+        commonBuildArgs.add("-Pflutter.sdk=$flutterSdk")
+        commonBuildArgs.add("-q")
+
+        if (settings.gradle.startParameter.isOffline) {
+            commonBuildArgs.add("--offline")
+        }
+
+        // Forward host project properties (-P)
+        settings.gradle.startParameter.projectProperties.forEach { (key, value) ->
+            if (!key.startsWith("flutter.localPluginsRepo") && !key.startsWith("flutter.sdk")) {
+                commonBuildArgs.add("-P$key=$value")
+            }
+        }
+
+        // Forward host system properties (-D)
+        val systemPropertiesToForward = listOf(
+            "http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort", "http.nonProxyHosts",
+            "javax.net.ssl.trustStore", "javax.net.ssl.trustStorePassword"
+        )
+        systemPropertiesToForward.forEach { key ->
+            System.getProperty(key)?.let { value ->
+                commonBuildArgs.add("-D$key=$value")
+            }
+        }
+        settings.gradle.startParameter.systemPropertiesArgs.forEach { (key, value) ->
+            commonBuildArgs.add("-D$key=$value")
+        }
+
         sortedMigratedPlugins.forEach { androidPlugin ->
             val pluginDirectory = File(androidPlugin["path"] as String, "android")
             check(
                 pluginDirectory.exists()
             ) { "Plugin directory does not exist: ${pluginDirectory.absolutePath}" }
+            val pluginName = androidPlugin["name"] as String
+
+            val pluginBuildDir = File(flutterProjectRoot, "build/plugins_build/$pluginName/build")
+            val pluginCacheDir = File(flutterProjectRoot, "build/plugins_build/$pluginName/.gradle")
+
+            val buildArgs = commonBuildArgs.toMutableList()
+            buildArgs.add("--project-cache-dir")
+            buildArgs.add(pluginCacheDir.absolutePath)
+            buildArgs.add("-Pflutter.pluginBuildDir=${pluginBuildDir.absolutePath}")
 
             val connector = org.gradle.tooling.GradleConnector.newConnector()
                 .forProjectDirectory(pluginDirectory)
@@ -75,11 +114,7 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
             try {
                 connection.newBuild()
                     .forTasks("publishReleasePublicationToLocalPluginsRepoRepository")
-                    .withArguments(
-                        "-Pflutter.localPluginsRepo=${localRepoDir.absolutePath}",
-                        "-Pflutter.sdk=$flutterSdk",
-                        "-q"
-                    )
+                    .withArguments(buildArgs)
                     .setStandardError(System.err)
                     .run()
             } finally {

@@ -64,13 +64,20 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
             }
         }
 
+        val customBuildDir = project.findProperty("flutter.pluginBuildDir") as? String
+        if (customBuildDir != null) {
+            project.layout.buildDirectory.set(java.io.File(customBuildDir))
+        }
+
         // Configure AGP library publishing for release variant automatically via AndroidComponents
         project.plugins.withId("com.android.library") {
             val androidComponents = project.extensions.findByType(
                 com.android.build.api.variant.LibraryAndroidComponentsExtension::class.java
             )
             androidComponents?.finalizeDsl { extension ->
-                extension.publishing.singleVariant("release")
+                extension.publishing.singleVariant("release") {
+                    withSourcesJar()
+                }
             }
         }
 
