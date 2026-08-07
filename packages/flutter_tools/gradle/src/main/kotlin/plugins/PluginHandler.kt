@@ -255,10 +255,13 @@ class PluginHandler(
                     }
 
                     val dependencyProject =
-                        project.rootProject.findProject(":$pluginDependencyName") ?: return@innerForEach
+                        project.rootProject.findProject(":$pluginDependencyName")
                     pluginProject.afterEvaluate {
-                        // this.dependencies.add("implementation", dependencyProject)
-                        pluginProject.dependencies.add("implementation", dependencyProject)
+                        if (dependencyProject != null) {
+                            pluginProject.dependencies.add("implementation", dependencyProject)
+                        } else {
+                            pluginProject.dependencies.add("implementation", "dev.flutter.plugins:$pluginDependencyName:1.0.0-SNAPSHOT")
+                        }
                     }
                 }
             }

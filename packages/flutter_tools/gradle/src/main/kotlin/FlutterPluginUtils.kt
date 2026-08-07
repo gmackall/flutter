@@ -1069,10 +1069,15 @@ object FlutterPluginUtils {
         // type like profile is used, and the plugin and app projects have API dependencies on the
         // embedding.
         val pluginsThatIncludeFlutterEmbeddingAsTransitiveDependency: List<Map<String?, Any?>> =
-            if (flutterBuildMode == "release") {
+            (if (flutterBuildMode == "release") {
                 pluginHandler.getPluginListWithoutDevDependencies()
             } else {
                 pluginHandler.getPluginList()
+            }).filter { pluginObject ->
+                val pluginName = pluginObject["name"] as? String ?: ""
+                val isSubproject = project.rootProject.findProject(":$pluginName") != null
+                val isMigrated = pluginObject["is_migrated"] as? Boolean ?: false
+                isSubproject && !isMigrated
             }
 
         if (!isFlutterAppProject(project) || pluginsThatIncludeFlutterEmbeddingAsTransitiveDependency.isEmpty()) {

@@ -26,7 +26,11 @@ private const val FLUTTER_SDK_PATH = "flutterSdkPath"
 class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
     override fun apply(settings: Settings) {
 
-        val flutterProjectRoot: File = settings.settingsDir.parentFile
+        val flutterProjectRoot: File = if (settings.extraProperties.has("flutter.source")) {
+            File(settings.extraProperties.get("flutter.source") as String)
+        } else {
+            settings.settingsDir.parentFile
+        }
 
         if (!settings.extraProperties.has(FLUTTER_SDK_PATH)) {
             val localPropertiesFile = File(settings.rootProject.projectDir, "local.properties")
@@ -77,7 +81,6 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
         commonBuildArgs.add("-Pflutter.localPluginsRepo=${localRepoDir.absolutePath}")
         commonBuildArgs.add("-Pflutter.sdk=$flutterSdk")
         commonBuildArgs.add("-Dorg.gradle.jvmargs=-Xmx512m")
-        commonBuildArgs.add("-q")
 
         if (settings.gradle.startParameter.isOffline) {
             commonBuildArgs.add("--offline")
@@ -127,6 +130,7 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
                 connection.newBuild()
                     .forTasks("publishReleasePublicationToLocalPluginsRepoRepository")
                     .withArguments(buildArgs)
+                    .setStandardOutput(System.out)
                     .setStandardError(System.err)
                     .run()
             } finally {

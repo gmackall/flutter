@@ -28,7 +28,9 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
 
         // Apply the "flutter" Gradle extension to plugins so that they can use its vended
         // compile/target/min sdk values.
-        project.extensions.create("flutter", FlutterExtension::class.java)
+        if (project.extensions.findByName("flutter") == null) {
+            project.extensions.create("flutter", FlutterExtension::class.java)
+        }
 
         val flutterRoot = FlutterPluginUtils.resolveFlutterRoot(project)
         if (flutterRoot == null) {
@@ -51,6 +53,9 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
             project.repositories.maven {
                 url = project.uri(localRepoPath)
             }
+            project.configurations.all {
+                resolutionStrategy.cacheChangingModulesFor(0, java.util.concurrent.TimeUnit.SECONDS)
+            }
         }
 
         // Apply maven-publish plugin
@@ -71,6 +76,11 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
 
         // Configure AGP library publishing for release variant automatically via AndroidComponents
         project.plugins.withId("com.android.library") {
+            val libraryExtension = project.extensions.findByType(LibraryExtension::class.java)
+            val proguardRules = project.file("proguard-rules.pro")
+            if (proguardRules.exists()) {
+                libraryExtension?.defaultConfig?.consumerProguardFiles(proguardRules)
+            }
             val androidComponents = project.extensions.findByType(
                 com.android.build.api.variant.LibraryAndroidComponentsExtension::class.java
             )
