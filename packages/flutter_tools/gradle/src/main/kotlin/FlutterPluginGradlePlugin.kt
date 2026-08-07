@@ -88,8 +88,8 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
                         publishing.publications.create("release", MavenPublication::class.java) {
                             from(component)
                             groupId = "dev.flutter.plugins"
-                            artifactId = project.name
-                            version = (project.findProperty("flutter.pluginVersion") as? String) ?: "1.0.0"
+                            artifactId = (project.findProperty("flutter.pluginName") as? String) ?: project.name
+                            version = (project.findProperty("flutter.pluginVersion") as? String) ?: "1.0.0-SNAPSHOT"
                         }
                     }
                 }

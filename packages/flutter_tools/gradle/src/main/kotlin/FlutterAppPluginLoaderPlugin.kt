@@ -29,13 +29,21 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
         val flutterProjectRoot: File = settings.settingsDir.parentFile
 
         if (!settings.extraProperties.has(FLUTTER_SDK_PATH)) {
-            val properties = Properties()
             val localPropertiesFile = File(settings.rootProject.projectDir, "local.properties")
-            localPropertiesFile.inputStream().use { properties.load(it) }
-            settings.extraProperties.set(FLUTTER_SDK_PATH, properties.getProperty("flutter.sdk"))
-            assert(
-                settings.extraProperties.get(FLUTTER_SDK_PATH) != null
-            ) { "flutter.sdk not set in local.properties" }
+            if (localPropertiesFile.exists()) {
+                val properties = Properties()
+                localPropertiesFile.inputStream().use { properties.load(it) }
+                settings.extraProperties.set(FLUTTER_SDK_PATH, properties.getProperty("flutter.sdk"))
+            } else {
+                val envFlutterRoot = System.getenv("FLUTTER_ROOT")
+                    ?: (settings.providers.gradleProperty("flutter.sdk").orNull)
+                if (envFlutterRoot != null) {
+                    settings.extraProperties.set(FLUTTER_SDK_PATH, envFlutterRoot)
+                }
+            }
+            check(settings.extraProperties.get(FLUTTER_SDK_PATH) != null) {
+                "flutter.sdk not set in local.properties, FLUTTER_ROOT environment variable, or flutter.sdk Gradle property."
+            }
         }
 
         settings.apply {
@@ -68,15 +76,16 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
         val commonBuildArgs = mutableListOf<String>()
         commonBuildArgs.add("-Pflutter.localPluginsRepo=${localRepoDir.absolutePath}")
         commonBuildArgs.add("-Pflutter.sdk=$flutterSdk")
+        commonBuildArgs.add("-Dorg.gradle.jvmargs=-Xmx512m")
         commonBuildArgs.add("-q")
 
         if (settings.gradle.startParameter.isOffline) {
             commonBuildArgs.add("--offline")
         }
 
-        // Forward host project properties (-P)
+        // Forward host project properties (-P), excluding internal injection flags
         settings.gradle.startParameter.projectProperties.forEach { (key, value) ->
-            if (!key.startsWith("flutter.localPluginsRepo") && !key.startsWith("flutter.sdk")) {
+            if (!key.startsWith("flutter.localPluginsRepo") && !key.startsWith("flutter.sdk") && !key.startsWith("android.injected.")) {
                 commonBuildArgs.add("-P$key=$value")
             }
         }
@@ -109,6 +118,7 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
             buildArgs.add("--project-cache-dir")
             buildArgs.add(pluginCacheDir.absolutePath)
             buildArgs.add("-Pflutter.pluginBuildDir=${pluginBuildDir.absolutePath}")
+            buildArgs.add("-Pflutter.pluginName=$pluginName")
 
             val connector = org.gradle.tooling.GradleConnector.newConnector()
                 .forProjectDirectory(pluginDirectory)
@@ -150,7 +160,9 @@ class FlutterAppPluginLoaderPlugin : Plugin<Settings> {
             val name = plugin["name"] as String
             if (name in visited) return
             if (name in visiting) {
-                return
+                throw org.gradle.api.GradleException(
+                    "Circular dependency detected in Flutter plugin dependency graph involving plugin: $name"
+                )
             }
             visiting.add(name)
             val deps = (plugin["dependencies"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()

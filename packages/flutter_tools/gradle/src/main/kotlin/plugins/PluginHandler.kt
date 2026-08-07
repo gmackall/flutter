@@ -62,6 +62,10 @@ class PluginHandler(
             url = project.uri(localRepoDir)
         }
 
+        project.configurations.all {
+            resolutionStrategy.cacheChangingModulesFor(0, java.util.concurrent.TimeUnit.SECONDS)
+        }
+
         val pluginList: List<Map<String?, Any?>> = getPluginList()
         pluginList.forEach { plugin: Map<String?, Any?> ->
             configurePluginProject(
@@ -113,8 +117,9 @@ class PluginHandler(
             if (pluginProject == null) {
                 project.afterEvaluate {
                     getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
-                        if (!(pluginObject["dev_dependency"] as Boolean) || buildType.name != "release") {
-                            project.dependencies.add("${buildType.name}Implementation", "dev.flutter.plugins:$pluginName:1.0.0")
+                        val isDevDependency = pluginObject["dev_dependency"] as? Boolean ?: false
+                        if (!isDevDependency || buildType.name != "release") {
+                            project.dependencies.add("${buildType.name}Implementation", "dev.flutter.plugins:$pluginName:1.0.0-SNAPSHOT")
                         }
                     }
                 }
@@ -123,7 +128,7 @@ class PluginHandler(
 
             // Apply the "flutter" Gradle extension to plugins so that they can use it's vended
             // compile/target/min sdk values.
-            if (!pluginProject.extensions.extraProperties.has("flutter")) {
+            if (pluginProject.extensions.findByName("flutter") == null) {
                 pluginProject.extensions.create("flutter", FlutterExtension::class.java)
             }
 
@@ -131,7 +136,8 @@ class PluginHandler(
             // for dev dependencies in non-release builds.
             project.afterEvaluate {
                 getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
-                    if (!(pluginObject["dev_dependency"] as Boolean) || buildType.name != "release") {
+                    val isDevDependency = pluginObject["dev_dependency"] as? Boolean ?: false
+                    if (!isDevDependency || buildType.name != "release") {
                         project.dependencies.add("${buildType.name}Api", pluginProject)
                     }
                 }

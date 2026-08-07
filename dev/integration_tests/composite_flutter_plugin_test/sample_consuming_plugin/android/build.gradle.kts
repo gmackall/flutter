@@ -52,7 +52,7 @@ android {
 }
 
 dependencies {
-    implementation("dev.flutter.plugins:sample_plugin:1.0.0")
+    implementation("dev.flutter.plugins:sample_plugin:1.0.0-SNAPSHOT")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")
 }
