@@ -58,12 +58,13 @@ class PluginHandler(
 
     internal fun configurePlugins(engineVersionValue: String) {
         val localRepoDir = File(FlutterPluginUtils.getFlutterSourceDirectory(project), "build/flutter_plugins_aar_repo")
-        project.repositories.maven {
-            url = project.uri(localRepoDir)
-        }
-
-        project.configurations.all {
-            resolutionStrategy.cacheChangingModulesFor(0, java.util.concurrent.TimeUnit.SECONDS)
+        project.rootProject.allprojects {
+            repositories.maven {
+                url = project.uri(localRepoDir)
+            }
+            configurations.all {
+                resolutionStrategy.cacheChangingModulesFor(0, java.util.concurrent.TimeUnit.SECONDS)
+            }
         }
 
         val pluginList: List<Map<String?, Any?>> = getPluginList()

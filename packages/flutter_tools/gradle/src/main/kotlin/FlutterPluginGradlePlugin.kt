@@ -74,11 +74,13 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
             project.layout.buildDirectory.set(java.io.File(customBuildDir))
         }
 
-        // Configure AGP library publishing for release variant automatically via AndroidComponents
         project.plugins.withId("com.android.library") {
             val libraryExtension = project.extensions.findByType(LibraryExtension::class.java)
+            val consumerRules = project.file("consumer-rules.pro")
             val proguardRules = project.file("proguard-rules.pro")
-            if (proguardRules.exists()) {
+            if (consumerRules.exists()) {
+                libraryExtension?.defaultConfig?.consumerProguardFiles(consumerRules)
+            } else if (proguardRules.exists()) {
                 libraryExtension?.defaultConfig?.consumerProguardFiles(proguardRules)
             }
             val androidComponents = project.extensions.findByType(
@@ -107,8 +109,8 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         })
 
         project.afterEvaluate {
-            // Flutter embedding should be compileOnly for AAR library builds so it's not bundled or conflicting
-            if (project.configurations.findByName("compileOnly") != null) {
+            // Flutter embedding should be compileOnly for standalone AAR library builds so it's not bundled or conflicting
+            if (project.rootProject == project && project.configurations.findByName("compileOnly") != null) {
                 val dependency = "io.flutter:flutter_embedding_release:$engineVersion"
                 project.dependencies.add("compileOnly", dependency)
                 project.logger.info("Added compileOnly dependency $dependency to project ${project.name}")
