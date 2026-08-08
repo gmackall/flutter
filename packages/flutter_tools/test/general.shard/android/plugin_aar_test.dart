@@ -342,18 +342,14 @@ void main() {
   });
 
   group('cache keying', () {
-    PluginAarBuildInputs inputs({String agpVersion = '8.11.1', String minSdk = '24'}) {
+    PluginAarBuildInputs inputs({String agpVersion = '8.11.1', String sdkRevision = 'abc123'}) {
       return PluginAarBuildInputs(
         agpVersion: agpVersion,
         gradleVersion: '8.13',
         kotlinVersion: '2.2.20',
         javaVersion: '17',
         engineVersion: '1.0.0-abc',
-        compileSdk: '36',
-        minSdk: minSdk,
-        targetSdk: '36',
-        ndkVersion: '27.0.12077973',
-        flutterGradlePluginVersion: '1.0.0',
+        flutterGradlePluginVersion: sdkRevision,
       );
     }
 
@@ -365,8 +361,11 @@ void main() {
       expect(inputs().digest, isNot(inputs(agpVersion: '9.0.1').digest));
     });
 
-    testWithoutContext('a different minSdk produces a different digest', () {
-      expect(inputs().digest, isNot(inputs(minSdk: '21').digest));
+    testWithoutContext('a different SDK revision produces a different digest', () {
+      // The plugin's own compileSdk/minSdk live in its (immutable) build files,
+      // and the values vended by the `flutter` extension move with the SDK, so
+      // the SDK revision is what has to invalidate them.
+      expect(inputs().digest, isNot(inputs(sdkRevision: 'def456').digest));
     });
 
     testWithoutContext('an entry is only a hit once an aar is present', () {

@@ -53,11 +53,50 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         val engineVersion: String = FlutterPluginUtils.getFlutterEngineVersion(project, flutterRoot)
         addEmbeddingAsCompileOnlyDependency(project, engineVersion)
 
+        resolveSiblingPluginVersions(project)
+
         val publishRepo: String? = project.findProperty(PROP_PUBLISH_REPO) as? String
         if (publishRepo == null) {
             configureAsSubproject(project)
         } else {
             configureForPublishing(project, publishRepo)
+        }
+    }
+
+    /**
+     * Supplies the version for versionless dependencies on sibling Flutter plugins.
+     *
+     * A migrated plugin declares a dependency on another plugin without a version:
+     *
+     *     implementation("dev.flutter.plugins:some_other_plugin")
+     *
+     * The version is whatever pub resolved for the app being built, which the plugin author cannot
+     * know and should not have to keep in sync with their Gradle file. The Flutter tool passes the
+     * resolved versions in, and they are filled in here. In subproject mode there is no version to
+     * fill in because the dependency is substituted for a project dependency instead.
+     */
+    private fun resolveSiblingPluginVersions(project: Project) {
+        val encoded: String = (project.findProperty(PROP_SIBLING_VERSIONS) as? String) ?: return
+        val versions: Map<String, String> =
+            encoded
+                .split(",")
+                .filter { it.contains("=") }
+                .associate { entry ->
+                    val index = entry.indexOf('=')
+                    entry.substring(0, index) to entry.substring(index + 1)
+                }
+        if (versions.isEmpty()) {
+            return
+        }
+        project.configurations.all {
+            resolutionStrategy.eachDependency {
+                val isFlutterPlugin =
+                    requested.group == FLUTTER_PLUGIN_GROUP_ID ||
+                        requested.group == FLUTTER_PLUGIN_DEBUG_GROUP_ID
+                if (isFlutterPlugin && requested.version.isNullOrEmpty()) {
+                    versions[requested.name]?.let { useVersion(it) }
+                }
+            }
         }
     }
 
@@ -242,6 +281,7 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         internal const val PROP_GROUP_ID = "flutter.plugin.groupId"
         internal const val PROP_PLUGIN_NAME = "flutter.plugin.name"
         internal const val PROP_PLUGIN_VERSION = "flutter.plugin.version"
+        internal const val PROP_SIBLING_VERSIONS = "flutter.plugin.siblingVersions"
 
         private val DEFAULT_REPOSITORY_PREFIXES =
             listOf(

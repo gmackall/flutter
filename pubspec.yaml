@@ -25,6 +25,13 @@ workspace:
   - dev/integration_tests/android_verified_input
   - dev/integration_tests/android_views
   - dev/integration_tests/channels
+  - dev/integration_tests/composite_flutter_plugin_test/host_app
+  - dev/integration_tests/composite_flutter_plugin_test/sample_consuming_plugin
+  - dev/integration_tests/composite_flutter_plugin_test/sample_consuming_plugin/example
+  - dev/integration_tests/composite_flutter_plugin_test/sample_plugin
+  - dev/integration_tests/composite_flutter_plugin_test/sample_plugin/example
+  - dev/integration_tests/composite_flutter_plugin_test/unmigrated_sample_plugin
+  - dev/integration_tests/composite_flutter_plugin_test/unmigrated_sample_plugin/example
   - dev/integration_tests/data_asset_app
   - dev/integration_tests/data_asset_package
   - dev/integration_tests/deferred_components_test

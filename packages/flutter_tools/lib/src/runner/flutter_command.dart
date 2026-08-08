@@ -140,6 +140,7 @@ abstract final class FlutterOptions {
   static const kAndroidProjectArgs = 'android-project-arg';
   static const kAndroidGradleProjectCacheDir = 'android-project-cache-dir';
   static const kAndroidSkipBuildDependencyValidation = 'android-skip-build-dependency-validation';
+  static const kPluginAar = 'plugin-aar';
   static const kInitializeFromDill = 'initialize-from-dill';
   static const kAssumeInitializeFromDillUpToDate = 'assume-initialize-from-dill-up-to-date';
   static const kNativeAssetsYamlFile = 'native-assets-yaml-file';
@@ -1077,6 +1078,22 @@ abstract class FlutterCommand extends Command<void> {
           ' during Android builds.',
     );
     argParser.addMultiOption(
+      FlutterOptions.kPluginAar,
+      help:
+          'Build the named Flutter plugins into AARs and cache them, instead of building them '
+          'from source as Gradle subprojects. Only plugins that opt in with '
+          'flutter.plugin.migrated=true are eligible. Plugins resolved from a "path:" dependency '
+          'are built from source by default, since they may be edited locally; naming one here '
+          'opts it back in. Pass --no-plugin-aar to build every plugin from source.',
+      hide: hide,
+    );
+    argParser.addFlag(
+      'no-${FlutterOptions.kPluginAar}',
+      help: 'Build every Flutter plugin from source, disabling cached plugin AAR builds.',
+      negatable: false,
+      hide: hide,
+    );
+    argParser.addMultiOption(
       FlutterOptions.kAndroidProjectArgs,
       help:
           'Additional arguments specified as key=value that are passed directly to the gradle '
@@ -1432,6 +1449,14 @@ abstract class FlutterCommand extends Command<void> {
         !argParser.options.containsKey(FlutterOptions.kAndroidSkipBuildDependencyValidation) ||
         boolArg(FlutterOptions.kAndroidSkipBuildDependencyValidation);
 
+    final bool pluginAarEnabled =
+        !argParser.options.containsKey('no-${FlutterOptions.kPluginAar}') ||
+        !boolArg('no-${FlutterOptions.kPluginAar}');
+    final Set<String> forceAarPlugins =
+        argParser.options.containsKey(FlutterOptions.kPluginAar)
+        ? stringsArg(FlutterOptions.kPluginAar).toSet()
+        : const <String>{};
+
     final List<String> androidProjectArgs =
         argParser.options.containsKey(FlutterOptions.kAndroidProjectArgs)
         ? stringsArg(FlutterOptions.kAndroidProjectArgs)
@@ -1523,6 +1548,8 @@ abstract class FlutterCommand extends Command<void> {
       packageConfigPath: packagesPath ?? packageConfigFile.path,
       codeSizeDirectory: codeSizeDirectory,
       androidGradleDaemon: androidGradleDaemon,
+      pluginAarEnabled: pluginAarEnabled,
+      forceAarPlugins: forceAarPlugins,
       androidSkipBuildDependencyValidation: androidSkipBuildDependencyValidation,
       packageConfig: packageConfig,
       androidProjectArgs: androidProjectArgs,

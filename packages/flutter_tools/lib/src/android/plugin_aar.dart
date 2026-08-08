@@ -332,11 +332,20 @@ bool pluginBuildsNativeCode(Plugin plugin, FileSystem fileSystem) {
 
 /// The inputs that determine the contents of a plugin's AAR.
 ///
-/// Everything that can change the produced bytes belongs here. Notably absent
-/// is the target platform: plugin AARs are always built for every ABI and the
-/// app strips down to the ABIs it wants, so that changing `--target-platform`
-/// does not invalidate cached plugin builds — and, more importantly, so a
-/// single-ABI AAR is never cached under a key that claims to be complete.
+/// Everything that can change the produced bytes belongs here, except what is
+/// already implied by the cache entry's own coordinate:
+///
+///  * The plugin's `compileSdk`, `minSdk`, `targetSdk` and NDK version are
+///    declared in the plugin's own build files, which are fixed for a given
+///    immutable plugin version.
+///  * The values vended by the `flutter` Gradle extension are fixed by
+///    [flutterGradlePluginVersion].
+///
+/// Notably absent is the target platform: plugin AARs are always built for
+/// every ABI and the app strips down to the ABIs it wants, so that changing
+/// `--target-platform` does not invalidate cached plugin builds — and, more
+/// importantly, so a single-ABI AAR is never cached under a key that claims to
+/// be complete.
 @immutable
 class PluginAarBuildInputs {
   const PluginAarBuildInputs({
@@ -345,10 +354,6 @@ class PluginAarBuildInputs {
     required this.kotlinVersion,
     required this.javaVersion,
     required this.engineVersion,
-    required this.compileSdk,
-    required this.minSdk,
-    required this.targetSdk,
-    required this.ndkVersion,
     required this.flutterGradlePluginVersion,
   });
 
@@ -357,10 +362,9 @@ class PluginAarBuildInputs {
   final String kotlinVersion;
   final String javaVersion;
   final String engineVersion;
-  final String compileSdk;
-  final String minSdk;
-  final String targetSdk;
-  final String ndkVersion;
+
+  /// Identifies the Flutter Gradle Plugin build logic and the SDK values it
+  /// vends, so that changing SDK invalidates cached plugin AARs.
   final String flutterGradlePluginVersion;
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -369,10 +373,6 @@ class PluginAarBuildInputs {
     'kotlinVersion': kotlinVersion,
     'javaVersion': javaVersion,
     'engineVersion': engineVersion,
-    'compileSdk': compileSdk,
-    'minSdk': minSdk,
-    'targetSdk': targetSdk,
-    'ndkVersion': ndkVersion,
     'flutterGradlePluginVersion': flutterGradlePluginVersion,
   };
 

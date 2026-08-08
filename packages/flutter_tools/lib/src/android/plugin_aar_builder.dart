@@ -72,6 +72,13 @@ class PluginAarBuilder {
         for (final String mode in buildModes) mode == 'debug',
       };
 
+      // Plugin build files declare sibling plugins without a version, since the version is
+      // whatever pub resolved for this app and the plugin author cannot know it. Pass the
+      // resolved versions in so the plugin build can fill them in.
+      final String siblingVersions = plan.aarPlugins
+          .map((AarPlugin aar) => '${aar.plugin.name}=${aar.mavenVersion}')
+          .join(',');
+
       for (final AarPlugin aar in _inDependencyOrder(plan.aarPlugins)) {
         for (final debug in variants) {
           if (cache.contains(aar, debug: debug)) {
@@ -87,6 +94,7 @@ class PluginAarBuilder {
             cache: cache,
             gradleExecutable: gradleExecutable,
             flutterSdkPath: flutterSdkPath,
+            siblingVersions: siblingVersions,
             offline: offline,
           );
         }
@@ -149,6 +157,7 @@ class PluginAarBuilder {
     required PluginAarCache cache,
     required String gradleExecutable,
     required String flutterSdkPath,
+    required String siblingVersions,
     required bool offline,
   }) async {
     final variant = debug ? 'debug' : 'release';
@@ -189,6 +198,7 @@ class PluginAarBuilder {
       // wants. Forwarding the app's --target-platform here would produce a
       // partial AAR cached under a key that claims to be complete.
       '-Pflutter.plugin.allAbis=true',
+      if (siblingVersions.isNotEmpty) '-Pflutter.plugin.siblingVersions=$siblingVersions',
     ];
     if (offline) {
       command.add('--offline');

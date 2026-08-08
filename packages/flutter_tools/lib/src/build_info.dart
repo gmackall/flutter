@@ -48,6 +48,8 @@ class BuildInfo {
     this.codeSizeDirectory,
     this.androidGradleDaemon = true,
     this.androidSkipBuildDependencyValidation = false,
+    this.pluginAarEnabled = true,
+    this.forceAarPlugins = const <String>{},
     this.packageConfig = PackageConfig.empty,
     this.initializeFromDill,
     this.assumeInitializeFromDillUpToDate = false,
@@ -92,6 +94,8 @@ class BuildInfo {
       packageConfigPath: packageConfigPath ?? this.packageConfigPath,
       codeSizeDirectory: codeSizeDirectory,
       androidGradleDaemon: androidGradleDaemon,
+      pluginAarEnabled: pluginAarEnabled,
+      forceAarPlugins: forceAarPlugins,
       androidSkipBuildDependencyValidation: androidSkipBuildDependencyValidation,
       packageConfig: packageConfig ?? this.packageConfig,
       initializeFromDill: initializeFromDill ?? this.initializeFromDill,
@@ -196,6 +200,14 @@ class BuildInfo {
   ///
   /// The Gradle daemon may also be disabled in the Android application's properties file.
   final bool androidGradleDaemon;
+
+  /// Whether eligible Flutter plugins may be built into cached AARs rather than
+  /// compiled from source as Gradle subprojects.
+  final bool pluginAarEnabled;
+
+  /// Plugins that should be built into AARs even though they were resolved from
+  /// a `path:` dependency, which normally forces a source build.
+  final Set<String> forceAarPlugins;
 
   /// Whether to skip checking of individual versions of our Android build time
   /// dependencies.

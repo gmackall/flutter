@@ -52,7 +52,9 @@ android {
 }
 
 dependencies {
-    implementation("dev.flutter.plugins:sample_plugin:1.0.0-SNAPSHOT")
+    // Declared without a version: the Flutter tool supplies whichever version pub resolved,
+    // and substitutes a project dependency instead when sample_plugin is built from source.
+    implementation("dev.flutter.plugins:sample_plugin")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")
 }

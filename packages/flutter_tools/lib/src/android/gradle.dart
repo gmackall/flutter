@@ -29,7 +29,10 @@ import '../build_info.dart';
 import '../cache.dart';
 import '../convert.dart';
 import '../flutter_manifest.dart';
+import '../flutter_plugins.dart';
 import '../globals.dart' as globals;
+import '../platform_plugins.dart';
+import '../plugins.dart';
 import '../project.dart';
 import 'android_builder.dart';
 import 'android_sdk.dart';
@@ -45,6 +48,8 @@ import 'migrations/disable_new_dsl_migration.dart';
 import 'migrations/min_sdk_version_migration.dart';
 import 'migrations/multidex_removal_migration.dart';
 import 'migrations/top_level_gradle_build_file_migration.dart';
+import 'plugin_aar.dart';
+import 'plugin_aar_builder.dart';
 
 /// The regex to grab variant names from printBuildVariants gradle task
 ///
@@ -233,6 +238,92 @@ class AndroidGradleBuilder implements AndroidBuilder {
       fileSystem: _fileSystem,
     );
   }
+
+  /// Builds eligible plugins into AARs and writes the build plan Gradle reads.
+  ///
+  /// A plugin is only eligible if it opted in with `flutter.plugin.migrated=true`, was resolved
+  /// from an immutable source, and builds no native code. Everything else — and anything that
+  /// transitively depends on it — is built from source as a Gradle subproject, exactly as before.
+  /// Writing the plan unconditionally matters: a stale plan left over from an earlier build with
+  /// different flags would otherwise be picked up by Gradle.
+  Future<void> _preparePluginAars({
+    required FlutterProject project,
+    required AndroidBuildInfo androidBuildInfo,
+    required String gradleExecutablePath,
+  }) async {
+    // Plugin discovery must not be what fails the build. If pub metadata is missing or unreadable,
+    // skip AAR preparation and let the rest of the build report the problem, rather than surfacing
+    // a missing package config as a plugin AAR error.
+    List<Plugin> plugins;
+    try {
+      plugins = await findPlugins(project, throwOnError: false);
+    } on ToolExit catch (error) {
+      _logger.printTrace('Skipping plugin AAR builds: ${error.message}');
+      return;
+    }
+    final List<Plugin> androidPlugins = plugins
+        .where((Plugin plugin) => plugin.platforms.containsKey(AndroidPlugin.kConfigKey))
+        .toList();
+    if (androidPlugins.isEmpty) {
+      return;
+    }
+
+    final BuildInfo buildInfo = androidBuildInfo.buildInfo;
+    final Directory androidDirectory = project.android.hostAppGradleRoot;
+    final String flutterRoot = _fileSystem.path.absolute(Cache.flutterRoot!);
+    final File engineStamp = _fileSystem
+        .directory(flutterRoot)
+        .childDirectory('bin')
+        .childDirectory('cache')
+        .childFile('engine.stamp');
+
+    final inputs = PluginAarBuildInputs(
+      agpVersion: gradle.getAgpVersion(androidDirectory, _logger) ?? 'unknown',
+      gradleVersion:
+          await gradle.getGradleVersion(androidDirectory, _logger, globals.processManager) ??
+          'unknown',
+      kotlinVersion:
+          await gradle.getKgpVersion(androidDirectory, _logger, globals.processManager) ?? 'unknown',
+      javaVersion: _java?.version?.toString() ?? 'unknown',
+      engineVersion: engineStamp.existsSync() ? engineStamp.readAsStringSync().trim() : 'unknown',
+      flutterGradlePluginVersion: _flutterGradlePluginVersion,
+    );
+
+    final builder = PluginAarBuilder(
+      fileSystem: _fileSystem,
+      logger: _logger,
+      processUtils: _processUtils,
+    );
+
+    final AndroidPluginBuildPlan plan = await builder.prepare(
+      plugins: androidPlugins,
+      buildInputs: inputs,
+      gradleExecutable: gradleExecutablePath,
+      flutterSdkPath: flutterRoot,
+      localRepository: project.directory
+          .childDirectory('build')
+          .childDirectory('flutter_plugins_aar_repo'),
+      cacheRoot: _pluginAarCacheRoot,
+      buildModes: <String>{buildInfo.mode.cliName},
+      aarBuildsEnabled: buildInfo.pluginAarEnabled,
+      forceAarPluginNames: buildInfo.forceAarPlugins,
+    );
+
+    // A plugin that opted in but was demoted anyway is worth surfacing: one unmigrated straggler
+    // can drag a large dependency graph back to source builds, and without this the user has no
+    // way to see why their build did not get faster.
+    plan.demotionDiagnostics.forEach(_logger.printTrace);
+  }
+
+  /// The shared, cross-project cache of built plugin AARs.
+  Directory get _pluginAarCacheRoot => _fileSystem
+      .directory(globals.fsUtils.homeDirPath ?? _fileSystem.currentDirectory.path)
+      .childDirectory('.flutter')
+      .childDirectory('plugin-aar-cache');
+
+  /// Identifies the Flutter Gradle Plugin build logic, so that a change to it invalidates cached
+  /// plugin AARs built by an older SDK.
+  String get _flutterGradlePluginVersion => globals.flutterVersion.frameworkRevision;
 
   /// Builds the APK.
   @override
@@ -485,6 +576,17 @@ class AndroidGradleBuilder implements AndroidBuilder {
     if (configOnly) {
       return;
     }
+
+    // Build any eligible plugins into AARs and publish them into the project-local plugin
+    // repository, then leave behind a plan telling Gradle which plugins to resolve from there and
+    // which to build from source. Doing this before Gradle starts — rather than from a settings
+    // plugin during Gradle's own configuration — is what keeps the app build's configuration cache
+    // usable and lets plugin builds be cached across projects.
+    await _preparePluginAars(
+      project: project,
+      androidBuildInfo: androidBuildInfo,
+      gradleExecutablePath: gradleExecutablePath,
+    );
 
     // Assembly work starts here.
     final BuildInfo buildInfo = androidBuildInfo.buildInfo;
