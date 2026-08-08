@@ -99,6 +99,35 @@ Future<void> _renderTemplateToFile(
   await file.writeAsString(renderedTemplate);
 }
 
+/// Determines where pub resolved a package from, given the resolved root
+/// directory of that package.
+///
+/// Detection is structural rather than based on locating the pub cache, since
+/// the cache location varies by platform and by the `PUB_CACHE` override. Pub
+/// lays its cache out as `<cache>/hosted/<host>/<name>-<version>` and
+/// `<cache>/git/<name>-<resolved-ref>`, so the enclosing directory names are
+/// sufficient to classify a package.
+@visibleForTesting
+PluginSource pluginSourceForPackageRoot(String packageRootPath, FileSystem fileSystem) {
+  final path.Context context = fileSystem.path;
+  final String normalized = context.normalize(context.absolute(packageRootPath));
+
+  final String? flutterRoot = Cache.flutterRoot;
+  if (flutterRoot != null &&
+      context.isWithin(context.normalize(context.absolute(flutterRoot)), normalized)) {
+    return PluginSource.sdk;
+  }
+
+  final String parent = context.basename(context.dirname(normalized));
+  if (parent == 'git') {
+    return PluginSource.git;
+  }
+  if (context.basename(context.dirname(context.dirname(normalized))) == 'hosted') {
+    return PluginSource.hosted;
+  }
+  return PluginSource.path;
+}
+
 Future<Plugin?> _pluginFromPackage(
   String name,
   Uri packageRoot,
@@ -153,6 +182,8 @@ Future<Plugin?> _pluginFromPackage(
     fileSystem: fs,
     appDependencies: appDependencies,
     isDevDependency: isDevDependency,
+    version: pubspec['version']?.toString(),
+    source: pluginSourceForPackageRoot(packageRootPath, fs),
   );
 }
 
@@ -229,6 +260,8 @@ const _kFlutterPluginsDependenciesKey = 'dependencies';
 const _kFlutterPluginsHasNativeBuildKey = 'native_build';
 const _kFlutterPluginsSharedDarwinSource = 'shared_darwin_source';
 const _kFlutterPluginsDevDependencyKey = 'dev_dependency';
+const _kFlutterPluginsVersionKey = 'version';
+const _kFlutterPluginsSourceKey = 'source';
 
 /// Writes the .flutter-plugins-dependencies file based on the list of plugins.
 /// If there aren't any plugins, then the files aren't written to disk. The resulting
@@ -444,6 +477,8 @@ List<Map<String, Object>> _createPluginMapOfPlatform(List<Plugin> plugins, Strin
             (platformPlugin as NativeOrDartPlugin).hasFfi(),
       _kFlutterPluginsDependenciesKey: <String>[...plugin.dependencies.where(pluginNames.contains)],
       _kFlutterPluginsDevDependencyKey: plugin.isDevDependency,
+      if (plugin.version != null) _kFlutterPluginsVersionKey: plugin.version!,
+      _kFlutterPluginsSourceKey: plugin.source.name,
     });
   }
   return pluginInfo;

@@ -9,6 +9,38 @@ import 'base/common.dart';
 import 'base/file_system.dart';
 import 'platform_plugins.dart';
 
+/// Where pub resolved a plugin package from.
+///
+/// This determines whether the plugin's sources are immutable for a given
+/// resolution, and therefore whether its Android build output may be cached
+/// and shared across projects. See [Plugin.source].
+enum PluginSource {
+  /// Resolved from a pub host (pub.dev or a custom host). Immutable: a given
+  /// name and version always has identical contents.
+  hosted,
+
+  /// Resolved from a git repository into the pub cache. Immutable: the
+  /// resolved commit pins the contents.
+  git,
+
+  /// Resolved from a local path. Mutable — the developer may be editing it.
+  path,
+
+  /// Vendored by the Flutter SDK itself.
+  sdk;
+
+  /// Whether a package from this source has contents that cannot change
+  /// without the resolved version changing too.
+  bool get isImmutable => this == hosted || this == git;
+
+  /// Parses the value written to `.flutter-plugins-dependencies`, defaulting
+  /// to the conservative (mutable) [PluginSource.path] for unknown values.
+  static PluginSource fromKey(String? value) => PluginSource.values.firstWhere(
+    (PluginSource source) => source.name == value,
+    orElse: () => PluginSource.path,
+  );
+}
+
 class Plugin {
   Plugin({
     required this.name,
@@ -21,6 +53,8 @@ class Plugin {
     required this.isDirectDependency,
     required this.isDevDependency,
     this.implementsPackage,
+    this.version,
+    this.source = PluginSource.path,
   });
 
   /// Parses [Plugin] specification from the provided pluginYaml.
@@ -71,6 +105,8 @@ class Plugin {
     required FileSystem fileSystem,
     required bool isDevDependency,
     Set<String>? appDependencies,
+    String? version,
+    PluginSource source = PluginSource.path,
   }) {
     final List<String> errors = validatePluginYaml(pluginYaml);
     if (errors.isNotEmpty) {
@@ -87,6 +123,8 @@ class Plugin {
         fileSystem,
         isDevDependency: isDevDependency,
         appDependencies != null && appDependencies.contains(name),
+        version: version,
+        source: source,
       );
     }
     return Plugin._fromLegacyYaml(
@@ -98,6 +136,8 @@ class Plugin {
       fileSystem,
       isDevDependency: isDevDependency,
       appDependencies != null && appDependencies.contains(name),
+      version: version,
+      source: source,
     );
   }
 
@@ -110,6 +150,8 @@ class Plugin {
     FileSystem fileSystem,
     bool isDirectDependency, {
     required bool isDevDependency,
+    String? version,
+    PluginSource source = PluginSource.path,
   }) {
     // SAFETY: This constructor is only invoked from .fromYaml, which validates.
     final platformsYaml = pluginYaml['platforms'] as YamlMap;
@@ -202,6 +244,8 @@ class Plugin {
       isDirectDependency: isDirectDependency,
       implementsPackage: pluginYaml['implements'] != null ? pluginYaml['implements'] as String : '',
       isDevDependency: isDevDependency,
+      version: version,
+      source: source,
     );
   }
 
@@ -214,6 +258,8 @@ class Plugin {
     FileSystem fileSystem,
     bool isDirectDependency, {
     required bool isDevDependency,
+    String? version,
+    PluginSource source = PluginSource.path,
   }) {
     final platforms = <String, PluginPlatform>{};
     final pluginClass = (pluginYaml as Map<dynamic, dynamic>)['pluginClass'] as String?;
@@ -246,6 +292,8 @@ class Plugin {
       dependencies: dependencies,
       isDirectDependency: isDirectDependency,
       isDevDependency: isDevDependency,
+      version: version,
+      source: source,
     );
   }
 
@@ -406,6 +454,17 @@ class Plugin {
 
   final String name;
   final String path;
+
+  /// The package version pub resolved for this plugin, as written in its
+  /// `pubspec.yaml`, or `null` if the pubspec declares no version.
+  ///
+  /// Combined with [source] this identifies the plugin's contents: for an
+  /// immutable [source], the same name and version always denotes byte
+  /// identical sources.
+  final String? version;
+
+  /// Where pub resolved this plugin from.
+  final PluginSource source;
 
   /// The name of the interface package that this plugin implements.
   /// If `null`, this plugin doesn't implement an interface.
