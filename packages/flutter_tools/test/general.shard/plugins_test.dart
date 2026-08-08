@@ -673,6 +673,7 @@ dependencies:
                 'native_build': true,
                 'dependencies': <String>[],
                 'dev_dependency': false,
+                'source': 'path',
               },
             ],
             'android': <Map<String, Object>>[
@@ -682,6 +683,7 @@ dependencies:
                 'native_build': true,
                 'dependencies': <String>[],
                 'dev_dependency': false,
+                'source': 'path',
               },
             ],
             'macos': <Map<String, Object>>[],
@@ -693,6 +695,7 @@ dependencies:
                 'native_build': false,
                 'dependencies': <String>[],
                 'dev_dependency': false,
+                'source': 'path',
               },
             ],
             'web': <Map<String, Object>>[
@@ -701,6 +704,7 @@ dependencies:
                 'path': '/.tmp_rand0/flutter_plugin.rand0/',
                 'dependencies': <String>[],
                 'dev_dependency': false,
+                'source': 'path',
               },
             ],
           };
