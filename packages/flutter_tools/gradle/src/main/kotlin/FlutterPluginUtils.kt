@@ -1074,10 +1074,11 @@ object FlutterPluginUtils {
             } else {
                 pluginHandler.getPluginList()
             }).filter { pluginObject ->
+                // Only source-built plugins put the embedding on the app's classpath transitively.
+                // A plugin consumed as an AAR declares the embedding `compileOnly`, so it is not a
+                // transitive provider of it and the app must depend on the embedding itself.
                 val pluginName = pluginObject["name"] as? String ?: ""
-                val isSubproject = project.rootProject.findProject(":$pluginName") != null
-                val isMigrated = pluginObject["is_migrated"] as? Boolean ?: false
-                isSubproject && !isMigrated
+                project.rootProject.findProject(":$pluginName") != null
             }
 
         if (!isFlutterAppProject(project) || pluginsThatIncludeFlutterEmbeddingAsTransitiveDependency.isEmpty()) {

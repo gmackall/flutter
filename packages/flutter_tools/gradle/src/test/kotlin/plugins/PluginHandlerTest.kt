@@ -182,6 +182,7 @@ class PluginHandlerTest {
         every { mockBuildType.isDebuggable } returns true
         every { project.rootProject.findProject(":${cameraDependency["name"]}") } returns pluginProject
         every { project.rootProject.findProject(":${flutterPluginAndroidLifecycleDependency["name"]}") } returns pluginDependencyProject
+        every { pluginProject.extensions.findByName("flutter") } returns null
         every { pluginProject.extensions.create(any(), any<Class<Any>>()) } returns mockk()
         val captureActionSlot = slot<Action<Project>>()
         val capturePluginActionSlot = mutableListOf<Action<Project>>()
@@ -280,6 +281,7 @@ class PluginHandlerTest {
         val pluginWithNullDependencies: MutableMap<String?, Any?> = cameraDependency.toMutableMap()
         pluginWithNullDependencies["dependencies"] = null
         every { project.rootProject.findProject(":${pluginWithNullDependencies["name"]}") } returns pluginProject
+        every { pluginProject.extensions.findByName("flutter") } returns null
         every { pluginProject.extensions.create(any(), any<Class<Any>>()) } returns mockk()
         every { project.afterEvaluate(any<Action<Project>>()) } returns Unit
         every { pluginProject.afterEvaluate(any<Action<Project>>()) } returns Unit
@@ -444,6 +446,7 @@ class PluginHandlerTest {
         every { mockBuildType.name } returns "debug"
         every { mockBuildType.isDebuggable } returns true
         every { project.rootProject.findProject(":${cameraDependency["name"]}") } returns pluginProject
+        every { pluginProject.extensions.findByName("flutter") } returns null
         every { pluginProject.extensions.create(any(), any<Class<Any>>()) } returns mockk()
         every { project.afterEvaluate(any<Action<Project>>()) } returns Unit
         every { pluginProject.afterEvaluate(any<Action<Project>>()) } returns Unit

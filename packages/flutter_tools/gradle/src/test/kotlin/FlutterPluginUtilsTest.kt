@@ -2440,6 +2440,9 @@ class FlutterPluginUtilsTest {
         val pluginHandler = PluginHandler(project)
         mockkObject(NativePluginLoaderReflectionBridge)
         every { NativePluginLoaderReflectionBridge.getPlugins(any(), any()) } returns pluginListWithoutDevDependency
+        // These plugins are built from source as subprojects, so they carry the embedding as a
+        // transitive api dependency and the app must not add it a second time.
+        every { project.rootProject.findProject(any<String>()) } returns mockk<Project>()
         val buildType: BuildType = mockk<BuildType>()
         every { buildType.name } returns "debug"
         every { buildType.isDebuggable } returns true
@@ -2472,6 +2475,9 @@ class FlutterPluginUtilsTest {
         val pluginHandler = PluginHandler(project)
         mockkObject(NativePluginLoaderReflectionBridge)
         every { NativePluginLoaderReflectionBridge.getPlugins(any(), any()) } returns pluginListWithoutDevDependency
+        // These plugins are built from source as subprojects, so they carry the embedding as a
+        // transitive api dependency and the app must not add it a second time.
+        every { project.rootProject.findProject(any<String>()) } returns mockk<Project>()
         val buildType: BuildType = mockk<BuildType>()
         val engineVersion = EXAMPLE_ENGINE_VERSION
         every { buildType.name } returns "debug"
@@ -2510,6 +2516,8 @@ class FlutterPluginUtilsTest {
         val pluginHandler = PluginHandler(project)
         mockkObject(NativePluginLoaderReflectionBridge)
         every { NativePluginLoaderReflectionBridge.getPlugins(any(), any()) } returns pluginListWithSingleDevDependency
+        // Built from source as a subproject, so the embedding arrives transitively.
+        every { project.rootProject.findProject(any<String>()) } returns mockk<Project>()
         val buildType: BuildType = mockk<BuildType>()
         val engineVersion = EXAMPLE_ENGINE_VERSION
         every { buildType.name } returns "release"
@@ -2564,6 +2572,8 @@ class FlutterPluginUtilsTest {
         val pluginHandler = PluginHandler(project)
         mockkObject(NativePluginLoaderReflectionBridge)
         every { NativePluginLoaderReflectionBridge.getPlugins(any(), any()) } returns pluginListWithSingleDevDependency
+        // Built from source as a subproject, so the embedding arrives transitively.
+        every { project.rootProject.findProject(any<String>()) } returns mockk<Project>()
         val buildType: BuildType = mockk<BuildType>()
         val engineVersion = EXAMPLE_ENGINE_VERSION
         every { buildType.name } returns "debug"

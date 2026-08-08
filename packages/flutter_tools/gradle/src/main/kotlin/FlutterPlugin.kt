@@ -190,27 +190,10 @@ class FlutterPlugin : Plugin<Project> {
             }
         )
 
-        // When migrated (composite-build) plugins are present, the app may declare build types that
-        // the included plugin builds do not. The legacy model copied the app's build types into each
-        // plugin; composite builds cannot, and FlutterPluginGradlePlugin only recreates the standard
-        // debug/profile/release variants. Point any *custom* app build type at its Flutter build mode
-        // so AGP can resolve a matching plugin variant across the composite-build boundary. This is a
-        // no-op for debug/profile/release (provided directly by the plugins) and is gated on migrated
-        // plugins so non-composite apps are unaffected.
-        // TODO(gmackall): Revisit once AGP natively handles variant matching across composite builds.
-        val hasMigratedPlugins: Boolean =
-            getPluginHandler(project).getPluginList().any { it["is_migrated"] == true }
-        if (hasMigratedPlugins) {
-            FlutterPluginUtils.getLegacyAndroidExtension(project).buildTypes.configureEach {
-                val isStandardFlutterBuildType: Boolean = name == "debug" || name == "profile" || name == "release"
-                if (!isStandardFlutterBuildType) {
-                    val fallbackMode: String = if (isDebuggable) "debug" else "release"
-                    if (!matchingFallbacks.contains(fallbackMode)) {
-                        matchingFallbacks.add(fallbackMode)
-                    }
-                }
-            }
-        }
+        // Note: no per-build-type variant matching is needed for plugins consumed as AARs. Debug
+        // and release are published as separate Maven coordinates rather than as variants of one
+        // module, and the coordinate is selected from the Flutter build *mode* a build type maps
+        // to, so custom build types resolve without attribute matching.
         if (FlutterPluginUtils.shouldShrinkResources(project)) {
             val releaseBuildType: BuildType = FlutterPluginUtils.getAndroidExtension(project).buildTypes.getByName("release")
             releaseBuildType.isMinifyEnabled = true

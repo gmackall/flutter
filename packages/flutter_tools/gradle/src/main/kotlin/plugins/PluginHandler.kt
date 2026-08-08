@@ -13,6 +13,8 @@ import com.flutter.gradle.FlutterPluginUtils.getCompileSdkFromProject
 import com.flutter.gradle.FlutterPluginUtils.getLegacyAndroidExtension
 import com.flutter.gradle.FlutterPluginUtils.isBuiltAsApp
 import com.flutter.gradle.FlutterPluginUtils.supportsBuildMode
+import com.flutter.gradle.AarPluginEntry
+import com.flutter.gradle.FlutterPluginAarPlan
 import com.flutter.gradle.NativePluginLoaderReflectionBridge
 import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.Project
@@ -56,15 +58,28 @@ class PluginHandler(
         return pluginList!!
     }
 
+    /**
+     * The Flutter tool's plan for this build, or null when plugins are all built from source.
+     *
+     * Read lazily and cached: the plan file is written by the tool before Gradle starts, so it
+     * does not change during a build.
+     */
+    private val aarPlan: FlutterPluginAarPlan? by lazy {
+        // Locating the Flutter project root can legitimately fail (for example when the `flutter`
+        // extension has no source set yet). There being no plan is the safe state — every plugin
+        // is built from source — so treat a failure to locate it as "no plan" rather than failing
+        // the build.
+        try {
+            FlutterPluginAarPlan.readOrNull(FlutterPluginUtils.getFlutterSourceDirectory(project))
+        } catch (ignored: Exception) {
+            null
+        }
+    }
+
     internal fun configurePlugins(engineVersionValue: String) {
-        val localRepoDir = File(FlutterPluginUtils.getFlutterSourceDirectory(project), "build/flutter_plugins_aar_repo")
-        project.rootProject.allprojects {
-            repositories.maven {
-                url = project.uri(localRepoDir)
-            }
-            configurations.all {
-                resolutionStrategy.cacheChangingModulesFor(0, java.util.concurrent.TimeUnit.SECONDS)
-            }
+        val plan: FlutterPluginAarPlan? = aarPlan
+        if (plan != null && plan.aarPlugins.isNotEmpty()) {
+            addPluginRepositories(plan)
         }
 
         val pluginList: List<Map<String?, Any?>> = getPluginList()
@@ -72,11 +87,35 @@ class PluginHandler(
             configurePluginProject(
                 project,
                 plugin,
-                engineVersionValue
+                engineVersionValue,
+                plan
             )
         }
         pluginList.forEach { plugin: Map<String?, Any?> ->
-            configurePluginDependencies(project, plugin)
+            configurePluginDependencies(project, plugin, plan)
+        }
+    }
+
+    /**
+     * Adds the local plugin repository, plus any repositories the plugin builds reported needing.
+     *
+     * A plugin's `implementation` dependencies become dependencies of the app once the plugin is
+     * an AAR, so a repository the plugin resolved them from has to be available to the app too.
+     *
+     * This only runs when the build actually consumes AAR plugins. Adding repositories — and
+     * especially touching resolution strategy — for every build regardless would change dependency
+     * resolution for the overwhelming majority of projects that have no migrated plugins at all.
+     */
+    private fun addPluginRepositories(plan: FlutterPluginAarPlan) {
+        project.rootProject.allprojects {
+            repositories.maven {
+                url = uri(plan.repository)
+            }
+            plan.extraRepositories.forEach { repositoryUrl ->
+                repositories.maven {
+                    url = uri(repositoryUrl)
+                }
+            }
         }
     }
 
@@ -98,6 +137,32 @@ class PluginHandler(
         private const val WEBSITE_DEPLOYMENT_ANDROID_BUILD_CONFIG = "https://flutter.dev/to/review-gradle-config"
 
         /**
+         * Adds a dependency on a plugin that is consumed as a prebuilt AAR.
+         *
+         * The coordinate is selected per build type using the Flutter build *mode* that build type
+         * maps to, so a custom build type resolves the AAR for its mode rather than needing a
+         * published variant of its own. Dev dependencies are omitted from release builds, matching
+         * the subproject model.
+         */
+        private fun addAarPluginDependency(
+            project: Project,
+            aarPlugin: AarPluginEntry
+        ) {
+            project.afterEvaluate {
+                getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
+                    if (aarPlugin.isDevDependency && buildType.name == "release") {
+                        return@forEach
+                    }
+                    val buildMode: String = buildModeFor(buildType)
+                    project.dependencies.add(
+                        "${buildType.name}Api",
+                        aarPlugin.coordinateForBuildMode(buildMode)
+                    )
+                }
+            }
+        }
+
+        /**
          * Performs configuration related to the plugin's Gradle [Project], including
          * 1. Adding the plugin itself as a dependency to the main project.
          * 2. Adding the main project's build types to the plugin's build types.
@@ -108,7 +173,8 @@ class PluginHandler(
         private fun configurePluginProject(
             project: Project,
             pluginObject: Map<String?, Any?>,
-            engineVersion: String
+            engineVersion: String,
+            plan: FlutterPluginAarPlan?
         ) {
             val pluginName =
                 requireNotNull(pluginObject["name"] as? String) { "Plugin name must be a string for plugin object: $pluginObject" }
@@ -116,14 +182,11 @@ class PluginHandler(
             val pluginProject: Project? = project.rootProject.findProject(":$pluginName")
 
             if (pluginProject == null) {
-                project.afterEvaluate {
-                    getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
-                        val isDevDependency = pluginObject["dev_dependency"] as? Boolean ?: false
-                        if (!isDevDependency || buildType.name != "release") {
-                            project.dependencies.add("${buildType.name}Implementation", "dev.flutter.plugins:$pluginName:1.0.0-SNAPSHOT")
-                        }
-                    }
-                }
+                // Not a subproject, so it is either consumed as a prebuilt AAR or not part of this
+                // build at all.
+                val aarPlugin: AarPluginEntry =
+                    plan?.aarPlugins?.firstOrNull { it.name == pluginName } ?: return
+                addAarPluginDependency(project, aarPlugin)
                 return
             }
 
@@ -233,7 +296,8 @@ class PluginHandler(
          */
         private fun configurePluginDependencies(
             project: Project,
-            pluginObject: Map<String?, Any?>
+            pluginObject: Map<String?, Any?>,
+            plan: FlutterPluginAarPlan?
         ) {
             val pluginName: String =
                 requireNotNull(pluginObject["name"] as? String) {
@@ -255,13 +319,25 @@ class PluginHandler(
                         return@innerForEach
                     }
 
+                    // A source-built plugin can depend on a plugin that is consumed as an AAR:
+                    // the demotion set is closed over the dependency graph in the *other*
+                    // direction only, since an AAR build cannot resolve a source-built sibling but
+                    // a source build can resolve a published one.
                     val dependencyProject =
                         project.rootProject.findProject(":$pluginDependencyName")
+                    val aarDependency: AarPluginEntry? =
+                        plan?.aarPlugins?.firstOrNull { it.name == pluginDependencyName }
+                    if (dependencyProject == null && aarDependency == null) {
+                        return@innerForEach
+                    }
                     pluginProject.afterEvaluate {
                         if (dependencyProject != null) {
                             pluginProject.dependencies.add("implementation", dependencyProject)
                         } else {
-                            pluginProject.dependencies.add("implementation", "dev.flutter.plugins:$pluginDependencyName:1.0.0-SNAPSHOT")
+                            pluginProject.dependencies.add(
+                                "implementation",
+                                aarDependency!!.coordinateForBuildMode(flutterBuildMode)
+                            )
                         }
                     }
                 }
