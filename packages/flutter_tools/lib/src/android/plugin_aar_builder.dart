@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import '../base/common.dart';
+import '../base/error_handling_io.dart';
 import '../base/file_system.dart';
 import '../base/logger.dart';
 import '../base/process.dart';
@@ -38,9 +39,14 @@ class PluginAarBuilder {
   /// Returns the plan describing which plugins are consumed as AARs and which
   /// are built from source, and writes that plan into [localRepository] for
   /// the Gradle side to read.
+  ///
+  /// [resolveBuildInputs] is only invoked when at least one plugin is actually
+  /// eligible for an AAR build. Determining the toolchain versions that key the
+  /// cache costs a Gradle invocation of its own, and the overwhelming majority
+  /// of projects have no eligible plugins — they must not pay for it.
   Future<AndroidPluginBuildPlan> prepare({
     required List<Plugin> plugins,
-    required PluginAarBuildInputs buildInputs,
+    required Future<PluginAarBuildInputs> Function() resolveBuildInputs,
     required String gradleExecutable,
     required String flutterSdkPath,
     required Directory localRepository,
@@ -48,7 +54,6 @@ class PluginAarBuilder {
     required Set<String> buildModes,
     bool aarBuildsEnabled = true,
     Set<String> forceAarPluginNames = const <String>{},
-    bool offline = false,
   }) async {
     final AndroidPluginBuildPlan plan = computeAndroidPluginBuildPlan(
       plugins: plugins,
@@ -59,11 +64,12 @@ class PluginAarBuilder {
 
     plan.demotionDiagnostics.forEach(_logger.printTrace);
 
-    final cache = PluginAarCache(rootDirectory: cacheRoot, inputs: buildInputs);
     localRepository.createSync(recursive: true);
 
     if (plan.aarPlugins.isNotEmpty) {
+      final cache = PluginAarCache(rootDirectory: cacheRoot, inputs: await resolveBuildInputs());
       cache.writeBuildInputsManifest();
+      cache.markUsed(DateTime.now());
 
       // Debug and release are separate coordinates, so only build the variants
       // this invocation actually needs. A release-only CI build never pays for
@@ -72,9 +78,9 @@ class PluginAarBuilder {
         for (final String mode in buildModes) mode == 'debug',
       };
 
-      // Plugin build files declare sibling plugins without a version, since the version is
-      // whatever pub resolved for this app and the plugin author cannot know it. Pass the
-      // resolved versions in so the plugin build can fill them in.
+      // Plugin build files pin a version for their sibling plugins so they can be built
+      // standalone, but the version that belongs in *this* app is whatever pub resolved. Pass the
+      // resolved versions so the plugin builds override their declared ones.
       final String siblingVersions = plan.aarPlugins
           .map((AarPlugin aar) => '${aar.plugin.name}=${aar.mavenVersion}')
           .join(',');
@@ -95,12 +101,12 @@ class PluginAarBuilder {
             gradleExecutable: gradleExecutable,
             flutterSdkPath: flutterSdkPath,
             siblingVersions: siblingVersions,
-            offline: offline,
           );
         }
       }
 
       _materialize(cache: cache, plan: plan, variants: variants, into: localRepository);
+      cache.evictLeastRecentlyUsed();
     }
 
     final List<String> extraRepositories = _collectExtraRepositories(localRepository);
@@ -158,7 +164,6 @@ class PluginAarBuilder {
     required String gradleExecutable,
     required String flutterSdkPath,
     required String siblingVersions,
-    required bool offline,
   }) async {
     final variant = debug ? 'debug' : 'release';
     final Directory pluginAndroidDirectory = _fileSystem
@@ -175,54 +180,62 @@ class PluginAarBuilder {
       'Building $variant AAR for ${aar.plugin.name} ${aar.mavenVersion}...',
     );
 
-    // The plugin build writes into the shared cache root directly. Every
-    // plugin for a given toolchain configuration publishes into the same
-    // keyed repository, so an inter-plugin dependency resolves from the
-    // artifact its own build just published.
-    final Directory publishRoot = cache.directoryFor(aar, debug: debug).parent.parent.parent;
+    // Publish into a private staging directory and move the finished artifact into the shared
+    // cache in one step, so a concurrent build never resolves against a half written directory.
+    // Dependencies are still *resolved* from the shared cache, which is where siblings built
+    // earlier in this same run have already landed.
+    final Directory staging = cache.createStagingDirectory();
 
     final command = <String>[
       gradleExecutable,
       '-p',
       pluginAndroidDirectory.path,
       'publishFlutterPluginPublicationToFlutterLocalRepository',
+      'flutterPluginRepositoriesManifest',
       '-Pflutter.sdk=$flutterSdkPath',
       '-Pflutter.plugin.name=${aar.plugin.name}',
       '-Pflutter.plugin.version=${aar.mavenVersion}',
       '-Pflutter.plugin.variant=$variant',
       '-Pflutter.plugin.groupId=${debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId}',
-      '-Pflutter.plugin.publishRepo=${publishRoot.path}',
-      // Resolve inter-plugin dependencies from the same repository.
-      '-Pflutter.plugin.resolveRepo=${publishRoot.path}',
+      '-Pflutter.plugin.publishRepo=${staging.path}',
+      '-Pflutter.plugin.resolveRepo=${cache.keyedRoot.path}',
       // Plugin AARs always carry every ABI; the app strips down to the ABIs it
       // wants. Forwarding the app's --target-platform here would produce a
       // partial AAR cached under a key that claims to be complete.
       '-Pflutter.plugin.allAbis=true',
       if (siblingVersions.isNotEmpty) '-Pflutter.plugin.siblingVersions=$siblingVersions',
     ];
-    if (offline) {
-      command.add('--offline');
-    }
     if (_logger.isVerbose) {
       command.add('--info');
     } else {
       command.add('-q');
     }
 
-    final int exitCode = await _processUtils.stream(
-      command,
-      trace: true,
-      mapFunction: (String line) => line,
-    );
-    status.stop();
-
-    if (exitCode != 0) {
-      throwToolExit(
-        'Failed to build the $variant AAR for plugin "${aar.plugin.name}" '
-        '(${pluginAndroidDirectory.path}).\n'
-        'Re-run with --verbose for the full Gradle output, or pass --no-plugin-aar to build '
-        'this plugin from source instead.',
+    try {
+      final int exitCode = await _processUtils.stream(
+        command,
+        trace: true,
+        mapFunction: (String line) => line,
       );
+      status.stop();
+
+      if (exitCode != 0) {
+        throwToolExit(
+          'Failed to build the $variant AAR for plugin "${aar.plugin.name}" '
+          '(${pluginAndroidDirectory.path}).\n'
+          'Re-run with --verbose for the full Gradle output, or pass --no-plugin-aar to build '
+          'this plugin from source instead.',
+        );
+      }
+
+      if (!cache.installFromStaging(staging, aar, debug: debug)) {
+        _logger.printTrace(
+          'A concurrent build already cached the $variant AAR for ${aar.plugin.name} '
+          '${aar.mavenVersion}; keeping the existing entry.',
+        );
+      }
+    } finally {
+      ErrorHandlingFileSystem.deleteIfExists(staging, recursive: true);
     }
   }
 
@@ -244,11 +257,12 @@ class PluginAarBuilder {
             '${source.path}, but the plugin build produced nothing there.',
           );
         }
-        final String group = debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId;
-        final Directory destination = into
-            .childDirectory(group.replaceAll('.', _fileSystem.path.separator))
-            .childDirectory(aar.plugin.name)
-            .childDirectory(aar.mavenVersion);
+        final Directory destination = into.childDirectory(
+          cache.relativeArtifactPath(aar, debug: debug),
+        );
+        // Replace rather than merge, so that artifacts left over from a previous build of a
+        // different version of this plugin do not accumulate in the project repository.
+        ErrorHandlingFileSystem.deleteIfExists(destination, recursive: true);
         destination.createSync(recursive: true);
         for (final File file in source.listSync().whereType<File>()) {
           file.copySync(destination.childFile(file.basename).path);

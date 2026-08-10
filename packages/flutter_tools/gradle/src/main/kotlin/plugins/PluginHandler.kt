@@ -150,10 +150,13 @@ class PluginHandler(
         ) {
             project.afterEvaluate {
                 getLegacyAndroidExtension(project).buildTypes.forEach { buildType ->
-                    if (aarPlugin.isDevDependency && buildType.name == "release") {
+                    // Gate on the Flutter build *mode*, not the build type name: a custom build
+                    // type that maps to release mode must not pull dev dependencies into a
+                    // release build.
+                    val buildMode: String = buildModeFor(buildType)
+                    if (aarPlugin.isDevDependency && buildMode == "release") {
                         return@forEach
                     }
-                    val buildMode: String = buildModeFor(buildType)
                     project.dependencies.add(
                         "${buildType.name}Api",
                         aarPlugin.coordinateForBuildMode(buildMode)

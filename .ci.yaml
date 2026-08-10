@@ -2391,8 +2391,9 @@ targets:
       task_name: android_defines_test
 
   # Builds an app whose plugins are consumed as prebuilt AARs alongside a plugin that is still
-  # built from source. Marked unstable while the AAR plugin build model is being rolled out.
-  - name: Linux_android_emu_unstable android_composite_build_plugins_test
+  # built from source. Only builds APKs, so it needs no device or emulator. Marked unstable while
+  # the AAR plugin build model is being rolled out.
+  - name: Linux_build_test_unstable android_composite_build_plugins_test
     recipe: devicelab/devicelab_drone
     timeout: 60
     properties:

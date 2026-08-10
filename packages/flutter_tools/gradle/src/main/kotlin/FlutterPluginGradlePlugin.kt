@@ -64,16 +64,18 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
     }
 
     /**
-     * Supplies the version for versionless dependencies on sibling Flutter plugins.
+     * Overrides the declared version of dependencies on sibling Flutter plugins.
      *
-     * A migrated plugin declares a dependency on another plugin without a version:
+     * A migrated plugin declares a dependency on another plugin with a pinned version, so that the
+     * plugin can still be built and tested standalone:
      *
-     *     implementation("dev.flutter.plugins:some_other_plugin")
+     *     implementation("dev.flutter.plugins:some_other_plugin:1.2.3")
      *
-     * The version is whatever pub resolved for the app being built, which the plugin author cannot
-     * know and should not have to keep in sync with their Gradle file. The Flutter tool passes the
-     * resolved versions in, and they are filled in here. In subproject mode there is no version to
-     * fill in because the dependency is substituted for a project dependency instead.
+     * The version that belongs in a given app, though, is whatever pub resolved for that app —
+     * which the plugin author cannot know. When the Flutter tool drives the build it passes the
+     * resolved versions and they replace whatever was declared. Pub is the source of truth for
+     * which version of a plugin an app uses; the declared version is only a fallback that keeps
+     * standalone builds working.
      */
     private fun resolveSiblingPluginVersions(project: Project) {
         val encoded: String = (project.findProperty(PROP_SIBLING_VERSIONS) as? String) ?: return
@@ -88,12 +90,12 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         if (versions.isEmpty()) {
             return
         }
-        project.configurations.all {
+        project.configurations.configureEach {
             resolutionStrategy.eachDependency {
                 val isFlutterPlugin =
                     requested.group == FLUTTER_PLUGIN_GROUP_ID ||
                         requested.group == FLUTTER_PLUGIN_DEBUG_GROUP_ID
-                if (isFlutterPlugin && requested.version.isNullOrEmpty()) {
+                if (isFlutterPlugin) {
                     versions[requested.name]?.let { useVersion(it) }
                 }
             }
@@ -132,7 +134,7 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
      * demotion set be closed transitively without plugin authors maintaining two build files.
      */
     private fun configureAsSubproject(project: Project) {
-        project.configurations.all {
+        project.configurations.configureEach {
             resolutionStrategy.dependencySubstitution {
                 all {
                     val requested = this.requested
@@ -247,24 +249,31 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         artifactId: String,
         version: String
     ) {
-        project.afterEvaluate {
-            val urls: List<String> =
-                project.repositories
-                    .filterIsInstance<MavenArtifactRepository>()
-                    .map { it.url.toString() }
-                    .filter { url -> DEFAULT_REPOSITORY_PREFIXES.none { url.startsWith(it) } }
-                    .filterNot { it.startsWith("file:") }
-                    .distinct()
+        val destination =
+            File(
+                File(publishRepo, groupId.replace('.', File.separatorChar)),
+                "$artifactId${File.separator}$version"
+            )
+        val manifest = File(destination, "$artifactId-$version-repositories.json")
 
-            val destination =
-                File(
-                    File(publishRepo, groupId.replace('.', File.separatorChar)),
-                    "$artifactId${File.separator}$version"
-                )
-            destination.mkdirs()
-            val manifest = File(destination, "$artifactId-$version-repositories.json")
-            val entries = urls.joinToString(separator = ",\n") { "    { \"url\": \"$it\" }" }
-            manifest.writeText("{\n  \"repositories\": [\n$entries\n  ]\n}\n")
+        project.tasks.register(REPOSITORIES_MANIFEST_TASK_NAME) {
+            description = "Records the Maven repositories this Flutter plugin resolves dependencies from."
+            // Resolved at execution time rather than during configuration: writing files while
+            // configuring is what makes a build incompatible with the configuration cache.
+            val repositories = project.repositories
+            outputs.file(manifest)
+            doLast {
+                val urls: List<String> =
+                    repositories
+                        .filterIsInstance<MavenArtifactRepository>()
+                        .map { it.url.toString() }
+                        .filterNot { url -> DEFAULT_REPOSITORY_PREFIXES.any { url.startsWith(it) } }
+                        .filterNot { it.startsWith("file:") }
+                        .distinct()
+                manifest.parentFile.mkdirs()
+                val entries = urls.joinToString(separator = ",\n") { "    { \"url\": \"$it\" }" }
+                manifest.writeText("{\n  \"repositories\": [\n$entries\n  ]\n}\n")
+            }
         }
     }
 
@@ -274,6 +283,7 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
 
         internal const val PUBLICATION_NAME = "flutterPlugin"
         internal const val PUBLISH_REPOSITORY_NAME = "FlutterLocal"
+        internal const val REPOSITORIES_MANIFEST_TASK_NAME = "flutterPluginRepositoriesManifest"
 
         internal const val PROP_PUBLISH_REPO = "flutter.plugin.publishRepo"
         internal const val PROP_RESOLVE_REPO = "flutter.plugin.resolveRepo"

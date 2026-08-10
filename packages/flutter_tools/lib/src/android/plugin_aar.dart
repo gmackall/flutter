@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:meta/meta.dart';
 
 import '../base/file_system.dart';
+import '../base/io.dart';
 import '../convert.dart';
 import '../plugins.dart';
 
@@ -127,8 +128,6 @@ class AndroidPluginBuildPlan {
 
   /// Plugins built from source as Gradle subprojects, in the legacy model.
   final List<DemotedPlugin> demotedPlugins;
-
-  bool get isEmpty => aarPlugins.isEmpty && demotedPlugins.isEmpty;
 
   /// Lines describing why each plugin was built from source.
   ///
@@ -394,24 +393,40 @@ class PluginAarBuildInputs {
 class PluginAarCache {
   PluginAarCache({required this.rootDirectory, required this.inputs});
 
+  /// The default cap on the total size of the cache, beyond which the least
+  /// recently used entries are evicted.
+  static const int defaultMaxSizeBytes = 10 * 1024 * 1024 * 1024;
+
   /// The root of the shared cache, typically `~/.flutter/plugin-aar-cache`.
   final Directory rootDirectory;
 
   final PluginAarBuildInputs inputs;
 
-  Directory get _keyedRoot => rootDirectory.childDirectory(inputs.digest);
+  /// The root of the Maven repository holding artifacts built with [inputs].
+  ///
+  /// Every plugin built for a given toolchain configuration publishes into this
+  /// one repository, so an inter-plugin dependency resolves against the
+  /// artifact a sibling's build just published.
+  Directory get keyedRoot => rootDirectory.childDirectory(inputs.digest);
+
+  /// The path of [plugin] relative to a Maven repository root.
+  ///
+  /// Note the group id expands to several path segments, which is why callers
+  /// must never try to recover the repository root by walking back up a fixed
+  /// number of parents from [directoryFor].
+  String relativeArtifactPath(AarPlugin plugin, {required bool debug}) {
+    final String group = debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId;
+    return rootDirectory.fileSystem.path.joinAll(<String>[
+      ...group.split('.'),
+      plugin.plugin.name,
+      plugin.mavenVersion,
+    ]);
+  }
 
   /// The directory holding the published artifacts for [plugin], laid out as a
   /// Maven repository so that it can be materialized by copying.
-  Directory directoryFor(AarPlugin plugin, {required bool debug}) {
-    final String group = debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId;
-    return _keyedRoot
-        .childDirectory(group.replaceAll('.', fileSystemSeparator))
-        .childDirectory(plugin.plugin.name)
-        .childDirectory(plugin.mavenVersion);
-  }
-
-  String get fileSystemSeparator => rootDirectory.fileSystem.path.separator;
+  Directory directoryFor(AarPlugin plugin, {required bool debug}) =>
+      keyedRoot.childDirectory(relativeArtifactPath(plugin, debug: debug));
 
   /// Whether a built AAR for [plugin] is already present.
   bool contains(AarPlugin plugin, {required bool debug}) {
@@ -428,11 +443,133 @@ class PluginAarCache {
   /// Records the inputs that produced this cache entry, so that a stale or
   /// surprising cache hit can be diagnosed without recomputing the digest.
   void writeBuildInputsManifest() {
-    final File manifest = _keyedRoot.childFile('build-inputs.json');
+    final File manifest = keyedRoot.childFile('build-inputs.json');
     if (manifest.existsSync()) {
       return;
     }
     manifest.parent.createSync(recursive: true);
     manifest.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(inputs.toJson()));
+  }
+
+  /// A private directory for a build to publish into before its output is
+  /// moved into the shared cache.
+  ///
+  /// Concurrent builds — a CI matrix running several `flutter build`
+  /// invocations at once is the common case — must never let a reader observe
+  /// a half written artifact directory. Each build publishes into its own
+  /// staging directory and the finished artifact directory is moved into place
+  /// in one step. The staging directory lives under [rootDirectory] so that the
+  /// move stays within one filesystem and is therefore atomic.
+  Directory createStagingDirectory() {
+    final Directory staging = rootDirectory.childDirectory(
+      '.staging-$pid-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    staging.createSync(recursive: true);
+    return staging;
+  }
+
+  /// Moves a finished artifact directory out of [staging] and into the cache.
+  ///
+  /// Returns `true` if this build's output was the one installed. A `false`
+  /// result means another build produced the same artifact first, which is not
+  /// an error: the entry is keyed on inputs that fully determine the contents,
+  /// so either copy is equally valid and the existing one is kept.
+  bool installFromStaging(Directory staging, AarPlugin plugin, {required bool debug}) {
+    final String relativePath = relativeArtifactPath(plugin, debug: debug);
+    final Directory built = staging.childDirectory(relativePath);
+    if (!built.existsSync()) {
+      return false;
+    }
+    final Directory destination = keyedRoot.childDirectory(relativePath);
+    if (destination.existsSync()) {
+      return false;
+    }
+    destination.parent.createSync(recursive: true);
+    try {
+      built.renameSync(destination.path);
+      return true;
+    } on FileSystemException {
+      // Another build won the race between the check above and the rename.
+      return false;
+    }
+  }
+
+  /// The name of the marker recording when an entry was last used for a build.
+  ///
+  /// Recency is tracked explicitly rather than read from filesystem access
+  /// times, which are unreliable: `noatime` and `relatime` mounts are common on
+  /// Linux, and under them an entry read on every single build would still look
+  /// untouched and be evicted first.
+  static const lastUsedMarkerName = '.last-used';
+
+  /// Records that this entry was used for a build, for eviction ordering.
+  void markUsed(DateTime now) {
+    final File marker = keyedRoot.childFile(lastUsedMarkerName);
+    marker.parent.createSync(recursive: true);
+    marker.writeAsStringSync(now.toUtc().toIso8601String());
+  }
+
+  /// When [entry] was last used, or the epoch when there is no usable marker,
+  /// so entries written before markers existed are the first to be evicted.
+  DateTime _readLastUsed(Directory entry) {
+    final File marker = entry.childFile(lastUsedMarkerName);
+    if (!marker.existsSync()) {
+      return DateTime.fromMillisecondsSinceEpoch(0);
+    }
+    return DateTime.tryParse(marker.readAsStringSync().trim()) ??
+        DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  /// Evicts whole cache entries, least recently used first, until the cache is
+  /// no larger than [maxSizeBytes].
+  ///
+  /// Eviction is per toolchain configuration rather than per artifact: entries
+  /// for an older SDK or AGP version are the ones that stop being useful, and
+  /// dropping a whole entry keeps the repository internally consistent.
+  void evictLeastRecentlyUsed({int maxSizeBytes = defaultMaxSizeBytes}) {
+    if (!rootDirectory.existsSync()) {
+      return;
+    }
+    final entries = <(Directory, DateTime, int)>[];
+    var totalBytes = 0;
+    for (final FileSystemEntity entity in rootDirectory.listSync()) {
+      if (entity is! Directory || entity.basename.startsWith('.staging-')) {
+        continue;
+      }
+      var size = 0;
+      DateTime lastUsed;
+      try {
+        for (final FileSystemEntity child in entity.listSync(recursive: true)) {
+          if (child is File) {
+            size += child.lengthSync();
+          }
+        }
+        lastUsed = _readLastUsed(entity);
+      } on FileSystemException {
+        // The entry is being written or removed by another build; leave it be.
+        continue;
+      }
+      totalBytes += size;
+      entries.add((entity, lastUsed, size));
+    }
+    if (totalBytes <= maxSizeBytes) {
+      return;
+    }
+    entries.sort(((Directory, DateTime, int) a, (Directory, DateTime, int) b) => a.$2.compareTo(b.$2));
+    for (final (Directory directory, _, int size) in entries) {
+      if (totalBytes <= maxSizeBytes) {
+        return;
+      }
+      // Never evict the entry this build is using.
+      if (directory.basename == inputs.digest) {
+        continue;
+      }
+      try {
+        directory.deleteSync(recursive: true);
+        totalBytes -= size;
+      } on FileSystemException {
+        // In use by a concurrent build; skip it.
+      }
+    }
   }
 }

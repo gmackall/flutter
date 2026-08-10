@@ -32,13 +32,6 @@ enum PluginSource {
   /// Whether a package from this source has contents that cannot change
   /// without the resolved version changing too.
   bool get isImmutable => this == hosted || this == git;
-
-  /// Parses the value written to `.flutter-plugins-dependencies`, defaulting
-  /// to the conservative (mutable) [PluginSource.path] for unknown values.
-  static PluginSource fromKey(String? value) => PluginSource.values.firstWhere(
-    (PluginSource source) => source.name == value,
-    orElse: () => PluginSource.path,
-  );
 }
 
 class Plugin {

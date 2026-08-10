@@ -52,9 +52,11 @@ android {
 }
 
 dependencies {
-    // Declared without a version: the Flutter tool supplies whichever version pub resolved,
-    // and substitutes a project dependency instead when sample_plugin is built from source.
-    implementation("dev.flutter.plugins:sample_plugin")
+    // The pinned version keeps this plugin buildable and testable on its own. When the
+    // Flutter tool builds it for an app it overrides the version with whatever pub resolved
+    // for that app, and substitutes a project dependency instead when sample_plugin is
+    // being built from source.
+    implementation("dev.flutter.plugins:sample_plugin:0.0.1")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")
 }

@@ -104,11 +104,6 @@ void main() {
       expect(PluginSource.path.isImmutable, isFalse);
       expect(PluginSource.sdk.isImmutable, isFalse);
     });
-
-    testWithoutContext('an unknown source key degrades to the mutable default', () {
-      expect(PluginSource.fromKey('something_new'), PluginSource.path);
-      expect(PluginSource.fromKey(null), PluginSource.path);
-    });
   });
 
   group('maven version mapping', () {
@@ -329,13 +324,15 @@ void main() {
       expect(json['version'], kAndroidPluginBuildPlanVersion);
       expect(json['repository'], '/build/repo');
 
-      final aar = (json['aar']! as List<Object?>).cast<Map<String, Object?>>();
+      final List<Map<String, Object?>> aar =
+          (json['aar']! as List<Object?>).cast<Map<String, Object?>>();
       expect(aar.single['name'], 'aar_plugin');
       expect(aar.single['version'], '2.1.0');
       expect(aar.single['groupId'], kFlutterPluginGroupId);
       expect(aar.single['debugGroupId'], kFlutterPluginDebugGroupId);
 
-      final subprojects = (json['subprojects']! as List<Object?>).cast<Map<String, Object?>>();
+      final List<Map<String, Object?>> subprojects =
+          (json['subprojects']! as List<Object?>).cast<Map<String, Object?>>();
       expect(subprojects.single['name'], 'source_plugin');
       expect(subprojects.single['reason'], 'notMigrated');
     });
@@ -366,6 +363,93 @@ void main() {
       // and the values vended by the `flutter` extension move with the SDK, so
       // the SDK revision is what has to invalidate them.
       expect(inputs().digest, isNot(inputs(sdkRevision: 'def456').digest));
+    });
+
+    testWithoutContext('the artifact path matches the maven coordinate', () {
+      final cache = PluginAarCache(rootDirectory: fileSystem.directory('/cache'), inputs: inputs());
+      final aar = AarPlugin(plugin: _plugin(fileSystem, 'a'), mavenVersion: '1.0.0');
+
+      // The group id expands to several path segments, and the debug group has
+      // one more than the release group, so the repository root can never be
+      // recovered by walking a fixed number of parents back up from here.
+      expect(
+        cache.directoryFor(aar, debug: false).path,
+        fileSystem.path.join(cache.keyedRoot.path, 'dev', 'flutter', 'plugins', 'a', '1.0.0'),
+      );
+      expect(
+        cache.directoryFor(aar, debug: true).path,
+        fileSystem.path.join(
+          cache.keyedRoot.path,
+          'dev',
+          'flutter',
+          'plugins',
+          'debug',
+          'a',
+          '1.0.0',
+        ),
+      );
+    });
+
+    testWithoutContext('installing from staging never clobbers an existing entry', () {
+      final cache = PluginAarCache(rootDirectory: fileSystem.directory('/cache'), inputs: inputs());
+      final aar = AarPlugin(plugin: _plugin(fileSystem, 'a'), mavenVersion: '1.0.0');
+
+      final Directory staging = cache.createStagingDirectory();
+      staging.childDirectory(cache.relativeArtifactPath(aar, debug: false))
+        ..createSync(recursive: true)
+        ..childFile('a-1.0.0.aar').writeAsStringSync('mine');
+
+      expect(cache.installFromStaging(staging, aar, debug: false), isTrue);
+      expect(cache.directoryFor(aar, debug: false).childFile('a-1.0.0.aar').readAsStringSync(), 'mine');
+
+      // A concurrent build that finished first must win: the entry is keyed on
+      // inputs that fully determine its contents, so either copy is valid and
+      // replacing one mid-resolution is not.
+      final Directory second = cache.createStagingDirectory();
+      second.childDirectory(cache.relativeArtifactPath(aar, debug: false))
+        ..createSync(recursive: true)
+        ..childFile('a-1.0.0.aar').writeAsStringSync('theirs');
+
+      expect(cache.installFromStaging(second, aar, debug: false), isFalse);
+      expect(cache.directoryFor(aar, debug: false).childFile('a-1.0.0.aar').readAsStringSync(), 'mine');
+    });
+
+    testWithoutContext('eviction drops the least recently used entries first', () {
+      final Directory root = fileSystem.directory('/cache')..createSync(recursive: true);
+      void seed(String digest, int bytes, DateTime lastUsed) {
+        final Directory entry = root.childDirectory(digest)..createSync(recursive: true);
+        entry.childFile('artifact.aar').writeAsStringSync('x' * bytes);
+        entry
+            .childFile(PluginAarCache.lastUsedMarkerName)
+            .writeAsStringSync(lastUsed.toUtc().toIso8601String());
+      }
+
+      seed('oldest', 600, DateTime(2020));
+      seed('newer', 600, DateTime(2024));
+      final cache = PluginAarCache(rootDirectory: root, inputs: inputs());
+      seed(cache.inputs.digest, 600, DateTime(2019));
+
+      cache.evictLeastRecentlyUsed(maxSizeBytes: 1400);
+
+      // The oldest goes first; the entry this build is using is never evicted
+      // even though it is the least recently used of the three.
+      expect(root.childDirectory('oldest').existsSync(), isFalse);
+      expect(root.childDirectory('newer').existsSync(), isTrue);
+      expect(root.childDirectory(cache.inputs.digest).existsSync(), isTrue);
+    });
+
+    testWithoutContext('eviction does nothing when under the cap', () {
+      final Directory root = fileSystem.directory('/cache')..createSync(recursive: true);
+      root.childDirectory('entry').childFile('a.aar')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('small');
+
+      PluginAarCache(
+        rootDirectory: root,
+        inputs: inputs(),
+      ).evictLeastRecentlyUsed(maxSizeBytes: 1024);
+
+      expect(root.childDirectory('entry').existsSync(), isTrue);
     });
 
     testWithoutContext('an entry is only a hit once an aar is present', () {

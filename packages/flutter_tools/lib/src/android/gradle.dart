@@ -271,23 +271,17 @@ class AndroidGradleBuilder implements AndroidBuilder {
     final BuildInfo buildInfo = androidBuildInfo.buildInfo;
     final Directory androidDirectory = project.android.hostAppGradleRoot;
     final String flutterRoot = _fileSystem.path.absolute(Cache.flutterRoot!);
-    final File engineStamp = _fileSystem
-        .directory(flutterRoot)
-        .childDirectory('bin')
-        .childDirectory('cache')
-        .childFile('engine.stamp');
 
-    final inputs = PluginAarBuildInputs(
-      agpVersion: gradle.getAgpVersion(androidDirectory, _logger) ?? 'unknown',
-      gradleVersion:
-          await gradle.getGradleVersion(androidDirectory, _logger, globals.processManager) ??
-          'unknown',
-      kotlinVersion:
-          await gradle.getKgpVersion(androidDirectory, _logger, globals.processManager) ?? 'unknown',
-      javaVersion: _java?.version?.toString() ?? 'unknown',
-      engineVersion: engineStamp.existsSync() ? engineStamp.readAsStringSync().trim() : 'unknown',
-      flutterGradlePluginVersion: _flutterGradlePluginVersion,
-    );
+    // Without a home directory there is nowhere to put a shared cache. Falling back to the
+    // current directory would drop a cache tree into the user's project, so build every plugin
+    // from source instead. The plan is still written, so a stale one is never left behind.
+    final String? homeDirPath = _fileSystemUtils.homeDirPath;
+    if (homeDirPath == null) {
+      _logger.printTrace(
+        'No home directory found; building all Flutter plugins from source rather than caching '
+        'plugin AARs outside a well known location.',
+      );
+    }
 
     final builder = PluginAarBuilder(
       fileSystem: _fileSystem,
@@ -297,15 +291,20 @@ class AndroidGradleBuilder implements AndroidBuilder {
 
     final AndroidPluginBuildPlan plan = await builder.prepare(
       plugins: androidPlugins,
-      buildInputs: inputs,
+      // Resolving these costs a Gradle invocation of its own, so it is deferred until the plan
+      // shows that at least one plugin is actually eligible for an AAR build.
+      resolveBuildInputs: () => _resolvePluginAarBuildInputs(androidDirectory, flutterRoot),
       gradleExecutable: gradleExecutablePath,
       flutterSdkPath: flutterRoot,
       localRepository: project.directory
           .childDirectory('build')
           .childDirectory('flutter_plugins_aar_repo'),
-      cacheRoot: _pluginAarCacheRoot,
+      cacheRoot: _fileSystem
+          .directory(homeDirPath ?? '')
+          .childDirectory('.flutter')
+          .childDirectory('plugin-aar-cache'),
       buildModes: <String>{buildInfo.mode.cliName},
-      aarBuildsEnabled: buildInfo.pluginAarEnabled,
+      aarBuildsEnabled: buildInfo.pluginAarEnabled && homeDirPath != null,
       forceAarPluginNames: buildInfo.forceAarPlugins,
     );
 
@@ -315,15 +314,57 @@ class AndroidGradleBuilder implements AndroidBuilder {
     plan.demotionDiagnostics.forEach(_logger.printTrace);
   }
 
-  /// The shared, cross-project cache of built plugin AARs.
-  Directory get _pluginAarCacheRoot => _fileSystem
-      .directory(globals.fsUtils.homeDirPath ?? _fileSystem.currentDirectory.path)
-      .childDirectory('.flutter')
-      .childDirectory('plugin-aar-cache');
+  Future<PluginAarBuildInputs> _resolvePluginAarBuildInputs(
+    Directory androidDirectory,
+    String flutterRoot,
+  ) async {
+    final File engineStamp = _fileSystem
+        .directory(flutterRoot)
+        .childDirectory('bin')
+        .childDirectory('cache')
+        .childFile('engine.stamp');
+    return PluginAarBuildInputs(
+      agpVersion: gradle.getAgpVersion(androidDirectory, _logger) ?? 'unknown',
+      gradleVersion:
+          await gradle.getGradleVersion(androidDirectory, _logger, globals.processManager) ??
+          'unknown',
+      kotlinVersion:
+          await gradle.getKgpVersion(androidDirectory, _logger, globals.processManager) ?? 'unknown',
+      javaVersion: _java?.version?.toString() ?? 'unknown',
+      engineVersion: engineStamp.existsSync() ? engineStamp.readAsStringSync().trim() : 'unknown',
+      flutterGradlePluginVersion: _flutterGradlePluginSourceDigest(flutterRoot),
+    );
+  }
 
-  /// Identifies the Flutter Gradle Plugin build logic, so that a change to it invalidates cached
-  /// plugin AARs built by an older SDK.
-  String get _flutterGradlePluginVersion => globals.flutterVersion.frameworkRevision;
+  /// A digest over the Flutter Gradle Plugin's own sources.
+  ///
+  /// The plugin's build logic, and the SDK values its `flutter` extension vends, both affect the
+  /// AAR a plugin build produces. Keying on the framework revision instead would be correct but
+  /// far too coarse: every framework commit would invalidate every cached plugin AAR, which for
+  /// anyone tracking master would defeat the point of caching at all.
+  String _flutterGradlePluginSourceDigest(String flutterRoot) {
+    final Directory sourceDirectory = _fileSystem
+        .directory(flutterRoot)
+        .childDirectory('packages')
+        .childDirectory('flutter_tools')
+        .childDirectory('gradle')
+        .childDirectory('src')
+        .childDirectory('main');
+    if (!sourceDirectory.existsSync()) {
+      return globals.flutterVersion.frameworkRevision;
+    }
+    final List<File> files =
+        sourceDirectory.listSync(recursive: true).whereType<File>().toList()
+          ..sort((File a, File b) => a.path.compareTo(b.path));
+    final output = AccumulatorSink<Digest>();
+    final ByteConversionSink input = sha256.startChunkedConversion(output);
+    for (final file in files) {
+      input.add(utf8.encode(_fileSystem.path.relative(file.path, from: sourceDirectory.path)));
+      input.add(file.readAsBytesSync());
+    }
+    input.close();
+    return output.events.single.toString().substring(0, 16);
+  }
 
   /// Builds the APK.
   @override
