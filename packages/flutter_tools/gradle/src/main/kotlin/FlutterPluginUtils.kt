@@ -36,7 +36,8 @@ import java.util.Properties
 object FlutterPluginUtils {
     // Gradle properties. These correspond to the values used in
     // flutter/packages/flutter_tools/lib/src/android/gradle.dart, generated from
-    // packages/flutter_tools/lib/src/android/gradle_constants.dart via Pigeon.
+    // packages/flutter_tools/lib/src/android/gradle_constants.dart by
+    // dev/tools/gen_gradle_constants.
     internal const val PROP_SHOULD_SHRINK_RESOURCES = propShouldShrinkResources
     internal const val PROP_SPLIT_PER_ABI = propSplitPerAbi
     internal const val PROP_ENABLE_HCPP = propEnableHcpp

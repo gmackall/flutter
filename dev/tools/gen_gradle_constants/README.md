@@ -1,6 +1,6 @@
 # Gradle Constants Generator
 
-This directory contains a generator that uses [Pigeon](https://pub.dev/packages/pigeon) to generate constants shared between `flutter_tools` (Dart) and the code it drives on the JVM side, such as `flutter_gradle_plugin` (Kotlin).
+This directory contains a generator for constants shared between `flutter_tools` (Dart) and the code it drives on the JVM side, such as `flutter_gradle_plugin` (Kotlin).
 
 ## Source of truth
 
@@ -11,6 +11,8 @@ Today that is:
 | Dart source of truth | Generates |
 | --- | --- |
 | [`packages/flutter_tools/lib/src/android/gradle_constants.dart`](../../../packages/flutter_tools/lib/src/android/gradle_constants.dart) | `packages/flutter_tools/gradle/src/main/kotlin/GradleConstants.g.kt` |
+
+A source of truth may contain nothing but top level `const` declarations of `String`, `int`, `double`, or `bool`. Anything else is an error, so that a constant can never be silently dropped from the generated files.
 
 ## Running the tool
 

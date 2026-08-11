@@ -2,11 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Generates Java and Kotlin constants from Dart sources of truth, using Pigeon.
+// Generates Java and Kotlin constants from Dart sources of truth.
 //
 // What gets generated is listed in [sources]: a Dart source of truth, and the
 // Java and/or Kotlin file generated from it. Add an entry there to share a new
 // set of constants.
+//
+// A source of truth may contain nothing but top level `const` declarations of a
+// type listed in [ConstantType]. Anything else is an error, so that a constant
+// can never be silently dropped from the generated files.
 //
 // ## Usage
 //
@@ -19,8 +23,11 @@
 
 import 'dart:io';
 
+import 'package:analyzer/dart/analysis/features.dart';
+import 'package:analyzer/dart/analysis/results.dart';
+import 'package:analyzer/dart/analysis/utilities.dart';
+import 'package:analyzer/dart/ast/ast.dart';
 import 'package:path/path.dart' as path;
-import 'package:pigeon/pigeon.dart';
 
 /// The Dart sources of truth, and the files generated from each of them.
 ///
@@ -37,9 +44,6 @@ const List<ConstantsSource> sources = <ConstantsSource>[
     ],
   ),
 ];
-
-/// The copyright header prepended to every generated file.
-const String copyrightHeader = 'dev/tools/gen_gradle_constants/copyright.txt';
 
 /// A Dart file of constants, and the files generated from it.
 class ConstantsSource {
@@ -73,130 +77,188 @@ class GeneratedFile {
   final TargetLanguage language;
 }
 
-/// A language Pigeon can generate constants for.
-enum TargetLanguage {
-  // Java constants live inside a class, so the declarations Pigeon emits start
-  // at the class declaration, and the file has to be closed again.
-  java(
-    outputFlag: '--java_out',
-    packageFlag: '--java_package',
-    declarationsStart: 'public class ',
-    constantPrefix: 'public static final ',
-    closer: '}',
-  ),
-  kotlin(
-    outputFlag: '--kotlin_out',
-    packageFlag: '--kotlin_package',
-    declarationsStart: 'package ',
-    constantPrefix: 'const val ',
-  );
+/// A language constants can be generated into.
+enum TargetLanguage { java, kotlin }
 
-  const TargetLanguage({
-    required this.outputFlag,
-    required this.packageFlag,
-    required this.declarationsStart,
-    required this.constantPrefix,
-    this.closer,
-  });
+/// The Dart types a shared constant may have, and what each is called in the
+/// target languages.
+enum ConstantType {
+  string(dart: 'String', java: 'String', kotlin: 'String'),
+  // Dart makes no guarantee narrower than 64 bits for `int`.
+  integer(dart: 'int', java: 'long', kotlin: 'Long'),
+  float(dart: 'double', java: 'double', kotlin: 'Double'),
+  boolean(dart: 'bool', java: 'boolean', kotlin: 'Boolean');
 
-  /// The Pigeon flag naming the file to generate.
-  final String outputFlag;
+  const ConstantType({required this.dart, required this.java, required this.kotlin});
 
-  /// The Pigeon flag naming the package the generated file belongs to.
-  final String packageFlag;
+  /// The name of this type in Dart, as written in a source of truth.
+  final String dart;
 
-  /// The prefix of the last line of the file header, after which Pigeon starts
-  /// emitting declarations.
-  final String declarationsStart;
+  /// The name of this type in Java.
+  final String java;
 
-  /// The prefix of a generated constant declaration.
-  final String constantPrefix;
+  /// The name of this type in Kotlin.
+  final String kotlin;
 
-  /// The line closing the file, for languages that need one.
-  final String? closer;
+  /// The type named [dart], or null if that type cannot be shared.
+  static ConstantType? fromDart(String dart) {
+    for (final ConstantType type in values) {
+      if (type.dart == dart) {
+        return type;
+      }
+    }
+    return null;
+  }
+
+  String nameIn(TargetLanguage language) => switch (language) {
+    TargetLanguage.java => java,
+    TargetLanguage.kotlin => kotlin,
+  };
+}
+
+/// A single `const` declaration read out of a source of truth.
+class Constant {
+  const Constant({required this.name, required this.type, required this.value});
+
+  final String name;
+  final ConstantType type;
+
+  /// The Dart value; a [String], [int], [double], or [bool], per [type].
+  final Object value;
 }
 
 Future<void> main() async {
-  // Generate into a scratch directory first, so that a run that fails partway
-  // through cannot leave a half written file behind.
-  final Directory scratch = Directory.systemTemp.createTempSync('gen_gradle_constants.');
-  try {
-    for (final ConstantsSource source in sources) {
-      for (final GeneratedFile generated in source.generates) {
-        final String contents = await _generate(source, generated, scratch);
-        File(_resolve(generated.file)).writeAsStringSync(contents);
-        stdout.writeln(generated.file);
-      }
+  for (final ConstantsSource source in sources) {
+    final List<Constant> constants = _parseConstants(source.dartSource);
+    for (final GeneratedFile generated in source.generates) {
+      File(_resolve(generated.file)).writeAsStringSync(_render(source, generated, constants));
+      stdout.writeln(generated.file);
     }
-  } finally {
-    scratch.deleteSync(recursive: true);
   }
 }
 
-/// Runs Pigeon for a single [generated] file, and returns its pruned contents.
-Future<String> _generate(ConstantsSource source, GeneratedFile generated, Directory scratch) async {
-  final String scratchFile = path.join(scratch.path, _toPlatformPath(generated.file));
-  Directory(path.dirname(scratchFile)).createSync(recursive: true);
-  final int exitCode = await Pigeon.run(<String>[
-    '--input',
-    _resolve(source.dartSource),
-    generated.language.outputFlag,
-    scratchFile,
-    generated.language.packageFlag,
-    generated.package,
-    '--copyright_header',
-    _resolve(copyrightHeader),
-    '--one_language',
-  ]);
-  if (exitCode != 0) {
-    stderr.writeln('Pigeon failed to generate ${generated.file} from ${source.dartSource}.');
-    exit(exitCode);
+/// Reads the `const` declarations out of the source of truth at [dartSource].
+List<Constant> _parseConstants(String dartSource) {
+  final ParseStringResult result = parseFile(
+    path: _resolve(dartSource),
+    featureSet: FeatureSet.latestLanguageVersion(),
+  );
+
+  Never fail(int offset, String message) {
+    final int line = result.lineInfo.getLocation(offset).lineNumber;
+    stderr.writeln('$dartSource:$line: $message');
+    exit(1);
   }
-  return _keepOnlyConstants(File(scratchFile).readAsLinesSync(), generated.language);
+
+  final constants = <Constant>[];
+  for (final CompilationUnitMember member in result.unit.declarations) {
+    if (member is! TopLevelVariableDeclaration || !member.variables.isConst) {
+      fail(member.offset, 'a source of truth may only declare top level `const` values.');
+    }
+    final TypeAnnotation? annotation = member.variables.type;
+    if (annotation is! NamedType) {
+      fail(member.offset, 'a shared constant must be declared with an explicit type.');
+    }
+    final ConstantType? type = ConstantType.fromDart(annotation.name.lexeme);
+    if (type == null) {
+      fail(
+        annotation.offset,
+        '${annotation.name.lexeme} cannot be shared. Supported types are '
+        '${ConstantType.values.map((ConstantType type) => type.dart).join(', ')}.',
+      );
+    }
+    for (final VariableDeclaration variable in member.variables.variables) {
+      final Expression? initializer = variable.initializer;
+      final Object? value = switch (initializer) {
+        SimpleStringLiteral() => initializer.value,
+        BooleanLiteral() => initializer.value,
+        IntegerLiteral() => initializer.value,
+        DoubleLiteral() => initializer.value,
+        _ => null,
+      };
+      if (value == null) {
+        fail(variable.offset, '${variable.name.lexeme} must be set to a literal value.');
+      }
+      constants.add(Constant(name: variable.name.lexeme, type: type, value: value));
+    }
+  }
+
+  if (constants.isEmpty) {
+    stderr.writeln('$dartSource declares no constants.');
+    exit(1);
+  }
+  return constants;
 }
 
-/// Rewrites Pigeon's output to keep only the file header and the constants.
-///
-/// Pigeon unconditionally emits the imports, message codec, and error class that
-/// a generated platform channel API needs. None of that applies to a file that
-/// only declares constants, and the Flutter Gradle Plugin in particular is a
-/// plain JVM Gradle plugin, with neither the Android SDK nor the Flutter
-/// embedding on its classpath, so those imports would not even resolve.
-String _keepOnlyConstants(List<String> generated, TargetLanguage language) {
-  final header = <String>[];
-  final constants = <String>[];
-  var inHeader = true;
-  for (final line in generated) {
-    final String declaration = line.trimLeft();
-    // A file of constants needs no imports. Kotlin puts them after the package
-    // declaration and Java before the class declaration, so drop them wherever
-    // they turn up.
-    if (declaration.startsWith('import ')) {
-      continue;
-    }
-    if (inHeader) {
-      // Dropping the imports must not leave the blank lines around them behind.
-      if (declaration.isEmpty && (header.isEmpty || header.last.isEmpty)) {
-        continue;
-      }
-      header.add(line);
-      inHeader = !declaration.startsWith(language.declarationsStart);
-    } else if (declaration.startsWith(language.constantPrefix)) {
-      constants.add(line);
-    } else if (declaration.isNotEmpty) {
-      // Pigeon emits the constants first, so anything else ends them.
-      break;
-    }
-  }
+/// Renders [constants] as the contents of [generated].
+String _render(ConstantsSource source, GeneratedFile generated, List<Constant> constants) {
+  final TargetLanguage language = generated.language;
+  final buffer = StringBuffer()
+    ..writeln('// Copyright 2014 The Flutter Authors. All rights reserved.')
+    ..writeln('// Use of this source code is governed by a BSD-style license that can be')
+    ..writeln('// found in the LICENSE file.')
+    ..writeln('// Generated from ${source.dartSource}')
+    ..writeln('// by dev/tools/gen_gradle_constants, do not edit directly.')
+    ..writeln();
 
-  final buffer = StringBuffer();
-  header.forEach(buffer.writeln);
-  buffer.writeln();
-  constants.forEach(buffer.writeln);
-  if (language.closer != null) {
-    buffer.writeln(language.closer);
+  switch (language) {
+    case TargetLanguage.kotlin:
+      buffer
+        ..writeln('package ${generated.package}')
+        ..writeln();
+      for (final constant in constants) {
+        buffer.writeln(
+          'const val ${constant.name}: ${constant.type.nameIn(language)} = '
+          '${_literal(language, constant)}',
+        );
+      }
+    case TargetLanguage.java:
+      buffer
+        ..writeln('package ${generated.package};')
+        ..writeln()
+        // In Java the constants have to live inside a class named for the file.
+        ..writeln('public class ${path.basenameWithoutExtension(generated.file)} {')
+        ..writeln();
+      for (final constant in constants) {
+        buffer.writeln(
+          '  public static final ${constant.type.nameIn(language)} '
+          '${constant.name} = ${_literal(language, constant)};',
+        );
+      }
+      buffer.writeln('}');
   }
   return buffer.toString();
+}
+
+/// Renders the value of [constant] as a [language] literal.
+String _literal(TargetLanguage language, Constant constant) => switch (constant.type) {
+  ConstantType.string => _stringLiteral(language, constant.value as String),
+  ConstantType.integer => '${constant.value}L',
+  ConstantType.float || ConstantType.boolean => '${constant.value}',
+};
+
+String _stringLiteral(TargetLanguage language, String value) {
+  final buffer = StringBuffer('"');
+  for (final int rune in value.runes) {
+    switch (rune) {
+      case 0x5c: // backslash
+        buffer.write(r'\\');
+      case 0x22: // double quote
+        buffer.write(r'\"');
+      case 0x0a: // line feed
+        buffer.write(r'\n');
+      case 0x0d: // carriage return
+        buffer.write(r'\r');
+      case 0x09: // tab
+        buffer.write(r'\t');
+      // `$` opens a template in Kotlin, but is an ordinary character in Java.
+      case 0x24 when language == TargetLanguage.kotlin:
+        buffer.write(r'\$');
+      default:
+        buffer.writeCharCode(rune);
+    }
+  }
+  return (buffer..write('"')).toString();
 }
 
 /// The root of the repository, from the location of this script in
@@ -206,6 +268,5 @@ final String _repoRoot = path.normalize(
 );
 
 /// Turns a repository relative, `/` separated path into an absolute one.
-String _resolve(String repoRelativePath) => path.join(_repoRoot, _toPlatformPath(repoRelativePath));
-
-String _toPlatformPath(String posixPath) => path.joinAll(path.posix.split(posixPath));
+String _resolve(String repoRelativePath) =>
+    path.join(_repoRoot, path.joinAll(path.posix.split(repoRelativePath)));
