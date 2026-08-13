@@ -329,16 +329,13 @@ bool pluginBuildsNativeCode(Plugin plugin, FileSystem fileSystem) {
   return false;
 }
 
-/// The inputs that determine the contents of a plugin's AAR.
+/// The build inputs that come from the app side and are shared by every plugin
+/// AAR built for it.
 ///
-/// Everything that can change the produced bytes belongs here, except what is
-/// already implied by the cache entry's own coordinate:
-///
-///  * The plugin's `compileSdk`, `minSdk`, `targetSdk` and NDK version are
-///    declared in the plugin's own build files, which are fixed for a given
-///    immutable plugin version.
-///  * The values vended by the `flutter` Gradle extension are fixed by
-///    [flutterGradlePluginVersion].
+/// The app supplies the Gradle distribution (its own wrapper runs the plugin
+/// builds), the JVM, the engine the plugin compiles against, and the Flutter
+/// Gradle Plugin logic that configures the build. Everything else that shapes
+/// the output belongs to the plugin, not the app — see [PluginToolchain].
 ///
 /// Notably absent is the target platform: plugin AARs are always built for
 /// every ABI and the app strips down to the ABIs it wants, so that changing
@@ -348,17 +345,13 @@ bool pluginBuildsNativeCode(Plugin plugin, FileSystem fileSystem) {
 @immutable
 class PluginAarBuildInputs {
   const PluginAarBuildInputs({
-    required this.agpVersion,
     required this.gradleVersion,
-    required this.kotlinVersion,
     required this.javaVersion,
     required this.engineVersion,
     required this.flutterGradlePluginVersion,
   });
 
-  final String agpVersion;
   final String gradleVersion;
-  final String kotlinVersion;
   final String javaVersion;
   final String engineVersion;
 
@@ -367,15 +360,70 @@ class PluginAarBuildInputs {
   final String flutterGradlePluginVersion;
 
   Map<String, Object?> toJson() => <String, Object?>{
-    'agpVersion': agpVersion,
     'gradleVersion': gradleVersion,
-    'kotlinVersion': kotlinVersion,
     'javaVersion': javaVersion,
     'engineVersion': engineVersion,
     'flutterGradlePluginVersion': flutterGradlePluginVersion,
   };
+}
 
-  /// A stable digest over every input, used as the cache directory name.
+/// The Android build tool versions a plugin's own build files select.
+///
+/// A migrated plugin pins its own AGP and Kotlin versions — decoupling them
+/// from the app's is the entire point of building the plugin in isolation — so
+/// these are properties of the plugin, not of the app consuming it. Keying a
+/// cache entry on the *app's* AGP would rebuild an identical AAR once per
+/// distinct app toolchain on the machine, which is exactly the duplication the
+/// shared cache exists to remove.
+///
+/// These values are *predicted* by parsing the plugin's build files, and the
+/// plugin build reports back what it actually resolved. See
+/// [PluginAarCache.verifyToolchain].
+@immutable
+class PluginToolchain {
+  const PluginToolchain({required this.agpVersion, required this.kotlinVersion});
+
+  factory PluginToolchain.fromJson(Map<String, Object?> json) => PluginToolchain(
+    agpVersion: json['agpVersion'] as String? ?? 'unknown',
+    kotlinVersion: json['kotlinVersion'] as String? ?? 'unknown',
+  );
+
+  final String agpVersion;
+  final String kotlinVersion;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'agpVersion': agpVersion,
+    'kotlinVersion': kotlinVersion,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is PluginToolchain &&
+      other.agpVersion == agpVersion &&
+      other.kotlinVersion == kotlinVersion;
+
+  @override
+  int get hashCode => Object.hash(agpVersion, kotlinVersion);
+
+  @override
+  String toString() => 'AGP $agpVersion, Kotlin $kotlinVersion';
+}
+
+/// The full identity of a cached plugin AAR: the app-side inputs plus the
+/// plugin's own toolchain.
+@immutable
+class PluginAarKey {
+  const PluginAarKey({required this.inputs, required this.toolchain});
+
+  final PluginAarBuildInputs inputs;
+  final PluginToolchain toolchain;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    ...inputs.toJson(),
+    ...toolchain.toJson(),
+  };
+
+  /// A stable digest over every input, used as a cache directory name.
   String get digest {
     final Map<String, Object?> json = toJson();
     final List<String> keys = json.keys.toList()..sort();
@@ -386,10 +434,16 @@ class PluginAarBuildInputs {
 
 /// A content addressed, cross-project cache of built plugin AARs.
 ///
-/// The cache is keyed on [PluginAarBuildInputs] and the plugin's immutable
-/// name and version, so a given plugin version is compiled at most once per
-/// machine per toolchain configuration, rather than once per clean build per
-/// project as in the source-built model.
+/// Entries are keyed per plugin, on the plugin's immutable name and version
+/// plus a [PluginAarKey] combining the app-side inputs with the plugin's own
+/// toolchain. Keying per plugin rather than per build is what lets one machine
+/// compile a given plugin version once and reuse it from every project,
+/// including projects whose own AGP or Kotlin versions differ.
+///
+/// The cache is deliberately *not* laid out as a Maven repository. Plugin
+/// builds resolve their siblings from the project-local repository, which the
+/// tool populates in dependency order, so the cache is free to key each plugin
+/// independently.
 class PluginAarCache {
   PluginAarCache({required this.rootDirectory, required this.inputs});
 
@@ -397,23 +451,36 @@ class PluginAarCache {
   /// recently used entries are evicted.
   static const int defaultMaxSizeBytes = 10 * 1024 * 1024 * 1024;
 
+  /// The name of the manifest recording what actually produced an entry.
+  static const toolchainManifestName = 'flutter-plugin-toolchain.json';
+
   /// The root of the shared cache, typically `~/.flutter/plugin-aar-cache`.
   final Directory rootDirectory;
 
   final PluginAarBuildInputs inputs;
 
-  /// The root of the Maven repository holding artifacts built with [inputs].
+  /// The directory holding the built artifacts for [plugin].
   ///
-  /// Every plugin built for a given toolchain configuration publishes into this
-  /// one repository, so an inter-plugin dependency resolves against the
-  /// artifact a sibling's build just published.
-  Directory get keyedRoot => rootDirectory.childDirectory(inputs.digest);
+  /// [toolchain] is the plugin's predicted AGP and Kotlin versions, which form
+  /// part of the key so that a plugin whose own toolchain changes gets its own
+  /// entry rather than silently reusing one built with different tools.
+  Directory directoryFor(
+    AarPlugin plugin, {
+    required bool debug,
+    required PluginToolchain toolchain,
+  }) {
+    return rootDirectory
+        .childDirectory(plugin.plugin.name)
+        .childDirectory(plugin.mavenVersion)
+        .childDirectory(PluginAarKey(inputs: inputs, toolchain: toolchain).digest)
+        .childDirectory(debug ? 'debug' : 'release');
+  }
 
   /// The path of [plugin] relative to a Maven repository root.
   ///
   /// Note the group id expands to several path segments, which is why callers
-  /// must never try to recover the repository root by walking back up a fixed
-  /// number of parents from [directoryFor].
+  /// must never try to recover a repository root by walking back up a fixed
+  /// number of parents from an artifact directory.
   String relativeArtifactPath(AarPlugin plugin, {required bool debug}) {
     final String group = debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId;
     return rootDirectory.fileSystem.path.joinAll(<String>[
@@ -423,14 +490,9 @@ class PluginAarCache {
     ]);
   }
 
-  /// The directory holding the published artifacts for [plugin], laid out as a
-  /// Maven repository so that it can be materialized by copying.
-  Directory directoryFor(AarPlugin plugin, {required bool debug}) =>
-      keyedRoot.childDirectory(relativeArtifactPath(plugin, debug: debug));
-
-  /// Whether a built AAR for [plugin] is already present.
-  bool contains(AarPlugin plugin, {required bool debug}) {
-    final Directory directory = directoryFor(plugin, debug: debug);
+  /// Whether a usable AAR for [plugin] is already cached.
+  bool contains(AarPlugin plugin, {required bool debug, required PluginToolchain toolchain}) {
+    final Directory directory = directoryFor(plugin, debug: debug, toolchain: toolchain);
     if (!directory.existsSync()) {
       return false;
     }
@@ -440,15 +502,76 @@ class PluginAarCache {
         .any((File file) => file.basename.endsWith('.aar'));
   }
 
-  /// Records the inputs that produced this cache entry, so that a stale or
-  /// surprising cache hit can be diagnosed without recomputing the digest.
-  void writeBuildInputsManifest() {
-    final File manifest = keyedRoot.childFile('build-inputs.json');
+  /// The toolchain a cached entry reports having actually been built with, or
+  /// null when the entry predates the manifest or is unreadable.
+  PluginToolchain? recordedToolchain(
+    AarPlugin plugin, {
+    required bool debug,
+    required PluginToolchain toolchain,
+  }) {
+    final File manifest = directoryFor(
+      plugin,
+      debug: debug,
+      toolchain: toolchain,
+    ).childFile(toolchainManifestName);
+    if (!manifest.existsSync()) {
+      return null;
+    }
+    try {
+      final Object? decoded = json.decode(manifest.readAsStringSync());
+      if (decoded is! Map<String, Object?>) {
+        return null;
+      }
+      return PluginToolchain.fromJson(decoded);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// Whether a cache entry was built with the toolchain its key claims.
+  ///
+  /// The key is built from versions *predicted* by parsing the plugin's build
+  /// files, which cannot account for a plugin that selects its AGP or Kotlin
+  /// version dynamically — from an environment variable, an injected property,
+  /// or a resolution strategy. The plugin build reports back what it actually
+  /// resolved, and a mismatch means the prediction is unreliable for this
+  /// plugin, so the entry must not be trusted.
+  ///
+  /// Returns null when the entry carries no manifest, which callers should
+  /// treat the same as a mismatch rather than as a pass.
+  bool? verifyToolchain(
+    AarPlugin plugin, {
+    required bool debug,
+    required PluginToolchain toolchain,
+  }) {
+    final PluginToolchain? recorded = recordedToolchain(
+      plugin,
+      debug: debug,
+      toolchain: toolchain,
+    );
+    if (recorded == null) {
+      return null;
+    }
+    return recorded == toolchain;
+  }
+
+  /// Records the app-side inputs that produced this cache entry, so that a
+  /// stale or surprising cache hit can be diagnosed without recomputing digests.
+  void writeBuildInputsManifest(AarPlugin plugin, {required PluginToolchain toolchain}) {
+    final File manifest = rootDirectory
+        .childDirectory(plugin.plugin.name)
+        .childDirectory(plugin.mavenVersion)
+        .childDirectory(PluginAarKey(inputs: inputs, toolchain: toolchain).digest)
+        .childFile('build-inputs.json');
     if (manifest.existsSync()) {
       return;
     }
     manifest.parent.createSync(recursive: true);
-    manifest.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(inputs.toJson()));
+    manifest.writeAsStringSync(
+      const JsonEncoder.withIndent('  ').convert(
+        PluginAarKey(inputs: inputs, toolchain: toolchain).toJson(),
+      ),
+    );
   }
 
   /// A private directory for a build to publish into before its output is
@@ -470,19 +593,36 @@ class PluginAarCache {
 
   /// Moves a finished artifact directory out of [staging] and into the cache.
   ///
+  /// [toolchain] must be what the plugin build *actually* reported using, not
+  /// what was predicted, so that an entry is always filed under the tools that
+  /// really produced it. When the two differ the prediction was wrong, the
+  /// predicted entry is left empty, and the next build takes the same miss —
+  /// correct, if slow, and [verifyToolchain] is what surfaces it.
+  ///
   /// Returns `true` if this build's output was the one installed. A `false`
   /// result means another build produced the same artifact first, which is not
   /// an error: the entry is keyed on inputs that fully determine the contents,
   /// so either copy is equally valid and the existing one is kept.
-  bool installFromStaging(Directory staging, AarPlugin plugin, {required bool debug}) {
-    final String relativePath = relativeArtifactPath(plugin, debug: debug);
-    final Directory built = staging.childDirectory(relativePath);
+  bool installFromStaging(
+    Directory staging,
+    AarPlugin plugin, {
+    required bool debug,
+    required PluginToolchain toolchain,
+    bool replace = false,
+  }) {
+    final Directory built = staging.childDirectory(relativeArtifactPath(plugin, debug: debug));
     if (!built.existsSync()) {
       return false;
     }
-    final Directory destination = keyedRoot.childDirectory(relativePath);
+    built.childFile(toolchainManifestName).writeAsStringSync(
+      const JsonEncoder.withIndent('  ').convert(toolchain.toJson()),
+    );
+    final Directory destination = directoryFor(plugin, debug: debug, toolchain: toolchain);
     if (destination.existsSync()) {
-      return false;
+      if (!replace) {
+        return false;
+      }
+      destination.deleteSync(recursive: true);
     }
     destination.parent.createSync(recursive: true);
     try {
@@ -502,11 +642,34 @@ class PluginAarCache {
   /// untouched and be evicted first.
   static const lastUsedMarkerName = '.last-used';
 
-  /// Records that this entry was used for a build, for eviction ordering.
-  void markUsed(DateTime now) {
-    final File marker = keyedRoot.childFile(lastUsedMarkerName);
+  /// Records that an entry was used for a build, for eviction ordering.
+  void markUsed(AarPlugin plugin, DateTime now, {required PluginToolchain toolchain}) {
+    final File marker = rootDirectory
+        .childDirectory(plugin.plugin.name)
+        .childDirectory(plugin.mavenVersion)
+        .childDirectory(PluginAarKey(inputs: inputs, toolchain: toolchain).digest)
+        .childFile(lastUsedMarkerName);
     marker.parent.createSync(recursive: true);
     marker.writeAsStringSync(now.toUtc().toIso8601String());
+  }
+
+  /// Every `<name>/<version>/<digest>` entry currently in the cache.
+  Iterable<Directory> _entries() sync* {
+    for (final FileSystemEntity name in rootDirectory.listSync()) {
+      if (name is! Directory || name.basename.startsWith('.staging-')) {
+        continue;
+      }
+      for (final FileSystemEntity version in name.listSync()) {
+        if (version is! Directory) {
+          continue;
+        }
+        for (final FileSystemEntity digest in version.listSync()) {
+          if (digest is Directory) {
+            yield digest;
+          }
+        }
+      }
+    }
   }
 
   /// When [entry] was last used, or the epoch when there is no usable marker,
@@ -523,19 +686,19 @@ class PluginAarCache {
   /// Evicts whole cache entries, least recently used first, until the cache is
   /// no larger than [maxSizeBytes].
   ///
-  /// Eviction is per toolchain configuration rather than per artifact: entries
-  /// for an older SDK or AGP version are the ones that stop being useful, and
-  /// dropping a whole entry keeps the repository internally consistent.
-  void evictLeastRecentlyUsed({int maxSizeBytes = defaultMaxSizeBytes}) {
+  /// An entry is one plugin version built with one toolchain, so eviction drops
+  /// exactly the combinations that stopped being useful — an old plugin
+  /// version, or an old AGP — without disturbing the rest.
+  void evictLeastRecentlyUsed({
+    int maxSizeBytes = defaultMaxSizeBytes,
+    Set<String> keep = const <String>{},
+  }) {
     if (!rootDirectory.existsSync()) {
       return;
     }
     final entries = <(Directory, DateTime, int)>[];
     var totalBytes = 0;
-    for (final FileSystemEntity entity in rootDirectory.listSync()) {
-      if (entity is! Directory || entity.basename.startsWith('.staging-')) {
-        continue;
-      }
+    for (final Directory entity in _entries()) {
       var size = 0;
       DateTime lastUsed;
       try {
@@ -560,8 +723,8 @@ class PluginAarCache {
       if (totalBytes <= maxSizeBytes) {
         return;
       }
-      // Never evict the entry this build is using.
-      if (directory.basename == inputs.digest) {
+      // Never evict an entry this build is using.
+      if (keep.contains(directory.path)) {
         continue;
       }
       try {

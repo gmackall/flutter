@@ -339,30 +339,53 @@ void main() {
   });
 
   group('cache keying', () {
-    PluginAarBuildInputs inputs({String agpVersion = '8.11.1', String sdkRevision = 'abc123'}) {
+    PluginAarBuildInputs inputs({String sdkRevision = 'abc123', String gradleVersion = '8.13'}) {
       return PluginAarBuildInputs(
-        agpVersion: agpVersion,
-        gradleVersion: '8.13',
-        kotlinVersion: '2.2.20',
+        gradleVersion: gradleVersion,
         javaVersion: '17',
         engineVersion: '1.0.0-abc',
         flutterGradlePluginVersion: sdkRevision,
       );
     }
 
+    const toolchain = PluginToolchain(agpVersion: '8.11.1', kotlinVersion: '2.2.20');
+
+    String digest({
+      PluginAarBuildInputs? withInputs,
+      PluginToolchain? withToolchain,
+    }) => PluginAarKey(
+      inputs: withInputs ?? inputs(),
+      toolchain: withToolchain ?? toolchain,
+    ).digest;
+
     testWithoutContext('identical inputs produce the same digest', () {
-      expect(inputs().digest, inputs().digest);
+      expect(digest(), digest());
     });
 
-    testWithoutContext('a different AGP version produces a different digest', () {
-      expect(inputs().digest, isNot(inputs(agpVersion: '9.0.1').digest));
+    testWithoutContext('a different plugin AGP version produces a different digest', () {
+      expect(
+        digest(),
+        isNot(
+          digest(
+            withToolchain: const PluginToolchain(agpVersion: '9.0.1', kotlinVersion: '2.2.20'),
+          ),
+        ),
+      );
+    });
+
+    testWithoutContext('the app AGP version is not part of the key', () {
+      // A plugin pins its own AGP, so two apps on different AGP versions must
+      // share one cache entry for the same plugin rather than each building an
+      // identical AAR.
+      expect(digest(withInputs: inputs()), digest(withInputs: inputs()));
+      expect(digest(), isNot(digest(withInputs: inputs(gradleVersion: '9.1'))));
     });
 
     testWithoutContext('a different SDK revision produces a different digest', () {
       // The plugin's own compileSdk/minSdk live in its (immutable) build files,
       // and the values vended by the `flutter` extension move with the SDK, so
       // the SDK revision is what has to invalidate them.
-      expect(inputs().digest, isNot(inputs(sdkRevision: 'def456').digest));
+      expect(digest(), isNot(digest(withInputs: inputs(sdkRevision: 'def456'))));
     });
 
     testWithoutContext('the artifact path matches the maven coordinate', () {
@@ -373,20 +396,12 @@ void main() {
       // one more than the release group, so the repository root can never be
       // recovered by walking a fixed number of parents back up from here.
       expect(
-        cache.directoryFor(aar, debug: false).path,
-        fileSystem.path.join(cache.keyedRoot.path, 'dev', 'flutter', 'plugins', 'a', '1.0.0'),
+        cache.relativeArtifactPath(aar, debug: false),
+        fileSystem.path.join('dev', 'flutter', 'plugins', 'a', '1.0.0'),
       );
       expect(
-        cache.directoryFor(aar, debug: true).path,
-        fileSystem.path.join(
-          cache.keyedRoot.path,
-          'dev',
-          'flutter',
-          'plugins',
-          'debug',
-          'a',
-          '1.0.0',
-        ),
+        cache.relativeArtifactPath(aar, debug: true),
+        fileSystem.path.join('dev', 'flutter', 'plugins', 'debug', 'a', '1.0.0'),
       );
     });
 
@@ -399,8 +414,17 @@ void main() {
         ..createSync(recursive: true)
         ..childFile('a-1.0.0.aar').writeAsStringSync('mine');
 
-      expect(cache.installFromStaging(staging, aar, debug: false), isTrue);
-      expect(cache.directoryFor(aar, debug: false).childFile('a-1.0.0.aar').readAsStringSync(), 'mine');
+      expect(
+        cache.installFromStaging(staging, aar, debug: false, toolchain: toolchain),
+        isTrue,
+      );
+      expect(
+        cache
+            .directoryFor(aar, debug: false, toolchain: toolchain)
+            .childFile('a-1.0.0.aar')
+            .readAsStringSync(),
+        'mine',
+      );
 
       // A concurrent build that finished first must win: the entry is keyed on
       // inputs that fully determine its contents, so either copy is valid and
@@ -410,14 +434,27 @@ void main() {
         ..createSync(recursive: true)
         ..childFile('a-1.0.0.aar').writeAsStringSync('theirs');
 
-      expect(cache.installFromStaging(second, aar, debug: false), isFalse);
-      expect(cache.directoryFor(aar, debug: false).childFile('a-1.0.0.aar').readAsStringSync(), 'mine');
+      expect(
+        cache.installFromStaging(second, aar, debug: false, toolchain: toolchain),
+        isFalse,
+      );
+      expect(
+        cache
+            .directoryFor(aar, debug: false, toolchain: toolchain)
+            .childFile('a-1.0.0.aar')
+            .readAsStringSync(),
+        'mine',
+      );
     });
 
     testWithoutContext('eviction drops the least recently used entries first', () {
       final Directory root = fileSystem.directory('/cache')..createSync(recursive: true);
-      void seed(String digest, int bytes, DateTime lastUsed) {
-        final Directory entry = root.childDirectory(digest)..createSync(recursive: true);
+      void seed(String name, int bytes, DateTime lastUsed) {
+        final Directory entry = root
+            .childDirectory(name)
+            .childDirectory('1.0.0')
+            .childDirectory('digest')
+          ..createSync(recursive: true);
         entry.childFile('artifact.aar').writeAsStringSync('x' * bytes);
         entry
             .childFile(PluginAarCache.lastUsedMarkerName)
@@ -426,21 +463,26 @@ void main() {
 
       seed('oldest', 600, DateTime(2020));
       seed('newer', 600, DateTime(2024));
+      seed('in_use', 600, DateTime(2019));
       final cache = PluginAarCache(rootDirectory: root, inputs: inputs());
-      seed(cache.inputs.digest, 600, DateTime(2019));
+      final String inUse = root
+          .childDirectory('in_use')
+          .childDirectory('1.0.0')
+          .childDirectory('digest')
+          .path;
 
-      cache.evictLeastRecentlyUsed(maxSizeBytes: 1400);
+      cache.evictLeastRecentlyUsed(maxSizeBytes: 1400, keep: <String>{inUse});
 
-      // The oldest goes first; the entry this build is using is never evicted
+      // The oldest goes first; an entry this build is using is never evicted
       // even though it is the least recently used of the three.
-      expect(root.childDirectory('oldest').existsSync(), isFalse);
-      expect(root.childDirectory('newer').existsSync(), isTrue);
-      expect(root.childDirectory(cache.inputs.digest).existsSync(), isTrue);
+      expect(root.childDirectory('oldest').childDirectory('1.0.0').childDirectory('digest').existsSync(), isFalse);
+      expect(root.childDirectory('newer').childDirectory('1.0.0').childDirectory('digest').existsSync(), isTrue);
+      expect(fileSystem.directory(inUse).existsSync(), isTrue);
     });
 
     testWithoutContext('eviction does nothing when under the cap', () {
       final Directory root = fileSystem.directory('/cache')..createSync(recursive: true);
-      root.childDirectory('entry').childFile('a.aar')
+      root.childDirectory('entry').childDirectory('1.0.0').childDirectory('d').childFile('a.aar')
         ..createSync(recursive: true)
         ..writeAsStringSync('small');
 
@@ -459,15 +501,15 @@ void main() {
       );
       final aar = AarPlugin(plugin: _plugin(fileSystem, 'a'), mavenVersion: '1.0.0');
 
-      expect(cache.contains(aar, debug: false), isFalse);
+      expect(cache.contains(aar, debug: false, toolchain: toolchain), isFalse);
 
-      cache.directoryFor(aar, debug: false)
+      cache.directoryFor(aar, debug: false, toolchain: toolchain)
         ..createSync(recursive: true)
         ..childFile('a-1.0.0.aar').writeAsStringSync('');
 
-      expect(cache.contains(aar, debug: false), isTrue);
+      expect(cache.contains(aar, debug: false, toolchain: toolchain), isTrue);
       // Debug and release are separate coordinates and separate cache entries.
-      expect(cache.contains(aar, debug: true), isFalse);
+      expect(cache.contains(aar, debug: true, toolchain: toolchain), isFalse);
     });
   });
 }

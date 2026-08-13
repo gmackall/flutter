@@ -17,13 +17,16 @@ import '../../src/common.dart';
 import '../../src/fake_process_manager.dart';
 
 const _inputs = PluginAarBuildInputs(
-  agpVersion: '8.11.1',
   gradleVersion: '8.13',
-  kotlinVersion: '2.2.20',
   javaVersion: '17',
   engineVersion: '1.0.0-abc',
   flutterGradlePluginVersion: 'fgpdigest',
 );
+
+const _toolchain = PluginToolchain(agpVersion: '8.11.1', kotlinVersion: '2.2.20');
+
+String _entryDigest([PluginToolchain toolchain = _toolchain]) =>
+    PluginAarKey(inputs: _inputs, toolchain: toolchain).digest;
 
 Plugin _plugin(
   FileSystem fileSystem,
@@ -76,6 +79,7 @@ void main() {
     required String version,
     required bool debug,
     List<String> repositoryUrls = const <String>[],
+    PluginToolchain reportedToolchain = _toolchain,
     int exitCode = 0,
   }) {
     return FakeCommand(
@@ -91,7 +95,7 @@ void main() {
         '-Pflutter.plugin.variant=${debug ? 'debug' : 'release'}',
         '-Pflutter.plugin.groupId=${debug ? 'dev.flutter.plugins.debug' : 'dev.flutter.plugins'}',
         RegExp(r'^-Pflutter\.plugin\.publishRepo=.+'),
-        RegExp(r'^-Pflutter\.plugin\.resolveRepo=.+'),
+        '-Pflutter.plugin.resolveRepo=/app/build/flutter_plugins_aar_repo',
         '-Pflutter.plugin.allAbis=true',
         RegExp(r'^-Pflutter\.plugin\.siblingVersions=.+'),
         '-q',
@@ -111,6 +115,9 @@ void main() {
         )..createSync(recursive: true);
         destination.childFile('$pluginName-$version.aar').writeAsStringSync('aar');
         destination.childFile('$pluginName-$version.pom').writeAsStringSync('pom');
+        destination.childFile('$pluginName-$version-toolchain.json').writeAsStringSync(
+          json.encode(reportedToolchain.toJson()),
+        );
         destination.childFile('$pluginName-$version-repositories.json').writeAsStringSync(
           json.encode(<String, Object?>{
             'repositories': <Object?>[
@@ -132,6 +139,7 @@ void main() {
     return builder.prepare(
       plugins: plugins,
       resolveBuildInputs: resolveBuildInputs ?? () async => _inputs,
+      predictToolchain: (Plugin _) => _toolchain,
       gradleExecutable: 'gradlew',
       flutterSdkPath: '/flutter',
       localRepository: fileSystem.directory('/app/build/flutter_plugins_aar_repo'),
@@ -155,7 +163,7 @@ void main() {
       // path segments and the debug group has one more than the release group.
       expect(
         fileSystem.file(
-          '/home/.flutter/plugin-aar-cache/${_inputs.digest}/dev/flutter/plugins/a/1.0.0/a-1.0.0.aar',
+          '/home/.flutter/plugin-aar-cache/a/1.0.0/${_entryDigest()}/release/a-1.0.0.aar',
         ),
         exists,
       );
@@ -226,6 +234,56 @@ void main() {
 
       expect(stale.childFile('leftover.aar'), isNot(exists));
       expect(stale.childFile('a-2.0.0.aar'), exists);
+    });
+  });
+
+  group('toolchain verification', () {
+    testWithoutContext('an entry is filed under the toolchain that really built it', () async {
+      // The prediction comes from parsing the plugin's build files. A plugin
+      // that selects AGP dynamically resolves something else, and the entry has
+      // to be filed under what was actually used.
+      const actual = PluginToolchain(agpVersion: '9.0.1', kotlinVersion: '2.2.20');
+      final processManager = FakeProcessManager.list(<FakeCommand>[
+        publishCommand(pluginName: 'a', version: '1.0.0', debug: false, reportedToolchain: actual),
+      ]);
+
+      await run(builderWith(processManager), plugins: <Plugin>[_plugin(fileSystem, 'a')]);
+
+      expect(
+        fileSystem.file(
+          '/home/.flutter/plugin-aar-cache/a/1.0.0/${_entryDigest(actual)}/release/a-1.0.0.aar',
+        ),
+        exists,
+      );
+      // Nothing was filed under the predicted key, so a later build takes the
+      // same miss rather than reusing an entry built with unrecorded tools.
+      expect(
+        fileSystem.directory('/home/.flutter/plugin-aar-cache/a/1.0.0/${_entryDigest()}/release'),
+        isNot(exists),
+      );
+      expect(logger.statusText, contains('resolved AGP 9.0.1'));
+    });
+
+    testWithoutContext('a mismatched entry is rebuilt rather than reused', () async {
+      const actual = PluginToolchain(agpVersion: '9.0.1', kotlinVersion: '2.2.20');
+
+      // Plant an entry under the predicted key whose manifest says it was built
+      // with something else — the shape a stale or hand-copied cache takes.
+      final Directory poisoned = fileSystem.directory(
+        '/home/.flutter/plugin-aar-cache/a/1.0.0/${_entryDigest()}/release',
+      )..createSync(recursive: true);
+      poisoned.childFile('a-1.0.0.aar').writeAsStringSync('stale');
+      poisoned
+          .childFile(PluginAarCache.toolchainManifestName)
+          .writeAsStringSync(json.encode(actual.toJson()));
+
+      // A command is queued, so reuse would leave it unconsumed.
+      final processManager = FakeProcessManager.list(<FakeCommand>[
+        publishCommand(pluginName: 'a', version: '1.0.0', debug: false),
+      ]);
+      await run(builderWith(processManager), plugins: <Plugin>[_plugin(fileSystem, 'a')]);
+
+      expect(processManager, hasNoRemainingExpectations);
     });
   });
 
@@ -357,7 +415,7 @@ void main() {
             '-Pflutter.plugin.variant=release',
             '-Pflutter.plugin.groupId=dev.flutter.plugins',
             RegExp(r'^-Pflutter\.plugin\.publishRepo=.+'),
-            RegExp(r'^-Pflutter\.plugin\.resolveRepo=.+'),
+            '-Pflutter.plugin.resolveRepo=/app/build/flutter_plugins_aar_repo',
             '-Pflutter.plugin.allAbis=true',
             RegExp(r'^-Pflutter\.plugin\.siblingVersions=.+'),
             '-q',

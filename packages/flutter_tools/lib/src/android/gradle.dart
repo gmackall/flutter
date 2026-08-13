@@ -294,6 +294,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
       // Resolving these costs a Gradle invocation of its own, so it is deferred until the plan
       // shows that at least one plugin is actually eligible for an AAR build.
       resolveBuildInputs: () => _resolvePluginAarBuildInputs(androidDirectory, flutterRoot),
+      predictToolchain: _predictPluginToolchain,
       gradleExecutable: gradleExecutablePath,
       flutterSdkPath: flutterRoot,
       localRepository: project.directory
@@ -324,15 +325,34 @@ class AndroidGradleBuilder implements AndroidBuilder {
         .childDirectory('cache')
         .childFile('engine.stamp');
     return PluginAarBuildInputs(
-      agpVersion: gradle.getAgpVersion(androidDirectory, _logger) ?? 'unknown',
+      // The app's Gradle wrapper runs the plugin builds, so the app really does determine this.
       gradleVersion:
           await gradle.getGradleVersion(androidDirectory, _logger, globals.processManager) ??
           'unknown',
-      kotlinVersion:
-          await gradle.getKgpVersion(androidDirectory, _logger, globals.processManager) ?? 'unknown',
       javaVersion: _java?.version?.toString() ?? 'unknown',
       engineVersion: engineStamp.existsSync() ? engineStamp.readAsStringSync().trim() : 'unknown',
       flutterGradlePluginVersion: _flutterGradlePluginSourceDigest(flutterRoot),
+    );
+  }
+
+  /// Predicts the AGP and Kotlin versions a plugin's own build will resolve.
+  ///
+  /// A migrated plugin pins its own Android build tool versions; decoupling them from the app's is
+  /// the reason to build it in isolation at all. Keying the cache on the *app's* AGP would rebuild
+  /// a byte-identical AAR once per distinct app toolchain on the machine.
+  ///
+  /// This is a prediction, made by parsing the plugin's build files, and a plugin that selects
+  /// its versions dynamically will not match it. The plugin build reports back what it actually
+  /// resolved and [PluginAarCache.verifyToolchain] rejects entries where the two disagree, so a
+  /// wrong prediction costs a rebuild rather than producing a wrong cache hit.
+  PluginToolchain _predictPluginToolchain(Plugin plugin) {
+    final Directory pluginAndroidDirectory = _fileSystem
+        .directory(plugin.path)
+        .childDirectory('android');
+    return PluginToolchain(
+      agpVersion: gradle.getAgpVersion(pluginAndroidDirectory, _logger) ?? 'unknown',
+      kotlinVersion:
+          gradle.getKgpVersionFromBuildFiles(pluginAndroidDirectory, _logger) ?? 'unknown',
     );
   }
 

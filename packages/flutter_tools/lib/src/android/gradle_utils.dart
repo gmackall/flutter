@@ -478,6 +478,34 @@ Future<String?> getKgpVersion(
   return null;
 }
 
+/// Returns the Kotlin Gradle Plugin (KGP) version declared in the build files
+/// under [androidDirectory], or null when none is declared.
+///
+/// Unlike [getKgpVersion] this never runs Gradle, so it is usable on paths that
+/// must not pay for a Gradle invocation. It therefore only sees a statically
+/// declared version; a build that selects its Kotlin version dynamically is not
+/// reflected here.
+String? getKgpVersionFromBuildFiles(Directory androidDirectory, Logger logger) {
+  for (final fileName in <String>[
+    'settings.gradle',
+    'settings.gradle.kts',
+    'build.gradle',
+    'build.gradle.kts',
+  ]) {
+    final File file = androidDirectory.childFile(fileName);
+    if (!file.existsSync()) {
+      continue;
+    }
+    final RegExpMatch? match = _kotlinGradlePluginRegExpFromId.firstMatch(file.readAsStringSync());
+    if (match != null) {
+      final String? kgpVersion = match.namedGroup(_versionGroupName);
+      logger.printTrace('$file provides KGP version: $kgpVersion');
+      return kgpVersion;
+    }
+  }
+  return null;
+}
+
 /// Returns the Android Gradle Plugin (AGP) version that the current project
 /// depends on when found, null otherwise.
 ///

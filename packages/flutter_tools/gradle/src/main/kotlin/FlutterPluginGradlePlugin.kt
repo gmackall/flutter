@@ -255,13 +255,17 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
                 "$artifactId${File.separator}$version"
             )
         val manifest = File(destination, "$artifactId-$version-repositories.json")
+        val toolchainManifest = File(destination, "$artifactId-$version-toolchain.json")
 
         project.tasks.register(REPOSITORIES_MANIFEST_TASK_NAME) {
-            description = "Records the Maven repositories this Flutter plugin resolves dependencies from."
+            description =
+                "Records the Maven repositories and Android build tool versions this Flutter plugin build used."
             // Resolved at execution time rather than during configuration: writing files while
             // configuring is what makes a build incompatible with the configuration cache.
             val repositories = project.repositories
-            outputs.file(manifest)
+            val agpVersion = resolvedAgpVersion(project)
+            val kotlinVersion = resolvedKotlinVersion(project)
+            outputs.files(manifest, toolchainManifest)
             doLast {
                 val urls: List<String> =
                     repositories
@@ -273,9 +277,40 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
                 manifest.parentFile.mkdirs()
                 val entries = urls.joinToString(separator = ",\n") { "    { \"url\": \"$it\" }" }
                 manifest.writeText("{\n  \"repositories\": [\n$entries\n  ]\n}\n")
+
+                // The tool predicts these by parsing this plugin's build files in order to key its
+                // build cache. A plugin that selects them dynamically would defeat that prediction
+                // silently, so report what was really resolved and let the tool compare.
+                toolchainManifest.writeText(
+                    "{\n" +
+                        "  \"agpVersion\": \"$agpVersion\",\n" +
+                        "  \"kotlinVersion\": \"$kotlinVersion\"\n" +
+                        "}\n"
+                )
             }
         }
     }
+
+    /**
+     * The Android Gradle Plugin version actually on this build's classpath.
+     */
+    private fun resolvedAgpVersion(project: Project): String {
+        val androidComponents =
+            project.extensions.findByType(LibraryAndroidComponentsExtension::class.java)
+                ?: return UNKNOWN_VERSION
+        val version = androidComponents.pluginVersion
+        return "${version.major}.${version.minor}.${version.micro}"
+    }
+
+    /**
+     * The Kotlin Gradle Plugin version actually applied to this build, or [UNKNOWN_VERSION] for a
+     * plugin with no Kotlin sources.
+     */
+    private fun resolvedKotlinVersion(project: Project): String =
+        project.plugins
+            .findPlugin(org.jetbrains.kotlin.gradle.plugin.KotlinBasePlugin::class.java)
+            ?.pluginVersion
+            ?: UNKNOWN_VERSION
 
     companion object {
         internal const val FLUTTER_PLUGIN_GROUP_ID = "dev.flutter.plugins"
@@ -284,6 +319,7 @@ class FlutterPluginGradlePlugin : Plugin<Project> {
         internal const val PUBLICATION_NAME = "flutterPlugin"
         internal const val PUBLISH_REPOSITORY_NAME = "FlutterLocal"
         internal const val REPOSITORIES_MANIFEST_TASK_NAME = "flutterPluginRepositoriesManifest"
+        internal const val UNKNOWN_VERSION = "unknown"
 
         internal const val PROP_PUBLISH_REPO = "flutter.plugin.publishRepo"
         internal const val PROP_RESOLVE_REPO = "flutter.plugin.resolveRepo"

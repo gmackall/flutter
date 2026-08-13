@@ -47,6 +47,7 @@ class PluginAarBuilder {
   Future<AndroidPluginBuildPlan> prepare({
     required List<Plugin> plugins,
     required Future<PluginAarBuildInputs> Function() resolveBuildInputs,
+    required PluginToolchain Function(Plugin) predictToolchain,
     required String gradleExecutable,
     required String flutterSdkPath,
     required Directory localRepository,
@@ -68,8 +69,6 @@ class PluginAarBuilder {
 
     if (plan.aarPlugins.isNotEmpty) {
       final cache = PluginAarCache(rootDirectory: cacheRoot, inputs: await resolveBuildInputs());
-      cache.writeBuildInputsManifest();
-      cache.markUsed(DateTime.now());
 
       // Debug and release are separate coordinates, so only build the variants
       // this invocation actually needs. A release-only CI build never pays for
@@ -85,28 +84,50 @@ class PluginAarBuilder {
           .map((AarPlugin aar) => '${aar.plugin.name}=${aar.mavenVersion}')
           .join(',');
 
+      final inUse = <String>{};
+
+      // Build in dependency order and materialize each plugin as soon as it is ready, so that a
+      // plugin's build resolves its siblings out of the project-local repository. Resolving from
+      // the project repository rather than the cache is what allows the cache to key each plugin
+      // independently on its own toolchain.
       for (final AarPlugin aar in _inDependencyOrder(plan.aarPlugins)) {
+        final PluginToolchain predicted = predictToolchain(aar.plugin);
         for (final debug in variants) {
-          if (cache.contains(aar, debug: debug)) {
+          // The effective toolchain is the predicted one on a verified cache hit, and whatever the
+          // build reported otherwise. Everything downstream — the entry it is filed under, the
+          // recency marker, and the directory materialize copies from — has to agree on it.
+          var effective = predicted;
+          if (_isUsableCacheHit(cache, aar, debug: debug, toolchain: predicted)) {
             _logger.printTrace(
               'Reusing cached ${debug ? 'debug' : 'release'} AAR for '
-              '${aar.plugin.name} ${aar.mavenVersion}.',
+              '${aar.plugin.name} ${aar.mavenVersion} ($predicted).',
             );
-            continue;
+          } else {
+            effective = await _buildOne(
+              aar: aar,
+              debug: debug,
+              cache: cache,
+              predictedToolchain: predicted,
+              gradleExecutable: gradleExecutable,
+              flutterSdkPath: flutterSdkPath,
+              siblingVersions: siblingVersions,
+              localRepository: localRepository,
+            );
           }
-          await _buildOne(
+          inUse.add(cache.directoryFor(aar, debug: debug, toolchain: effective).path);
+          cache.writeBuildInputsManifest(aar, toolchain: effective);
+          cache.markUsed(aar, DateTime.now(), toolchain: effective);
+          _materialize(
+            cache: cache,
             aar: aar,
             debug: debug,
-            cache: cache,
-            gradleExecutable: gradleExecutable,
-            flutterSdkPath: flutterSdkPath,
-            siblingVersions: siblingVersions,
+            toolchain: effective,
+            into: localRepository,
           );
         }
       }
 
-      _materialize(cache: cache, plan: plan, variants: variants, into: localRepository);
-      cache.evictLeastRecentlyUsed();
+      cache.evictLeastRecentlyUsed(keep: inUse);
     }
 
     final List<String> extraRepositories = _collectExtraRepositories(localRepository);
@@ -157,13 +178,44 @@ class PluginAarBuilder {
     return ordered;
   }
 
-  Future<void> _buildOne({
+  /// Whether the cached entry for [aar] exists and was built with the toolchain
+  /// its key claims.
+  ///
+  /// A plugin whose build files select AGP or Kotlin dynamically will not match
+  /// the version predicted by parsing those files. Treating that as a miss
+  /// costs a rebuild; treating it as a hit would link bytecode produced by
+  /// tools nobody recorded.
+  bool _isUsableCacheHit(
+    PluginAarCache cache,
+    AarPlugin aar, {
+    required bool debug,
+    required PluginToolchain toolchain,
+  }) {
+    if (!cache.contains(aar, debug: debug, toolchain: toolchain)) {
+      return false;
+    }
+    final bool? verified = cache.verifyToolchain(aar, debug: debug, toolchain: toolchain);
+    if (verified ?? false) {
+      return true;
+    }
+    _logger.printTrace(
+      'Ignoring the cached AAR for ${aar.plugin.name} ${aar.mavenVersion}: it was built with '
+      '${cache.recordedToolchain(aar, debug: debug, toolchain: toolchain) ?? 'an unrecorded toolchain'}, '
+      'not the expected $toolchain.',
+    );
+    return false;
+  }
+
+  /// Builds one variant of one plugin and returns the toolchain it actually used.
+  Future<PluginToolchain> _buildOne({
     required AarPlugin aar,
     required bool debug,
     required PluginAarCache cache,
+    required PluginToolchain predictedToolchain,
     required String gradleExecutable,
     required String flutterSdkPath,
     required String siblingVersions,
+    required Directory localRepository,
   }) async {
     final variant = debug ? 'debug' : 'release';
     final Directory pluginAndroidDirectory = _fileSystem
@@ -182,8 +234,8 @@ class PluginAarBuilder {
 
     // Publish into a private staging directory and move the finished artifact into the shared
     // cache in one step, so a concurrent build never resolves against a half written directory.
-    // Dependencies are still *resolved* from the shared cache, which is where siblings built
-    // earlier in this same run have already landed.
+    // Siblings are resolved from the project-local repository, which already holds every plugin
+    // built earlier in this run.
     final Directory staging = cache.createStagingDirectory();
 
     final command = <String>[
@@ -198,7 +250,7 @@ class PluginAarBuilder {
       '-Pflutter.plugin.variant=$variant',
       '-Pflutter.plugin.groupId=${debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId}',
       '-Pflutter.plugin.publishRepo=${staging.path}',
-      '-Pflutter.plugin.resolveRepo=${cache.keyedRoot.path}',
+      '-Pflutter.plugin.resolveRepo=${localRepository.path}',
       // Plugin AARs always carry every ABI; the app strips down to the ABIs it
       // wants. Forwarding the app's --target-platform here would produce a
       // partial AAR cached under a key that claims to be complete.
@@ -228,14 +280,65 @@ class PluginAarBuilder {
         );
       }
 
-      if (!cache.installFromStaging(staging, aar, debug: debug)) {
+      // File the entry under what the build actually used, not what was predicted. When those
+      // differ the prediction was unreliable, which is worth saying out loud: the plugin will be
+      // rebuilt on every future build until its build files stop selecting tools dynamically.
+      final PluginToolchain actual =
+          _readReportedToolchain(staging, aar, debug: debug) ?? predictedToolchain;
+      if (actual != predictedToolchain) {
+        _logger.printStatus(
+          'Warning: plugin ${aar.plugin.name} resolved $actual, but its build files declare '
+          '$predictedToolchain. Its build output cannot be cached across builds until the two '
+          'agree; avoid selecting the Android Gradle Plugin or Kotlin version dynamically.',
+        );
+      }
+      if (!cache.installFromStaging(
+        staging,
+        aar,
+        debug: debug,
+        toolchain: actual,
+        replace: !aar.plugin.source.isImmutable,
+      )) {
         _logger.printTrace(
           'A concurrent build already cached the $variant AAR for ${aar.plugin.name} '
           '${aar.mavenVersion}; keeping the existing entry.',
         );
       }
+      return actual;
     } finally {
       ErrorHandlingFileSystem.deleteIfExists(staging, recursive: true);
+    }
+  }
+
+  /// The toolchain the plugin build reported having actually resolved.
+  PluginToolchain? _readReportedToolchain(
+    Directory staging,
+    AarPlugin aar, {
+    required bool debug,
+  }) {
+    final String group = debug ? kFlutterPluginDebugGroupId : kFlutterPluginGroupId;
+    final File manifest = staging
+        .childDirectory(
+          _fileSystem.path.joinAll(<String>[
+            ...group.split('.'),
+            aar.plugin.name,
+            aar.mavenVersion,
+          ]),
+        )
+        .childFile(
+          '${aar.plugin.name}-${aar.mavenVersion}-toolchain.json',
+        );
+    if (!manifest.existsSync()) {
+      return null;
+    }
+    try {
+      final Object? decoded = json.decode(manifest.readAsStringSync());
+      if (decoded is! Map<String, Object?>) {
+        return null;
+      }
+      return PluginToolchain.fromJson(decoded);
+    } on FormatException {
+      return null;
     }
   }
 
@@ -244,30 +347,27 @@ class PluginAarBuilder {
   /// repository containing exactly this build's plugins.
   void _materialize({
     required PluginAarCache cache,
-    required AndroidPluginBuildPlan plan,
-    required Set<bool> variants,
+    required AarPlugin aar,
+    required bool debug,
+    required PluginToolchain toolchain,
     required Directory into,
   }) {
-    for (final AarPlugin aar in plan.aarPlugins) {
-      for (final debug in variants) {
-        final Directory source = cache.directoryFor(aar, debug: debug);
-        if (!source.existsSync()) {
-          throwToolExit(
-            'Expected a ${debug ? 'debug' : 'release'} AAR for ${aar.plugin.name} at '
-            '${source.path}, but the plugin build produced nothing there.',
-          );
-        }
-        final Directory destination = into.childDirectory(
-          cache.relativeArtifactPath(aar, debug: debug),
-        );
-        // Replace rather than merge, so that artifacts left over from a previous build of a
-        // different version of this plugin do not accumulate in the project repository.
-        ErrorHandlingFileSystem.deleteIfExists(destination, recursive: true);
-        destination.createSync(recursive: true);
-        for (final File file in source.listSync().whereType<File>()) {
-          file.copySync(destination.childFile(file.basename).path);
-        }
-      }
+    final Directory source = cache.directoryFor(aar, debug: debug, toolchain: toolchain);
+    if (!source.existsSync()) {
+      throwToolExit(
+        'Expected a ${debug ? 'debug' : 'release'} AAR for ${aar.plugin.name} at '
+        '${source.path}, but the plugin build produced nothing there.',
+      );
+    }
+    final Directory destination = into.childDirectory(
+      cache.relativeArtifactPath(aar, debug: debug),
+    );
+    // Replace rather than merge, so that artifacts left over from a previous build of a
+    // different version of this plugin do not accumulate in the project repository.
+    ErrorHandlingFileSystem.deleteIfExists(destination, recursive: true);
+    destination.createSync(recursive: true);
+    for (final File file in source.listSync().whereType<File>()) {
+      file.copySync(destination.childFile(file.basename).path);
     }
   }
 
