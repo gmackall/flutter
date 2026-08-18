@@ -2077,10 +2077,10 @@ ASurfaceTransaction* PlatformViewAndroidJNIImpl::createTransaction() {
   fml::jni::ScopedJavaLocalRef<jobject> transaction(
       env,
       env->CallObjectMethod(java_object.obj(), g_create_transaction_method));
+  FML_CHECK(fml::jni::CheckException(env));
   if (transaction.is_null()) {
     return nullptr;
   }
-  FML_CHECK(fml::jni::CheckException(env));
 
   return impeller::android::GetProcTable().ASurfaceTransaction_fromJava(
       env, transaction.obj());

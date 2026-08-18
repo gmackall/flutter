@@ -1360,10 +1360,9 @@ public class FlutterJNI {
 
   @SuppressWarnings("unused")
   @SuppressLint("NewApi")
-  @UiThread
   public SurfaceControl.Transaction createTransaction() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException("");
+      return null;
     }
     return platformViewsController2.createTransaction();
   }
@@ -1373,7 +1372,7 @@ public class FlutterJNI {
   @UiThread
   public void swapTransactions() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException("");
+      return;
     }
     platformViewsController2.swapTransactions();
   }
@@ -1383,7 +1382,7 @@ public class FlutterJNI {
   @UiThread
   public void applyTransactions() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException("");
+      return;
     }
     platformViewsController2.applyTransactions();
   }
@@ -1393,7 +1392,7 @@ public class FlutterJNI {
   @UiThread
   public void endFrame2() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException("");
+      return;
     }
     platformViewsController2.onEndFrame();
   }
@@ -1403,8 +1402,7 @@ public class FlutterJNI {
   @UiThread
   public FlutterOverlaySurface createOverlaySurface2() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException(
-          "platformViewsController must be set before attempting to position an overlay surface");
+      return null;
     }
     return platformViewsController2.createOverlaySurface();
   }
@@ -1414,8 +1412,7 @@ public class FlutterJNI {
   @UiThread
   public void showOverlaySurface2() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException(
-          "platformViewsController must be set before attempting to destroy an overlay surface");
+      return;
     }
     platformViewsController2.showOverlaySurface();
   }
@@ -1425,8 +1422,7 @@ public class FlutterJNI {
   @UiThread
   public void hideOverlaySurface2() {
     if (platformViewsController2 == null) {
-      throw new RuntimeException(
-          "platformViewsController must be set before attempting to destroy an overlay surface");
+      return;
     }
     platformViewsController2.hideOverlaySurface();
   }
@@ -1437,8 +1433,7 @@ public class FlutterJNI {
   public void destroyOverlaySurface2() {
     ensureRunningOnMainThread();
     if (platformViewsController2 == null) {
-      throw new RuntimeException(
-          "platformViewsController must be set before attempting to destroy an overlay surface");
+      return;
     }
     platformViewsController2.destroyOverlaySurface();
   }
@@ -1457,8 +1452,7 @@ public class FlutterJNI {
       FlutterMutatorsStack mutatorsStack) {
     ensureRunningOnMainThread();
     if (platformViewsController2 == null) {
-      throw new RuntimeException(
-          "platformViewsController must be set before attempting to position a platform view");
+      return;
     }
     platformViewsController2.onDisplayPlatformView(
         viewId, x, y, width, height, viewWidth, viewHeight, mutatorsStack);
@@ -1470,8 +1464,7 @@ public class FlutterJNI {
   public void hidePlatformView2(int viewId) {
     ensureRunningOnMainThread();
     if (platformViewsController2 == null) {
-      throw new RuntimeException(
-          "platformViewsController must be set before attempting to hide a platform view");
+      return;
     }
     platformViewsController2.hidePlatformView(viewId);
   }

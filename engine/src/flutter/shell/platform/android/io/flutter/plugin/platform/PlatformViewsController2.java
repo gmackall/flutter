@@ -12,6 +12,7 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.util.SparseArray;
+import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.MotionEvent.PointerCoords;
@@ -446,7 +447,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @VisibleForTesting
   boolean initializePlatformViewIfNeeded(int viewId) {
     final PlatformView platformView = platformViews.get(viewId);
-    if (platformView == null) {
+    if (platformView == null || flutterView == null) {
       return false;
     }
     if (platformViewParent.get(viewId) != null) {
@@ -672,8 +673,21 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       tx = tx.merge(activeTransactions.get(i));
     }
     activeTransactions.clear();
+
+    // This runs on the platform thread but is posted from the raster thread, so by the time it
+    // runs the FlutterView may have been detached from the controller, or detached from its
+    // window (in which case getRootSurfaceControl() returns null). Throwing here is fatal:
+    // the JNI caller, onEndFrame2(), turns a pending Java exception into an abort() via
+    // FML_CHECK(fml::jni::CheckException(env)).
+    final AttachedSurfaceControl rootSurfaceControl =
+        flutterView == null ? null : flutterView.getRootSurfaceControl();
+    if (rootSurfaceControl == null) {
+      tx.close();
+      return;
+    }
+
     flutterView.invalidate();
-    flutterView.getRootSurfaceControl().applyTransactionOnDraw(tx);
+    rootSurfaceControl.applyTransactionOnDraw(tx);
   }
 
   // NOT called from UI thread.
@@ -685,7 +699,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   // NOT called from UI thread.
   @RequiresApi(API_LEVELS.API_34)
-  public SurfaceControl.Transaction createTransaction() {
+  public synchronized SurfaceControl.Transaction createTransaction() {
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     pendingTransactions.add(tx);
     return tx;
@@ -705,6 +719,13 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @RequiresApi(API_LEVELS.API_34)
   public FlutterOverlaySurface createOverlaySurface() {
     if (overlayerSurface == null) {
+      if (flutterView == null) {
+        return null;
+      }
+      final AttachedSurfaceControl rootSurfaceControl = flutterView.getRootSurfaceControl();
+      if (rootSurfaceControl == null) {
+        return null;
+      }
       final SurfaceControl.Builder surfaceControlBuilder = new SurfaceControl.Builder();
       surfaceControlBuilder.setBufferSize(flutterView.getWidth(), flutterView.getHeight());
       surfaceControlBuilder.setFormat(PixelFormat.RGBA_8888);
@@ -713,7 +734,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       surfaceControlBuilder.setHidden(false);
       final SurfaceControl surfaceControl = surfaceControlBuilder.build();
       final SurfaceControl.Transaction tx =
-          flutterView.getRootSurfaceControl().buildReparentTransaction(surfaceControl);
+          rootSurfaceControl.buildReparentTransaction(surfaceControl);
       tx.setLayer(surfaceControl, 1000);
       tx.apply();
       overlayerSurface = new Surface(surfaceControl);
