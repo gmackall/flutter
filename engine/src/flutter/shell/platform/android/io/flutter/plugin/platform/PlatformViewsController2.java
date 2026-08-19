@@ -701,7 +701,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     pendingTransactions.clear();
   }
 
-  // Can be called from raster thread (swapchain callback) or UI thread (clipping/mutators/overlays).
+  // Can be called from raster thread (swapchain callback) or UI thread
+  // (clipping/mutators/overlays).
   @RequiresApi(API_LEVELS.API_34)
   public synchronized SurfaceControl.Transaction createTransaction() {
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
