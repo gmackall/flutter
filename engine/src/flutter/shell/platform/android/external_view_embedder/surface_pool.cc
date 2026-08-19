@@ -56,7 +56,11 @@ std::shared_ptr<OverlayLayer> SurfacePool::GetLayer(
             ? jni_facade->createOverlaySurface2()
             : jni_facade->FlutterViewCreateOverlaySurface();
 
-    FML_CHECK(java_metadata->window);
+    if (!java_metadata || !java_metadata->window) {
+      FML_LOG(WARNING)
+          << "Could not acquire native window for overlay surface.";
+      return nullptr;
+    }
     android_surface->SetNativeWindow(java_metadata->window, jni_facade);
     android_surface->SetupImpellerSurface();
 
