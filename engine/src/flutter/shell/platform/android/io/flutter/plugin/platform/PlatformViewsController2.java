@@ -524,13 +524,17 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     }
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
+    if (parentView == null) {
+      return;
+    }
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
 
     final FrameLayout.LayoutParams layoutParams =
         new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
-    final View view = platformViews.get(viewId).getView();
+    final PlatformView platformView = platformViews.get(viewId);
+    final View view = platformView == null ? null : platformView.getView();
     if (view != null) {
       view.setLayoutParams(layoutParams);
       view.bringToFront();
@@ -640,7 +644,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         // guarantee there is another frame coming (if, say, the app has a static
         // layout). So we schedule one to ensure the crop is rendered properly.
         // See https://github.com/flutter/flutter/issues/175546.
-        flutterJNI.scheduleFrame();
+        if (flutterJNI != null) {
+          flutterJNI.scheduleFrame();
+        }
         viewsWithPendingSurfaceCallback.remove(viewId);
         surfaceView.getHolder().removeCallback(this);
       }
@@ -658,12 +664,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   }
 
   public void hidePlatformView(int viewId) {
-    if (!initializePlatformViewIfNeeded(viewId)) {
-      return;
-    }
-
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
-    parentView.setVisibility(View.GONE);
+    if (parentView != null) {
+      parentView.setVisibility(View.GONE);
+    }
   }
 
   @RequiresApi(API_LEVELS.API_34)
