@@ -667,7 +667,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   }
 
   @RequiresApi(API_LEVELS.API_34)
-  public void onEndFrame() {
+  public synchronized void onEndFrame() {
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     for (int i = 0; i < activeTransactions.size(); i++) {
       tx = tx.merge(activeTransactions.get(i));
@@ -690,24 +690,24 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     rootSurfaceControl.applyTransactionOnDraw(tx);
   }
 
-  // NOT called from UI thread.
+  // Can be called from raster thread or UI thread.
   public synchronized void swapTransactions() {
     activeTransactions.clear();
     activeTransactions.addAll(pendingTransactions);
     pendingTransactions.clear();
   }
 
-  // NOT called from UI thread.
+  // Can be called from raster thread (swapchain callback) or UI thread (clipping/mutators/overlays).
   @RequiresApi(API_LEVELS.API_34)
-  public SurfaceControl.Transaction createTransaction() {
+  public synchronized SurfaceControl.Transaction createTransaction() {
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     pendingTransactions.add(tx);
     return tx;
   }
 
-  // NOT called from UI thread.
+  // Can be called from raster thread or UI thread.
   @RequiresApi(API_LEVELS.API_34)
-  public void applyTransactions() {
+  public synchronized void applyTransactions() {
     SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
     for (int i = 0; i < pendingTransactions.size(); i++) {
       tx = tx.merge(pendingTransactions.get(i));
