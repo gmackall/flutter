@@ -23,7 +23,7 @@ namespace impeller {
 
 using CreateTransactionCB = std::function<android::SurfaceTransaction()>;
 
-static constexpr const size_t kMaxPendingPresents = 2u;
+static constexpr const size_t kMaxPendingPresents = 3u;
 
 struct AHBFrameSynchronizerVK {
   vk::UniqueFence acquire;

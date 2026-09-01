@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -23,6 +24,7 @@
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/platform/android/android_display.h"
 #include "flutter/shell/platform/android/android_image_generator.h"
+#include "flutter/shell/platform/android/android_performance_hint_manager.h"
 #include "flutter/shell/platform/android/android_rendering_selector.h"
 #include "flutter/shell/platform/android/android_shell_holder.h"
 #include "flutter/shell/platform/android/context/android_context.h"
@@ -95,8 +97,20 @@ AndroidShellHolder::AndroidShellHolder(
     mask |= ThreadHost::Type::kUi;
   }
 
-  flutter::ThreadHost::ThreadHostConfig host_config(
-      thread_label, mask, AndroidPlatformThreadConfigSetter);
+  std::atomic<int32_t> ui_tid{0};
+  std::atomic<int32_t> raster_tid{0};
+  auto thread_config_setter =
+      [&ui_tid, &raster_tid](const fml::Thread::ThreadConfig& config) {
+        AndroidPlatformThreadConfigSetter(config);
+        if (config.priority == fml::Thread::ThreadPriority::kDisplay) {
+          ui_tid.store(gettid());
+        } else if (config.priority == fml::Thread::ThreadPriority::kRaster) {
+          raster_tid.store(gettid());
+        }
+      };
+
+  flutter::ThreadHost::ThreadHostConfig host_config(thread_label, mask,
+                                                    thread_config_setter);
   host_config.ui_config = fml::Thread::ThreadConfig(
       flutter::ThreadHost::ThreadHostConfig::MakeThreadName(
           flutter::ThreadHost::Type::kUi, thread_label),
@@ -111,6 +125,48 @@ AndroidShellHolder::AndroidShellHolder(
       fml::Thread::ThreadPriority::kNormal);
 
   thread_host_ = std::make_shared<ThreadHost>(host_config);
+
+  std::vector<int32_t> tids;
+  if (ui_tid.load() > 0) {
+    tids.push_back(ui_tid.load());
+  } else if (settings.merged_platform_ui_thread ==
+             Settings::MergedPlatformUIThread::kEnabled) {
+    tids.push_back(gettid());
+  }
+  if (raster_tid.load() > 0) {
+    tids.push_back(raster_tid.load());
+  }
+
+  double refresh_rate = jni_facade->GetDisplayRefreshRate();
+  if (refresh_rate <= 0) {
+    refresh_rate = 60.0;
+  }
+  int64_t target_duration_ns = static_cast<int64_t>(1e9 / refresh_rate);
+
+  performance_hint_manager_ =
+      AndroidPerformanceHintManager::Create(tids, target_duration_ns);
+
+  flutter::Settings shell_settings = settings_;
+  if (performance_hint_manager_) {
+    auto prev_callback = shell_settings.frame_rasterized_callback;
+    shell_settings.frame_rasterized_callback =
+        [perf_hint = performance_hint_manager_,
+         prev_callback](const FrameTiming& timing) {
+          if (prev_callback) {
+            prev_callback(timing);
+          }
+          int64_t build_ns = (timing.Get(FrameTiming::kBuildFinish) -
+                              timing.Get(FrameTiming::kBuildStart))
+                                 .ToNanoseconds();
+          int64_t raster_ns = (timing.Get(FrameTiming::kRasterFinish) -
+                               timing.Get(FrameTiming::kRasterStart))
+                                  .ToNanoseconds();
+          int64_t total_work_ns = build_ns + raster_ns;
+          if (total_work_ns > 0) {
+            perf_hint->ReportActualWorkDuration(total_work_ns);
+          }
+        };
+  }
 
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
@@ -158,7 +214,7 @@ AndroidShellHolder::AndroidShellHolder(
   shell_ =
       Shell::Create(GetDefaultPlatformData(),  // window data
                     task_runners,              // task runners
-                    settings_,                 // settings
+                    shell_settings,            // settings
                     on_create_platform_view,   // platform view create callback
                     on_create_rasterizer       // rasterizer create callback
       );
@@ -362,6 +418,14 @@ void AndroidShellHolder::UpdateDisplayMetrics() {
   std::vector<std::unique_ptr<Display>> displays;
   displays.push_back(std::make_unique<AndroidDisplay>(jni_facade_));
   shell_->OnDisplayUpdates(std::move(displays));
+
+  if (performance_hint_manager_ && jni_facade_) {
+    double refresh_rate = jni_facade_->GetDisplayRefreshRate();
+    if (refresh_rate > 0) {
+      performance_hint_manager_->UpdateTargetWorkDuration(
+          static_cast<int64_t>(1e9 / refresh_rate));
+    }
+  }
 }
 
 bool AndroidShellHolder::IsSurfaceControlEnabled() {
