@@ -75,13 +75,11 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   private final SparseArray<FlutterMutatorView> platformViewParent;
   private final MotionEventTracker motionEventTracker;
 
-  private final ArrayList<SurfaceControl.Transaction> pendingTransactions;
-  private final ArrayList<SurfaceControl.Transaction> activeTransactions;
-  // Protects mutation and transfer of pendingTransactions between the raster
+  private SurfaceControl.Transaction pendingTransaction;
+  private SurfaceControl.Transaction activeTransaction;
+  // Protects mutation and transfer of pendingTransaction between the raster
   // thread (where transactions are created) and the platform thread (where
-  // transactions are swapped into activeTransactions).
-  // Note: Individual Transaction objects are populated on the raster thread after
-  // releasing the lock, as each belongs to the submitting frame.
+  // transactions are swapped into activeTransaction).
   private final Object transactionLock = new Object();
   private Surface overlayerSurface = null;
   private SurfaceControl overlaySurfaceControl = null;
@@ -92,8 +90,6 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     accessibilityEventsDelegate = new AccessibilityEventsDelegate();
     platformViews = new SparseArray<>();
     platformViewParent = new SparseArray<>();
-    pendingTransactions = new ArrayList<>();
-    activeTransactions = new ArrayList<>();
     motionEventTracker = MotionEventTracker.getInstance();
   }
 
@@ -685,11 +681,14 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   @RequiresApi(API_LEVELS.API_34)
   public void onEndFrame() {
-    SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
-    for (int i = 0; i < activeTransactions.size(); i++) {
-      tx = tx.merge(activeTransactions.get(i));
+    final SurfaceControl.Transaction tx;
+    synchronized (transactionLock) {
+      tx = activeTransaction;
+      activeTransaction = null;
     }
-    activeTransactions.clear();
+    if (tx == null) {
+      return;
+    }
 
     // This runs on the platform thread but is posted from the raster thread, so by the time it
     // runs the FlutterView may have been detached from the controller, or detached from its
@@ -710,9 +709,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   // Called on the platform thread (UI thread) via the platform task runner.
   public void swapTransactions() {
     synchronized (transactionLock) {
-      activeTransactions.clear();
-      activeTransactions.addAll(pendingTransactions);
-      pendingTransactions.clear();
+      activeTransaction = pendingTransaction;
+      pendingTransaction = null;
     }
   }
 
@@ -720,9 +718,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @RequiresApi(API_LEVELS.API_34)
   public SurfaceControl.Transaction createTransaction() {
     synchronized (transactionLock) {
-      SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
-      pendingTransactions.add(tx);
-      return tx;
+      if (pendingTransaction == null) {
+        pendingTransaction = new SurfaceControl.Transaction();
+      }
+      return pendingTransaction;
     }
   }
 
@@ -731,16 +730,12 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   public void applyTransactions() {
     final SurfaceControl.Transaction tx;
     synchronized (transactionLock) {
-      if (pendingTransactions.isEmpty()) {
-        return;
-      }
-      tx = new SurfaceControl.Transaction();
-      for (int i = 0; i < pendingTransactions.size(); i++) {
-        tx.merge(pendingTransactions.get(i));
-      }
-      pendingTransactions.clear();
+      tx = pendingTransaction;
+      pendingTransaction = null;
     }
-    tx.apply();
+    if (tx != null) {
+      tx.apply();
+    }
   }
 
   @RequiresApi(API_LEVELS.API_34)
