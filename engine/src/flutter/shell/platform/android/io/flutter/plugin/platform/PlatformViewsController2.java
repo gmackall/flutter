@@ -11,6 +11,7 @@ import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.os.Looper;
 import android.util.SparseArray;
 import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
@@ -75,11 +76,27 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   private final SparseArray<FlutterMutatorView> platformViewParent;
   private final MotionEventTracker motionEventTracker;
 
-  private SurfaceControl.Transaction pendingTransaction;
-  private SurfaceControl.Transaction activeTransaction;
-  // Protects mutation and transfer of pendingTransaction between the raster
-  // thread (where transactions are created) and the platform thread (where
-  // transactions are swapped into activeTransaction).
+  // Transactions created on the raster thread (via JNI for AHB swapchain presentation).
+  // SurfaceControl.Transaction (and native android::SurfaceComposerClient::Transaction in
+  // libgui.so)
+  // is NOT thread-safe and contains no internal mutexes. Concurrently mutating a single transaction
+  // from both the raster thread (e.g. ASurfaceTransaction_setBuffer) and the platform thread
+  // (e.g. setAlpha, setCrop) corrupts libgui's internal data structures and causes a SIGSEGV.
+  // Therefore, raster presentations receive isolated transactions per frame submission, which
+  // are protected by transactionLock when queued and swapped.
+  private final ArrayList<SurfaceControl.Transaction> pendingRasterTransactions;
+  private final ArrayList<SurfaceControl.Transaction> activeRasterTransactions;
+
+  // Consolidated transaction for mutations produced on the platform thread (UI thread),
+  // such as platform view clips and overlay surface visibility. All mutations on the UI thread
+  // in a frame accumulate into this single transaction, eliminating O(N) transaction allocations
+  // and intermediate merge loops.
+  private SurfaceControl.Transaction pendingPlatformTransaction;
+  private SurfaceControl.Transaction activePlatformTransaction;
+
+  // Protects mutation and transfer of transactions between the raster thread (where raster
+  // transactions are created) and the platform thread (where transactions are swapped into active
+  // state and merged for draw).
   private final Object transactionLock = new Object();
   private Surface overlayerSurface = null;
   private SurfaceControl overlaySurfaceControl = null;
@@ -90,6 +107,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     accessibilityEventsDelegate = new AccessibilityEventsDelegate();
     platformViews = new SparseArray<>();
     platformViewParent = new SparseArray<>();
+    pendingRasterTransactions = new ArrayList<>();
+    activeRasterTransactions = new ArrayList<>();
     motionEventTracker = MotionEventTracker.getInstance();
   }
 
@@ -679,14 +698,25 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     parentView.setVisibility(View.GONE);
   }
 
+  private static boolean isPlatformThread() {
+    final Looper mainLooper = Looper.getMainLooper();
+    return mainLooper != null && Looper.myLooper() == mainLooper;
+  }
+
   @RequiresApi(API_LEVELS.API_34)
   public void onEndFrame() {
-    final SurfaceControl.Transaction tx;
+    final List<SurfaceControl.Transaction> rasterTxs;
+    final SurfaceControl.Transaction platformTx;
     synchronized (transactionLock) {
-      tx = activeTransaction;
-      activeTransaction = null;
+      rasterTxs =
+          activeRasterTransactions.isEmpty() ? null : new ArrayList<>(activeRasterTransactions);
+      activeRasterTransactions.clear();
+
+      platformTx = activePlatformTransaction;
+      activePlatformTransaction = null;
     }
-    if (tx == null) {
+
+    if (rasterTxs == null && platformTx == null) {
       return;
     }
 
@@ -698,8 +728,29 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final AttachedSurfaceControl rootSurfaceControl =
         flutterView == null ? null : flutterView.getRootSurfaceControl();
     if (rootSurfaceControl == null) {
-      tx.close();
+      if (platformTx != null) {
+        platformTx.close();
+      }
+      if (rasterTxs != null) {
+        for (int i = 0; i < rasterTxs.size(); i++) {
+          rasterTxs.get(i).close();
+        }
+      }
       return;
+    }
+
+    // Consolidate any raster and platform transactions into a single transaction for
+    // applyTransactionOnDraw. If both exist, this requires at most one merge.
+    SurfaceControl.Transaction tx = platformTx;
+    if (rasterTxs != null) {
+      for (int i = 0; i < rasterTxs.size(); i++) {
+        final SurfaceControl.Transaction rasterTx = rasterTxs.get(i);
+        if (tx == null) {
+          tx = rasterTx;
+        } else {
+          tx = tx.merge(rasterTx);
+        }
+      }
     }
 
     flutterView.invalidate();
@@ -709,32 +760,61 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   // Called on the platform thread (UI thread) via the platform task runner.
   public void swapTransactions() {
     synchronized (transactionLock) {
-      activeTransaction = pendingTransaction;
-      pendingTransaction = null;
+      activeRasterTransactions.clear();
+      activeRasterTransactions.addAll(pendingRasterTransactions);
+      pendingRasterTransactions.clear();
+
+      activePlatformTransaction = pendingPlatformTransaction;
+      pendingPlatformTransaction = null;
     }
   }
 
-  // NOT called from UI thread.
   @RequiresApi(API_LEVELS.API_34)
   public SurfaceControl.Transaction createTransaction() {
-    synchronized (transactionLock) {
-      if (pendingTransaction == null) {
-        pendingTransaction = new SurfaceControl.Transaction();
+    if (isPlatformThread()) {
+      // Platform thread: consolidate all clips and overlay mutations into a single transaction
+      // for this frame, eliminating O(N) transaction allocations and tx.merge() calls.
+      synchronized (transactionLock) {
+        if (pendingPlatformTransaction == null) {
+          pendingPlatformTransaction = new SurfaceControl.Transaction();
+        }
+        return pendingPlatformTransaction;
       }
-      return pendingTransaction;
+    }
+
+    // Raster thread (or non-platform thread): SurfaceControl.Transaction (and its native
+    // counterpart android::SurfaceComposerClient::Transaction in libgui.so) is NOT thread-safe
+    // and contains no internal mutexes. Concurrently mutating a single transaction from both
+    // the raster thread (e.g. ASurfaceTransaction_setBuffer) and the platform thread
+    // (e.g. setAlpha, setCrop) corrupts internal hash tables in libgui and causes a SIGSEGV.
+    // Therefore, raster presentations receive isolated transactions per presentation, which
+    // are transferred to the platform thread on swapTransactions() and merged in onEndFrame().
+    synchronized (transactionLock) {
+      final SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
+      pendingRasterTransactions.add(tx);
+      return tx;
     }
   }
 
-  // NOT called from UI thread.
   @RequiresApi(API_LEVELS.API_34)
   public void applyTransactions() {
-    final SurfaceControl.Transaction tx;
+    final List<SurfaceControl.Transaction> rasterTxs;
+    final SurfaceControl.Transaction platformTx;
     synchronized (transactionLock) {
-      tx = pendingTransaction;
-      pendingTransaction = null;
+      rasterTxs =
+          pendingRasterTransactions.isEmpty() ? null : new ArrayList<>(pendingRasterTransactions);
+      pendingRasterTransactions.clear();
+
+      platformTx = pendingPlatformTransaction;
+      pendingPlatformTransaction = null;
     }
-    if (tx != null) {
-      tx.apply();
+    if (platformTx != null) {
+      platformTx.apply();
+    }
+    if (rasterTxs != null) {
+      for (int i = 0; i < rasterTxs.size(); i++) {
+        rasterTxs.get(i).apply();
+      }
     }
   }
 
