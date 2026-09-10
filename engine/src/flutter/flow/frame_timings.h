@@ -57,6 +57,10 @@ class FrameTimingsRecorder {
   /// This is typically the next vsync signal timestamp.
   fml::TimePoint GetVsyncTargetTime() const;
 
+  /// Timestamp of the platform-provided preferred frame deadline (if
+  /// available).
+  fml::TimePoint GetPreferredFrameDeadline() const;
+
   /// Timestamp of when the frame building started.
   fml::TimePoint GetBuildStartTime() const;
 
@@ -88,7 +92,9 @@ class FrameTimingsRecorder {
   size_t GetPictureCacheBytes() const;
 
   /// Records a vsync event.
-  void RecordVsync(fml::TimePoint vsync_start, fml::TimePoint vsync_target);
+  void RecordVsync(fml::TimePoint vsync_start,
+                   fml::TimePoint vsync_target,
+                   fml::TimePoint preferred_frame_deadline = {});
 
   /// Records a build start event.
   void RecordBuildStart(fml::TimePoint build_start);
@@ -131,8 +137,10 @@ class FrameTimingsRecorder {
   FML_FRIEND_TEST(FrameTimingsRecorderTest,
                   ThrowWhenRecordRasterBeforeBuildEnd);
 
-  [[nodiscard]] fml::Status RecordVsyncImpl(fml::TimePoint vsync_start,
-                                            fml::TimePoint vsync_target);
+  [[nodiscard]] fml::Status RecordVsyncImpl(
+      fml::TimePoint vsync_start,
+      fml::TimePoint vsync_target,
+      fml::TimePoint preferred_frame_deadline = {});
   [[nodiscard]] fml::Status RecordBuildStartImpl(fml::TimePoint build_start);
   [[nodiscard]] fml::Status RecordBuildEndImpl(fml::TimePoint build_end);
   [[nodiscard]] fml::Status RecordRasterStartImpl(fml::TimePoint raster_start);
@@ -147,6 +155,7 @@ class FrameTimingsRecorder {
 
   fml::TimePoint vsync_start_;
   fml::TimePoint vsync_target_;
+  fml::TimePoint preferred_frame_deadline_;
   fml::TimePoint build_start_;
   fml::TimePoint build_end_;
   fml::TimePoint raster_start_;

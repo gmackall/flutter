@@ -177,10 +177,10 @@ AndroidShellHolder::AndroidShellHolder(
       }
       int64_t vsync_start_ns =
           timing.Get(FrameTiming::kVsyncStart).ToEpochDelta().ToNanoseconds();
-      int64_t vsync_target_ns =
-          timing.GetVsyncTarget().ToEpochDelta().ToNanoseconds();
-      if (vsync_target_ns > vsync_start_ns) {
-        int64_t frame_interval_ns = vsync_target_ns - vsync_start_ns;
+      int64_t deadline_ns =
+          timing.GetPreferredFrameDeadline().ToEpochDelta().ToNanoseconds();
+      if (deadline_ns > vsync_start_ns) {
+        int64_t frame_interval_ns = deadline_ns - vsync_start_ns;
         int64_t dynamic_target_ns =
             static_cast<int64_t>(frame_interval_ns * kTargetFrameWorkRatio);
         perf_hint->UpdateTargetWorkDuration(dynamic_target_ns);
