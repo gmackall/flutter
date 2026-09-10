@@ -45,6 +45,9 @@ class FrameTiming {
     return data_[phase] = value;
   }
 
+  fml::TimePoint GetVsyncTarget() const { return vsync_target_; }
+  void SetVsyncTarget(fml::TimePoint value) { vsync_target_ = value; }
+
   uint64_t GetFrameNumber() const { return frame_number_; }
   void SetFrameNumber(uint64_t frame_number) { frame_number_ = frame_number; }
   uint64_t GetLayerCacheCount() const { return layer_cache_count_; }
@@ -63,6 +66,7 @@ class FrameTiming {
 
  private:
   fml::TimePoint data_[kCount];
+  fml::TimePoint vsync_target_;
   uint64_t frame_number_;
   size_t layer_cache_count_;
   size_t layer_cache_bytes_;

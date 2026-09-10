@@ -30,24 +30,34 @@ void VsyncWaiterAndroid::AwaitVSync() {
   const static bool use_choreographer =
       impeller::android::Choreographer::IsAvailableOnPlatform();
   if (use_choreographer) {
-    auto* weak_this = new std::weak_ptr<VsyncWaiter>(shared_from_this());
+    std::weak_ptr<VsyncWaiter>* weak_this =
+        new std::weak_ptr<VsyncWaiter>(shared_from_this());
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     fml::TaskRunner::RunNowOrPostTask(
         task_runners_.GetUITaskRunner(), [weak_this]() {
-          const auto& choreographer =
+          const impeller::android::Choreographer& choreographer =
               impeller::android::Choreographer::GetInstance();
-          choreographer.PostFrameCallback([weak_this](auto time) {
-            auto time_ns =
-                std::chrono::time_point_cast<std::chrono::nanoseconds>(time)
-                    .time_since_epoch()
-                    .count();
-            OnVsyncFromNDK(time_ns, weak_this);
-          });
+          choreographer.PostVsyncCallback(
+              [weak_this](const impeller::android::Choreographer::VsyncData&
+                              vsync_data) {
+                int64_t time_ns =
+                    std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                        vsync_data.frame_time)
+                        .time_since_epoch()
+                        .count();
+                int64_t deadline_ns =
+                    std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                        vsync_data.target_deadline)
+                        .time_since_epoch()
+                        .count();
+                OnVsyncFromNDK(time_ns, deadline_ns, weak_this);
+              });
         });
   } else {
     // TODO(99798): Remove it when we drop support for API level < 29 and 32-bit
     // devices.
-    auto* weak_this = new std::weak_ptr<VsyncWaiter>(shared_from_this());
+    std::weak_ptr<VsyncWaiter>* weak_this =
+        new std::weak_ptr<VsyncWaiter>(shared_from_this());
     jlong java_baton = reinterpret_cast<jlong>(weak_this);
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     task_runners_.GetPlatformTaskRunner()->PostTask([java_baton]() {
@@ -61,22 +71,31 @@ void VsyncWaiterAndroid::AwaitVSync() {
 }
 
 // static
-void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos, void* data) {
-  auto frame_time = fml::TimePoint::FromEpochDelta(
+void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos,
+                                        int64_t deadline_nanos,
+                                        void* data) {
+  fml::TimePoint frame_time = fml::TimePoint::FromEpochDelta(
       fml::TimeDelta::FromNanoseconds(frame_nanos));
-  auto now = fml::TimePoint::Now();
+  fml::TimePoint now = fml::TimePoint::Now();
   if (frame_time > now) {
     frame_time = now;
   }
-  auto target_time = frame_time + fml::TimeDelta::FromNanoseconds(
-                                      1000000000.0 / g_refresh_rate_);
+  fml::TimePoint target_time;
+  if (deadline_nanos > frame_nanos) {
+    target_time = fml::TimePoint::FromEpochDelta(
+        fml::TimeDelta::FromNanoseconds(deadline_nanos));
+  } else {
+    target_time = frame_time + fml::TimeDelta::FromNanoseconds(1000000000.0 /
+                                                               g_refresh_rate_);
+  }
 
   TRACE_EVENT2_INT("flutter", "PlatformVsync", "frame_start_time",
                    frame_time.ToEpochDelta().ToMicroseconds(),
                    "frame_target_time",
                    target_time.ToEpochDelta().ToMicroseconds());
 
-  auto* weak_this = reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(data);
+  std::weak_ptr<VsyncWaiter>* weak_this =
+      reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(data);
   ConsumePendingCallback(weak_this, frame_time, target_time);
 }
 
@@ -86,9 +105,9 @@ void VsyncWaiterAndroid::OnVsyncFromJava(JNIEnv* env,
                                          jlong frameDelayNanos,
                                          jlong refreshPeriodNanos,
                                          jlong java_baton) {
-  auto frame_time =
+  fml::TimePoint frame_time =
       fml::TimePoint::Now() - fml::TimeDelta::FromNanoseconds(frameDelayNanos);
-  auto target_time =
+  fml::TimePoint target_time =
       frame_time + fml::TimeDelta::FromNanoseconds(refreshPeriodNanos);
 
   TRACE_EVENT2_INT("flutter", "PlatformVsync", "frame_start_time",
@@ -96,7 +115,8 @@ void VsyncWaiterAndroid::OnVsyncFromJava(JNIEnv* env,
                    "frame_target_time",
                    target_time.ToEpochDelta().ToMicroseconds());
 
-  auto* weak_this = reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(java_baton);
+  std::weak_ptr<VsyncWaiter>* weak_this =
+      reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(java_baton);
   ConsumePendingCallback(weak_this, frame_time, target_time);
 }
 
@@ -105,7 +125,7 @@ void VsyncWaiterAndroid::ConsumePendingCallback(
     std::weak_ptr<VsyncWaiter>* weak_this,
     fml::TimePoint frame_start_time,
     fml::TimePoint frame_target_time) {
-  auto shared_this = weak_this->lock();
+  std::shared_ptr<VsyncWaiter> shared_this = weak_this->lock();
   delete weak_this;
 
   if (shared_this) {

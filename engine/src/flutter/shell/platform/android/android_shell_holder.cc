@@ -76,6 +76,13 @@ static void AndroidPlatformThreadConfigSetter(
       }
   }
 }
+namespace {
+// Use a provisional end-to-end frame-work target of 75% of the frame
+// interval. This leaves scheduling slack because GPU duration is presently
+// unmeasured. The ratio must be validated with device traces.
+constexpr double kTargetFrameWorkRatio = 0.75;
+}  // namespace
+
 static PlatformData GetDefaultPlatformData() {
   PlatformData platform_data;
   platform_data.lifecycle_state = "AppLifecycleState.detached";
@@ -90,9 +97,9 @@ AndroidShellHolder::AndroidShellHolder(
       jni_facade_(jni_facade),
       android_rendering_api_(android_rendering_api) {
   static size_t thread_host_count = 1;
-  auto thread_label = std::to_string(thread_host_count++);
+  std::string thread_label = std::to_string(thread_host_count++);
 
-  auto mask = ThreadHost::Type::kRaster | ThreadHost::Type::kIo;
+  uint64_t mask = ThreadHost::Type::kRaster | ThreadHost::Type::kIo;
   if (settings.merged_platform_ui_thread !=
       Settings::MergedPlatformUIThread::kEnabled) {
     mask |= ThreadHost::Type::kUi;
@@ -145,11 +152,6 @@ AndroidShellHolder::AndroidShellHolder(
     }
   }
 
-  // Use a provisional end-to-end frame-work target of 75% of the display
-  // interval. This leaves scheduling slack because GPU duration is presently
-  // unmeasured. The ratio must be validated with device traces.
-  constexpr double kTargetFrameWorkRatio = 0.75;
-
   double refresh_rate = jni_facade->GetDisplayRefreshRate();
   if (refresh_rate <= 0) {
     refresh_rate = 60.0;
@@ -175,6 +177,14 @@ AndroidShellHolder::AndroidShellHolder(
       }
       int64_t vsync_start_ns =
           timing.Get(FrameTiming::kVsyncStart).ToEpochDelta().ToNanoseconds();
+      int64_t vsync_target_ns =
+          timing.GetVsyncTarget().ToEpochDelta().ToNanoseconds();
+      if (vsync_target_ns > vsync_start_ns) {
+        int64_t frame_interval_ns = vsync_target_ns - vsync_start_ns;
+        int64_t dynamic_target_ns =
+            static_cast<int64_t>(frame_interval_ns * kTargetFrameWorkRatio);
+        perf_hint->UpdateTargetWorkDuration(dynamic_target_ns);
+      }
       int64_t total_duration_ns = 0;
       if (vsync_start_ns > 0) {
         total_duration_ns = (timing.Get(FrameTiming::kRasterFinish) -

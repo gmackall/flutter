@@ -45,6 +45,10 @@ ASurfaceTransaction* ASurfaceTransaction_fromJava(JNIEnv* env,
   INVOKE(AChoreographer_postFrameCallback, 24)                     \
   _Pragma("GCC diagnostic pop")                                    \
   INVOKE(AChoreographer_postFrameCallback64, 29)                   \
+  INVOKE(AChoreographer_postVsyncCallback, 33)                     \
+  INVOKE(AChoreographerFrameCallbackData_getFrameTimeNanos, 33)    \
+  INVOKE(AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex, 33) \
+  INVOKE(AChoreographerFrameCallbackData_getFrameTimelineDeadlineNanos, 33) \
   INVOKE(AHardwareBuffer_acquire, 26)                              \
   INVOKE(AHardwareBuffer_allocate, 26)                             \
   INVOKE(AHardwareBuffer_describe, 26)                             \
