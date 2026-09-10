@@ -297,18 +297,19 @@ TEST(FrameTimingsRecorderTest, FrameNumberTraceArgIsValid) {
   ASSERT_EQ(actual_arg, expected_arg);
 }
 
-TEST(FrameTimingsRecorderTest, RecordRasterEndSetsVsyncTarget) {
+TEST(FrameTimingsRecorderTest, RecordRasterEndSetsPreferredFrameDeadline) {
   std::unique_ptr<FrameTimingsRecorder> recorder =
       std::make_unique<FrameTimingsRecorder>();
   fml::TimePoint st = fml::TimePoint::Now();
   fml::TimePoint en = st + fml::TimeDelta::FromMillisecondsF(16);
-  recorder->RecordVsync(st, en);
+  fml::TimePoint deadline = st + fml::TimeDelta::FromMillisecondsF(14);
+  recorder->RecordVsync(st, en, deadline);
   recorder->RecordBuildStart(st);
   recorder->RecordBuildEnd(st);
   recorder->RecordRasterStart(st);
   FrameTiming timing = recorder->RecordRasterEnd();
 
-  ASSERT_EQ(en, timing.GetVsyncTarget());
+  ASSERT_EQ(deadline, timing.GetPreferredFrameDeadline());
 }
 
 }  // namespace flutter

@@ -103,14 +103,13 @@ bool Choreographer::PostVsyncCallback(VsyncCallback callback) const {
           int64_t frame_time_nanos =
               table.AChoreographerFrameCallbackData_getFrameTimeNanos(
                   frame_data);
-          size_t preferred_idx =
-              table
-                  .AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex(
-                      frame_data);
+          // Target timeline index 0 to target the single-frame vsync deadline,
+          // rather than accepting a multi-frame downclocked timeline
+          // recommendation.
           int64_t deadline_nanos =
               table
                   .AChoreographerFrameCallbackData_getFrameTimelineDeadlineNanos(
-                      frame_data, preferred_idx);
+                      frame_data, 0);
 
           VsyncData vsync_data;
           vsync_data.frame_time =

@@ -252,8 +252,18 @@ void AndroidPerformanceHintManager::UpdateTargetWorkDuration(
     return;
   }
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (impl_->applied_target_duration_ns == target_duration_ns) {
-    return;
+  if (impl_->applied_target_duration_ns > 0) {
+    int64_t delta =
+        std::abs(target_duration_ns - impl_->applied_target_duration_ns);
+    // Suppress microsecond timer jitter to avoid issuing a synchronous Binder
+    // IPC to the vendor PowerHAL on the raster thread every frame. Only update
+    // when target duration shifts by more than 15% (e.g. 144Hz <-> 120Hz <->
+    // 60Hz).
+    constexpr double kTargetChangeThreshold = 0.15;
+    if (delta < static_cast<int64_t>(impl_->applied_target_duration_ns *
+                                     kTargetChangeThreshold)) {
+      return;
+    }
   }
   if (impl_->session && impl_->update_target_work_duration) {
     int result =

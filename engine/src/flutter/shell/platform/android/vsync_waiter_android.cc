@@ -80,13 +80,15 @@ void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos,
   if (frame_time > now) {
     frame_time = now;
   }
-  fml::TimePoint target_time;
+  // Keep Flutter's internal target_time smooth and based on nominal display
+  // rate.
+  fml::TimePoint target_time = frame_time + fml::TimeDelta::FromNanoseconds(
+                                                1000000000.0 / g_refresh_rate_);
+
+  fml::TimePoint preferred_deadline;
   if (deadline_nanos > frame_nanos) {
-    target_time = fml::TimePoint::FromEpochDelta(
+    preferred_deadline = fml::TimePoint::FromEpochDelta(
         fml::TimeDelta::FromNanoseconds(deadline_nanos));
-  } else {
-    target_time = frame_time + fml::TimeDelta::FromNanoseconds(1000000000.0 /
-                                                               g_refresh_rate_);
   }
 
   TRACE_EVENT2_INT("flutter", "PlatformVsync", "frame_start_time",
@@ -96,7 +98,8 @@ void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos,
 
   std::weak_ptr<VsyncWaiter>* weak_this =
       reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(data);
-  ConsumePendingCallback(weak_this, frame_time, target_time);
+  ConsumePendingCallback(weak_this, frame_time, target_time,
+                         preferred_deadline);
 }
 
 // static
@@ -124,12 +127,14 @@ void VsyncWaiterAndroid::OnVsyncFromJava(JNIEnv* env,
 void VsyncWaiterAndroid::ConsumePendingCallback(
     std::weak_ptr<VsyncWaiter>* weak_this,
     fml::TimePoint frame_start_time,
-    fml::TimePoint frame_target_time) {
+    fml::TimePoint frame_target_time,
+    fml::TimePoint preferred_frame_deadline) {
   std::shared_ptr<VsyncWaiter> shared_this = weak_this->lock();
   delete weak_this;
 
   if (shared_this) {
-    shared_this->FireCallback(frame_start_time, frame_target_time);
+    shared_this->FireCallback(frame_start_time, frame_target_time, true,
+                              preferred_frame_deadline);
   }
 }
 

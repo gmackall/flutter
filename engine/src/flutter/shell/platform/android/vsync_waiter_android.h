@@ -38,9 +38,11 @@ class VsyncWaiterAndroid final : public VsyncWaiter {
                               jlong refreshPeriodNanos,
                               jlong java_baton);
 
-  static void ConsumePendingCallback(std::weak_ptr<VsyncWaiter>* weak_this,
-                                     fml::TimePoint frame_start_time,
-                                     fml::TimePoint frame_target_time);
+  static void ConsumePendingCallback(
+      std::weak_ptr<VsyncWaiter>* weak_this,
+      fml::TimePoint frame_start_time,
+      fml::TimePoint frame_target_time,
+      fml::TimePoint preferred_frame_deadline = {});
 
   static void OnUpdateRefreshRate(JNIEnv* env,
                                   jclass jcaller,

@@ -72,7 +72,8 @@ class VsyncWaiter : public std::enable_shared_from_this<VsyncWaiter> {
   // to the `frame_start_time` as possible.
   void FireCallback(fml::TimePoint frame_start_time,
                     fml::TimePoint frame_target_time,
-                    bool pause_secondary_tasks = true);
+                    bool pause_secondary_tasks = true,
+                    fml::TimePoint preferred_frame_deadline = {});
 
  private:
   std::mutex callback_mutex_;
