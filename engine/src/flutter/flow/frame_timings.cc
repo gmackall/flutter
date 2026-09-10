@@ -224,6 +224,7 @@ FrameTiming FrameTimingsRecorder::RecordRasterEnd(const RasterCache* cache) {
   timing_.Set(FrameTiming::kRasterStart, raster_start_);
   timing_.Set(FrameTiming::kRasterFinish, raster_end_);
   timing_.Set(FrameTiming::kRasterFinishWallTime, raster_end_wall_time_);
+  timing_.SetVsyncTarget(vsync_target_);
   timing_.SetFrameNumber(GetFrameNumber());
   timing_.SetRasterCacheStatistics(layer_cache_count_, layer_cache_bytes_,
                                    picture_cache_count_, picture_cache_bytes_);

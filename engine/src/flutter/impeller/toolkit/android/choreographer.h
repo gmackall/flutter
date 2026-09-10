@@ -59,6 +59,12 @@ class Choreographer {
   using FrameTimePoint = std::chrono::time_point<FrameClock>;
   using FrameCallback = std::function<void(FrameTimePoint)>;
 
+  struct VsyncData {
+    FrameTimePoint frame_time;
+    FrameTimePoint target_deadline;
+  };
+  using VsyncCallback = std::function<void(const VsyncData&)>;
+
   //----------------------------------------------------------------------------
   /// @brief      Posts a frame callback. The time that the frame is being
   ///             rendered will be available in the callback as an argument.
@@ -72,6 +78,18 @@ class Choreographer {
   ///             See `IsAvailableOnPlatform`.
   ///
   bool PostFrameCallback(FrameCallback callback) const;
+
+  //----------------------------------------------------------------------------
+  /// @brief      Posts a vsync callback. On API 33+, this extracts the
+  ///             platform-preferred frame timeline (including the hardware
+  ///             presentation deadline). On older APIs, target_deadline will
+  ///             be FrameTimePoint{} (unspecified).
+  ///
+  /// @param[in]  callback  The callback receiving VsyncData.
+  ///
+  /// @return     `true` if the vsync callback could be posted.
+  ///
+  bool PostVsyncCallback(VsyncCallback callback) const;
 
  private:
   AChoreographer* instance_ = nullptr;

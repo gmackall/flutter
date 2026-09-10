@@ -75,6 +75,65 @@ bool Choreographer::PostFrameCallback(FrameCallback callback) const {
   return false;
 }
 
+bool Choreographer::PostVsyncCallback(VsyncCallback callback) const {
+  if (!callback || !IsValid()) {
+    return false;
+  }
+
+  const ProcTable& table = GetProcTable();
+  if (table.AChoreographer_postVsyncCallback &&
+      table.AChoreographerFrameCallbackData_getFrameTimeNanos &&
+      table.AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex &&
+      table.AChoreographerFrameCallbackData_getFrameTimelineDeadlineNanos) {
+    struct InFlightVsyncData {
+      VsyncCallback callback;
+    };
+
+    std::unique_ptr<InFlightVsyncData> data =
+        std::make_unique<InFlightVsyncData>();
+    data->callback = std::move(callback);
+
+    table.AChoreographer_postVsyncCallback(
+        const_cast<AChoreographer*>(instance_),
+        [](const AChoreographerFrameCallbackData* frame_data, void* p_data) {
+          InFlightVsyncData* data =
+              reinterpret_cast<InFlightVsyncData*>(p_data);
+          const ProcTable& table = GetProcTable();
+
+          int64_t frame_time_nanos =
+              table.AChoreographerFrameCallbackData_getFrameTimeNanos(
+                  frame_data);
+          size_t preferred_idx =
+              table
+                  .AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex(
+                      frame_data);
+          int64_t deadline_nanos =
+              table
+                  .AChoreographerFrameCallbackData_getFrameTimelineDeadlineNanos(
+                      frame_data, preferred_idx);
+
+          VsyncData vsync_data;
+          vsync_data.frame_time =
+              ClockMonotonicNanosToFrameTimePoint(frame_time_nanos);
+          vsync_data.target_deadline =
+              ClockMonotonicNanosToFrameTimePoint(deadline_nanos);
+
+          data->callback(vsync_data);
+          delete data;
+        },
+        data.release());
+    return true;
+  }
+
+  return PostFrameCallback(
+      [callback = std::move(callback)](FrameTimePoint time) {
+        VsyncData vsync_data;
+        vsync_data.frame_time = time;
+        vsync_data.target_deadline = FrameTimePoint{};
+        callback(vsync_data);
+      });
+}
+
 bool Choreographer::IsAvailableOnPlatform() {
   return GetProcTable().AChoreographer_getInstance &&
          (GetProcTable().AChoreographer_postFrameCallback64 ||
