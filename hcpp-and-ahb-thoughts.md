@@ -1,36 +1,20 @@
 # HCPP and AHB: running issue list
 
-Working notes on Hybrid Composition++ (Android 14+ `SurfaceControl` platform views) and
-the AHB Vulkan swapchain that feeds it. This is a personal branch, not intended to land.
+Working notes on Hybrid Composition++ and the AHB Vulkan swapchain that feeds it.
+Personal branch, not intended to land.
 
-## How to use this file
-
-Append new findings to **Open issues** with the next free `PV-n` id. Ids are never
-reused or renumbered, so they stay quotable across branches and PRs. When something
-lands, move it to **Resolved** with the PR number rather than deleting it — the
-history of what was already ruled out is most of the value here.
-
-Every entry carries an evidence level, because the difference between "I read this in
-the code" and "I watched this happen on a device" matters a lot for prioritisation:
-
-- **observed** — reproduced on a device, with a trace or video.
-- **derived** — follows from reading the code; the mechanism is understood but has not
-  been caught in the act.
-- **suspected** — plausible from the code, not yet traced through end to end.
-
-Code references use function names first and line numbers only as a hint, since the
-latter drift. Line numbers for `PlatformViewsController2.java` refer to the version on
-`isolate-hcpp-transactions` (PR #192606), which moves things around a little.
+**Conventions.** Append with the next free `PV-n`; ids are never reused or renumbered.
+Move landed items to Resolved rather than deleting them. Evidence is **observed**
+(reproduced on device), **derived** (follows from the code), or **suspected** (plausible,
+not chased down). References lead with function names; line numbers drift.
 
 Last updated: 2026-09-11.
 
----
-
-## Open issues
+## Open
 
 | Id | Severity | Evidence | Summary |
 |----|----------|----------|---------|
-| PV-1 | High | derived | Raster thread runs ahead; `swapTransactions()` can promote a later frame's buffers |
+| PV-1 | High | derived | `swapTransactions()` can promote a later frame's buffers, dropping a frame |
 | PV-2 | Medium | derived | Platform-view position and crop travel on different channels |
 | PV-3 | High | derived | Native writes to a transaction after it is published to Java |
 | PV-4 | High | derived | GC can free a borrowed native transaction still in use |
@@ -44,88 +28,50 @@ Last updated: 2026-09-11.
 | PV-12 | High | observed | Energy-Aware Scheduling strands raster thread on Little cores without ADPF |
 | PV-13 | Medium | observed | AHB swapchain incurs JNI and Java allocation overhead when zero platform views are active |
 | PV-14 | Medium | observed | Cross-stream `tx.merge()` overhead and mutex stalls in `onEndFrame()` |
+| PV-15 | Medium | derived | Raster thread can block on the platform thread's monitor |
 
 ### PV-1 — Raster run-ahead breaks frame attribution
 
-**Severity:** high. **Evidence:** derived. **Suspected cause of:** intermittent jitter
-of Flutter content relative to platform views, worse under load.
+Suspected cause of the intermittent jitter. `Present` never blocks (`AHBTexturePoolVK::Pop`
+allocates when the pool is empty) and `SubmitFlutterView` posts the platform task without
+waiting, so the raster thread can be a frame ahead. `swapTransactions()` then promotes
+buffers from both frames, `onEndFrame()` merges them, and two `setBuffer` calls on one
+`SurfaceControl` mean the last wins: frame N is dropped and N+1's content is shown against
+N's clips.
 
-The design assumes frame N's buffers and frame N's platform geometry meet in the same
-swap. Nothing enforces it.
+Platform-thread lag is the trigger, so this and PV-13 are the same problem from two ends.
+The coupling may be inherent; discarding frames is not.
 
-- `AHBSwapchainImplVK::Present` never blocks. `AHBTexturePoolVK::Pop` allocates a new
-  texture when the pool is empty rather than waiting for one to be released.
-- `AndroidExternalViewEmbedder2::SubmitFlutterView` posts the platform task and returns.
-  The raster thread is then free to rasterise and submit frame N+1.
-- `PlatformViewsController2.swapTransactions()` promotes *everything* pending. It has no
-  notion of which frame a transaction belongs to.
+**Interacts with PV-11.** The window is bounded by `kMaxPendingPresents`, today 2 — enough
+to overlap one frame. Raising it to 3 to fix PV-11's lockstep stall widens this window.
+The two should be landed together, or PV-1 fixed first.
 
-So when the platform thread is busy — layout, view inflation, GC — and slips past the
-next raster submit, the platform task for frame N swaps in buffers from both N and N+1.
-`onEndFrame()` merges both into one transaction, and two `setBuffer` calls on the same
-`SurfaceControl` mean the last one wins. Frame N's buffer is dropped, and N+1's content
-is displayed against the clips, crops and positions computed for frame N.
+**Confirm:** trace counter on `pendingRasterTransactions.size()` at the top of
+`swapTransactions()`. Above one present per frame means this is happening.
 
-Content and platform views separate by exactly one frame, for exactly one frame. That
-matches "mostly fine, occasionally jitters" far better than a persistent offset would.
-
-**How to confirm:** add a trace counter for `pendingRasterTransactions.size()` at the
-top of `swapTransactions()`. If it ever exceeds the number of surfaces presented in one
-frame, this is happening. Correlate with the `SubmitFlutterView` trace markers in
-Perfetto during a scroll and the platform task should be visibly sliding past a raster
-submit.
-
-**Fix direction:** tag transactions with a frame id at creation; `swapTransactions()`
-promotes only the frame it belongs to and leaves later ones pending. This composes with
-the fix for PV-3 and PV-4, since both want the publication point to be explicit rather
-than implied by "whatever is in the list right now".
+**Fix:** tag transactions with a frame id; promote only that frame's, leave later ones
+pending. Composes with the PV-3/PV-4 fix.
 
 ### PV-2 — Position and crop travel on different channels
 
-**Severity:** medium. **Evidence:** derived.
+In one platform task, `onDisplayPlatformView` sets geometry via `readyToDisplay()` →
+`setLayoutParams()` (View layout pipeline) and clipping via `maybeApplyClipToSurfaceView()` →
+`setCrop()` (SurfaceControl transaction). They coincide only because both usually land in the
+same traversal, and a SurfaceView's position is additionally updated by the View system's own
+transaction. Same failure mode as #189946, on the channel that fix didn't cover.
 
-For a single platform view in a single platform task, `onDisplayPlatformView`:
+### PV-3 / PV-4 — Ownership of the borrowed transaction
 
-- calls `readyToDisplay()` → `setLayoutParams()`, which goes through the **View layout
-  pipeline**, and
-- calls `maybeApplyClipToSurfaceView()` → `setCrop()`/`setAlpha()`, which goes into the
-  **SurfaceControl transaction**.
+`createTransaction()` publishes to the pending list before the native producer is done.
+`PlatformViewAndroidJNIImpl::createTransaction` drops its JNI local ref, then `Present` calls
+`SetContents()` and `Apply()` through the borrowed pointer — so a platform-thread merge can
+race those writes (PV-3). Once `onEndFrame()` drains the list the Java object is unreachable
+and the cleaner can free the native transaction while native code still uses it (PV-4).
+Declining to `close()` narrows that window; it was never `close()` that created it.
 
-These coincide only because both usually land in the same traversal. A SurfaceView's
-position is additionally updated by the View system's *own* transaction, not ours.
-
-This is the same failure mode that #189946 fixed, on the channel that fix did not cover.
-Worth re-checking whenever the ordering inside the platform task changes.
-
-### PV-3 — Native writes after publication
-
-**Severity:** high. **Evidence:** derived. Documented in code on the PR #192606 branch.
-
-`PlatformViewsController2.createTransaction()` adds the transaction to the pending list
-before the native producer has finished with it. `PlatformViewAndroidJNIImpl::createTransaction`
-converts it with `ASurfaceTransaction_fromJava` and drops its JNI local ref, then
-`AHBSwapchainImplVK::Present` calls `SetContents()` and `Apply()` through that borrowed
-pointer. A platform-thread merge can race those writes.
-
-Locking the *lists* does not help here; the race is on the transaction object.
-
-**Fix direction:** see PV-4 — same fix.
-
-### PV-4 — GC can free a borrowed native transaction
-
-**Severity:** high. **Evidence:** derived.
-
-Once `onEndFrame()` drains the list, the Java transaction becomes unreachable and the
-`NativeAllocationRegistry` cleaner can free the native transaction at the next GC —
-while native code may still be writing through the borrowed pointer. Declining to call
-`close()` narrows the window but does not close it, because it was never `close()` that
-created the hazard.
-
-**Fix direction for PV-3 and PV-4 together:** native retains a global ref to the
-transaction; the raster-side `createTransaction()` stops publishing; native calls a new
-`submitTransaction(tx)` after `Apply()`, which adds it to the list under the lock and
-releases the ref. One extra JNI call per present, and the ownership transfer becomes
-explicit.
+**Fix direction:** native retains a global ref; the raster-side `createTransaction()` stops
+publishing; native calls a new `submitTransaction(tx)` after `Apply()`, which adds it under
+the lock and releases the ref. One extra JNI call per present, explicit ownership transfer.
 
 **Alternative fix direction (unidirectional pre-vended pool):** Keep a pool of
 transactions pre-vended by Java to C++ ahead of time. When the raster thread
@@ -134,67 +80,42 @@ callback. Once `Apply()` finishes, native code hands the populated transaction t
 (or queues it), making the dependency strictly one-way (C++ → Java) and eliminating
 the mid-frame JNI invocation.
 
+This also removes PV-15 outright, since the raster thread stops taking the lock mid-frame.
+Open question for it and for the caching variant below: whether the pool can be refilled
+without the platform thread becoming the bottleneck again when it stalls — an empty pool
+needs a fallback, and the fallback is the JNI path it was meant to avoid.
+
 ### PV-5 — `SurfacePool::ResetLayers()` is unsynchronised
 
-**Severity:** low. **Evidence:** derived. Latent rather than active.
-
-`ResetLayers()` is the only method in `SurfacePool` that does not take `mutex_`. It
-writes `available_layer_index_` from the raster thread every frame, while every other
-accessor locks. `GetLayer` is called from the platform thread in the overlay-creation
-path in `SubmitFlutterView`, though the latch there orders it in practice.
-
-Looks like an oversight from when `ResetLayers` was added next to `RecycleLayers`.
+The only method in the class that doesn't take `mutex_`, though it writes
+`available_layer_index_` from the raster thread every frame. `GetLayer` is called from the
+platform thread in the overlay-creation path, where a latch orders it in practice — so
+latent, not active. Looks like an oversight next to `RecycleLayers`.
 
 ### PV-6 — `bringToFront()` every frame
 
-**Severity:** low on its own; feeds PV-1. **Evidence:** derived.
-
-`onDisplayPlatformView` calls `parentView.bringToFront()` and `view.bringToFront()` for
-every visible platform view on every frame. Each call reorders the parent's child array
-and requests a layout, so every HCPP frame with a platform view forces a measure/layout
-pass on the platform thread.
-
-Present since the original HCPP class (#161829), so not a regression — but it makes the
-platform task slower, which is exactly what widens the PV-1 window.
+`onDisplayPlatformView` calls it for every visible platform view on every frame; each call
+reorders the child array and requests a layout. Present since #161829, so not a regression —
+but it is on the critical path (PV-13) and widens the PV-1 window.
 
 ### PV-7 — Overlay z-order is hardcoded
 
-**Severity:** unknown. **Evidence:** suspected.
-
-`createOverlaySurface()` reparents the overlay and pins it with `setLayer(1000)`, while
-platform-view SurfaceViews get their layers from the View hierarchy. Nothing coordinates
-the two. If a SurfaceView ever lands at or above 1000, the overlay goes behind the
-platform view.
-
-**How to confirm:** `adb shell dumpsys SurfaceFlinger` while the glitch is visible, and
-check the relative z actually holds.
+`createOverlaySurface()` pins the overlay with `setLayer(1000)` while platform-view
+SurfaceViews get layers from the View hierarchy. Nothing coordinates the two. **Confirm:**
+`adb shell dumpsys SurfaceFlinger` while the glitch is visible.
 
 ### PV-8 — Overlay resize versus view resize
 
-**Severity:** unknown. **Evidence:** suspected. Rotation-specific.
+Since #190638 the overlay is resized in place by `SurfacePool::GetLayer` rather than
+destroyed, while `MaybeResizeSurfaceView` is posted without a latch — deliberately, to avoid
+the deadlock that PR fixed. For a frame or two after a size change the overlay can present at
+the old size. Start here if the jitter is worse right after rotation.
 
-Since #190638 the overlay is no longer destroyed on size change; `SurfacePool::GetLayer`
-resizes the swapchain in place via `OnScreenSurfaceResize`. Meanwhile `PrepareFlutterView`
-posts `MaybeResizeSurfaceView` without a latch — deliberately, to avoid the deadlock that
-PR fixed. For a frame or two after a size change the overlay can therefore present at the
-old size while the view resizes independently.
+### PV-9 / PV-10 — Minor
 
-Dropping `DestroySurfaces()` was the right call; this is about what replaced it. If the
-jitter is worse immediately after rotation, start here.
-
-### PV-9 — `hidePlatformView` initialises in order to hide
-
-**Severity:** trivial. **Evidence:** derived.
-
-`hidePlatformView` calls `initializePlatformViewIfNeeded`, so hiding a view that has no
-parent yet builds and attaches the entire parent hierarchy purely to set it `GONE`.
-
-### PV-10 — Dead `SurfacePool` methods on the HCPP path
-
-**Severity:** trivial. **Evidence:** derived.
-
-`RecycleLayers()`, `TrimLayers()` and `GetUnusedLayers()` are unused by
-`AndroidExternalViewEmbedder2`; only the legacy embedder calls `RecycleLayers()`.
+`hidePlatformView` calls `initializePlatformViewIfNeeded`, so hiding a view with no parent
+builds and attaches the hierarchy purely to set it `GONE`. `RecycleLayers()`, `TrimLayers()`
+and `GetUnusedLayers()` are unused by `AndroidExternalViewEmbedder2`.
 
 ### PV-11 — Swapchain double-buffering causes 30 FPS / lockstep stalls
 
@@ -215,6 +136,8 @@ preventing the raster thread from hard-stalling into lockstep during bursty rast
 Tested on Pixel 7 Pro alongside ADPF.
 
 **Branch:** [optimize-ahb-with-adpf](https://github.com/flutter/flutter/compare/master...gmackall:flutter:optimize-ahb-with-adpf).
+
+**See PV-1:** raising the slot count also widens the frame-attribution window.
 
 ### PV-12 — Energy-Aware Scheduling strands raster thread on Little cores without ADPF
 
@@ -260,6 +183,17 @@ view behavior.
 
 **Branch:** [optimize-ahb-swapchain-no-pv](https://github.com/flutter/flutter/compare/master...gmackall:flutter:optimize-ahb-swapchain-no-pv).
 
+**Mechanism, and why it is bigger than the allocation cost (derived).**
+`SurfaceTransaction::Apply()` returns early *without applying* when the transaction came
+from Java, so nothing is shown until the platform task runs `onEndFrame()` →
+`applyTransactionOnDraw()`. Presentation of every HCPP frame therefore waits on the platform
+thread, which also runs plugin channel handlers — putting third-party code on the present
+path even in apps with no platform views. Note `AttachCurrentThread` is a cached `GetEnv`
+fast path, so the per-frame attach cost cited above is closer to zero than the description
+suggests; the coupling is the real cost. With platform views the coupling is inherent —
+`applyTransactionOnDraw` has no NDK equivalent and only `ViewRootImpl` knows when the draw
+commits. **Confirm:** per-frame gap between `Present` and `applyTransactionOnDraw`.
+
 ### PV-14 — Cross-stream transaction merging (`tx.merge()`) overhead in `onEndFrame()`
 
 **Severity:** medium. **Evidence:** observed. **Impact:** ~35% dropped frame reduction on Pixel 7 Pro when eliminated.
@@ -285,38 +219,66 @@ transaction stream across C++ and Java.
 
 **Branch:** [optimize-hcpp-transactions](https://github.com/flutter/flutter/compare/master...gmackall:flutter:optimize-hcpp-transactions).
 
----
+**Conflicts with #192606.** That PR keeps the separate merge destination deliberately:
+merging into a raster input and closing it could free a native pointer the producer is still
+using (PV-3/PV-4). A unified per-frame transaction needs the ownership handoff first, or it
+reintroduces that hazard. Since merges happen on the platform thread, this also feeds PV-13.
+
+### PV-15 — Raster thread blocks on the platform thread's monitor
+
+`createTransaction()` takes `transactionLock` on the raster thread, while the platform thread
+holds it across `swapTransactions()` — including a native `close()`. A high-priority raster
+thread waiting on a normal-priority platform thread is priority inversion, and it bites
+exactly when the platform thread is busy. Small today, but new with the locking added in
+#192606, and it sits on the present path. Both fix directions under PV-3/PV-4 remove it.
+
+## Directions
+
+Not defects — design options.
+
+- **Cache two long-lived transactions.** `SurfaceControl.Transaction` is reusable (`apply()`
+  and `merge()` clear the source, leaving the object intact) and the code already ping-pongs
+  two queues. Allocate two at setup, cache both `ASurfaceTransaction*` handles natively, write
+  into the current parity. A fixed-size variant of the pre-vended pool under PV-3/PV-4, with
+  no refill path to starve. **Prerequisite:** confirm on device that the pointer from
+  `ASurfaceTransaction_fromJava` stays valid across `apply()` and `merge()`. Worth asking
+  Android to document that guarantee.
+- **Per-view promotion instead of whole-view fallback.** Today one `SurfaceView` anywhere in
+  the subtree (`VIEW_TYPES_REQUIRE_NON_TLHC`) forces the entire view off the texture path.
+  Promoting only SurfaceView descendants to their own SurfaceControls would keep TLHC for the
+  rest. Hard parts: z-order, hit-testing and clip inheritance across two mechanisms. Note that
+  SurfaceView content cannot be captured into a Flutter texture at all — the producer owns the
+  BufferQueue — so anything composited as a layer is hybrid composition by definition.
+- **`SurfaceControlViewHost`.** Generalises promotion to arbitrary views: the subtree gets its
+  own `ViewRootImpl` and Flutter places the resulting `SurfacePackage` from its own transaction.
+  Doesn't remove the platform thread from the frame, but removes the need for atomicity with
+  the app's View draw — a route out of `applyTransactionOnDraw` needing nothing from Android.
+  Cost is input, focus, IME and accessibility across the boundary.
 
 ## Resolved
 
-| Id | PR | Summary |
-|----|----|---------|
-| — | #192606 | Transaction-list race: raster adds raced platform swaps, leaving null entries and a `merge(null)` abort. Also split the raster/platform entry points. |
-| — | #190638 | Rotation ANR: platform↔raster deadlock from `DestroySurfaces()` on resize. See PV-8 for the follow-on question. |
-| — | #190612 | `onEndFrame` guarded against a detached `FlutterView`. |
-| — | #190311 | 1px edge clipping from truncating instead of rounding physical pixels. |
-| — | #189946 | Clip rect behind by one frame: `swapTransaction()` ran before `onDisplayPlatformView2()`. See PV-2 for the channel this did not cover. |
-| — | #181009 | Flicker when scrolling off/on screen: apply with Flutter frame timing instead of immediately. |
+| PR | Summary |
+|----|---------|
+| #192606 | Transaction-list race: raster adds raced platform swaps, leaving null entries and a `merge(null)` abort. Also split the raster/platform entry points. |
+| #190638 | Rotation ANR: platform↔raster deadlock from `DestroySurfaces()` on resize. See PV-8 for the follow-on question. |
+| #190612 | `onEndFrame` guarded against a detached `FlutterView`. |
+| #190311 | 1px edge clipping from truncating instead of rounding physical pixels. |
+| #189946 | Clip rect behind by one frame: `swapTransaction()` ran before `onDisplayPlatformView2()`. See PV-2 for the channel this did not cover. |
+| #181009 | Flicker when scrolling off/on screen: apply with Flutter frame timing instead of immediately. |
 
----
+## Diagnostics
 
-## Diagnostics worth keeping around
+- **Pending-transaction counter** in `swapTransactions()` — tests PV-1, near-zero cost.
+- **Perfetto**, using the existing `SubmitFlutterView` marker: the gap between raster submit
+  and the platform task, relative to vsync. Tests PV-13.
+- **`dumpsys SurfaceFlinger`** — relative z and buffer sizes of overlay versus platform-view
+  controls. Tests PV-7 and PV-8.
+- **Robolectric harness** — `PlatformViewsController2Test` runs standalone against the engine
+  sources in a scratch Gradle project. Java ordering only, nothing native. On Windows `TMP`
+  and `TEMP` must be short paths (`C:\Temp`) or Gradle can't open its loopback connection.
 
-- **Pending-transaction counter.** Trace counter on `pendingRasterTransactions.size()` at
-  the top of `swapTransactions()`. Directly tests PV-1 and costs almost nothing.
-- **Perfetto with the existing markers.** `SubmitFlutterView` already has a
-  `TRACE_EVENT0`. What matters is the *gap* between the raster submit and the platform
-  task running, relative to vsync.
-- **`dumpsys SurfaceFlinger`.** Relative z and actual buffer sizes of the overlay versus
-  the platform-view SurfaceControls. Tests PV-7 and PV-8.
-- **Robolectric harness.** `PlatformViewsController2Test` runs standalone against the
-  engine sources in a scratch Gradle project — useful for the Java-side ordering, useless
-  for anything native. On Windows, `TMP`/`TEMP` must be a short path (`C:\Temp`) or Gradle
-  cannot open its loopback connection.
+## Caveat
 
-## Caveats
-
-All of the above is static analysis unless marked otherwise. None of it has been watched
-on a device. The interaction between `applyTransactionOnDraw` and the View system's own
-SurfaceView transactions is subtle enough that PV-2 and PV-7 in particular should not be
-acted on without a trace first.
+PV-11 through PV-14 are device-measured. Everything else is static analysis: not watched on a
+device, and PV-2 and PV-7 turn on View-system behaviour subtle enough that they shouldn't be
+acted on without a trace.
