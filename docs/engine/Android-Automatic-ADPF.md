@@ -1,6 +1,7 @@
 # Automatic ADPF integration for Flutter on Android
 
-Status: proposed design; no engine implementation is included.
+Status: proposed design; no engine implementation is included. See
+[Risks and open questions](#risks-and-open-questions) before implementation.
 
 ## Decision
 
@@ -72,6 +73,18 @@ have shown different function signatures; neither is a substitute for the
 versioned ABI. Do not hand-copy a function-pointer signature from this document.
 If the complete contract requires a later release or extension, raise this
 optimization's gate rather than emulating missing functionality.
+
+The engine currently builds against NDK 28.2 (`android_ndk_version` in
+`build/config/android/config.gni`), whose `performance_hint.h` declares none of
+the `ASessionCreationConfig`, surface-association, or automatic-timing API.
+Implementation therefore needs either an engine NDK roll to a release that
+declares the API 36 surface, or local declarations taken from, and tested
+against, a specific released NDK header. Decide which before writing the
+wrapper. The public sources already disagree: the NDK reference documents
+`APerformanceHint_isFeatureSupported` and `APerformanceHintFeature`, while the
+AOSP `main` header does not declare them. Session creation also reports
+`ENOTSUP` when automatic timing is requested but unsupported, which is a
+candidate equivalent check if the feature query is unavailable.
 
 Required capabilities, when exposed by the pinned API, are:
 
@@ -164,6 +177,15 @@ from the new complete membership. An initial implementation may conservatively
 recreate rather than use `setThreads`; migration is a lifecycle event, not a
 per-frame operation. Never leave a session targeting an obsolete UI TID.
 
+With the default merged platform/UI thread, Flutter's UI critical path runs on
+the Android main thread, which HWUI also drives and may already place in its own
+hint sessions. Before relying on this topology, verify on device whether HWUI's
+threads count toward `APerformanceHint_getMaxGraphicsPipelineThreadsCount`,
+whether a thread may belong to more than one graphics-pipeline session, and how
+the platform attributes main-thread work that is not Flutter's. If the main
+thread cannot be included, whether raster-only membership is an acceptable
+supported topology is a design amendment, not an implementation detail.
+
 ### Surface membership
 
 Maintain a registry of live Flutter output producers, using retained native
@@ -216,16 +238,54 @@ changes, not on every frame. Audit ANativeWindow and SurfaceControl paths
 separately; they need equivalent information but different submission plumbing.
 Do not change plugin-owned surface frame-rate requests.
 
+### Frame-rate votes are new behavior
+
+Automatic timing requires the application to keep the frame rate of associated
+surfaces current, through `ANativeWindow_setFrameRate` or
+`ASurfaceTransaction_setFrameRate`. The Android embedding calls neither today,
+and Flutter has no intended-cadence policy for this plumbing to read from.
+Adding a vote is a user-visible change independent of ADPF: it feeds
+SurfaceFlinger's refresh-rate selection, so a wrong value or compatibility mode
+can hold an LTPO panel at a high refresh rate and cost idle power, or trigger
+non-seamless mode switches.
+
+Design the vote as its own change, landed and measured before the ADPF session
+depends on it. At minimum, decide:
+
+- The value while animating, while idle, and while no frames are produced. The
+  NDK treats 0 as "no preference", the behavior when no vote is made; whether
+  automatic timing accepts it is unverified.
+- Compatibility (`ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT` or
+  `FIXED_SOURCE`) and change strategy (`ONLY_IF_SEAMLESS` or `ALWAYS`).
+- How the vote interacts with host activity and plugin frame-rate requests.
+
+### Target
+
 The selected design uses fully automatic mode without a manually derived target
-budget. Where the pinned API permits an omitted/zero manual-work target, use that
-documented representation. Do not equate that sentinel with a zero-time deadline.
-Verify this behavior with the targeted released implementation before coding the
-wrapper. If it requires an explicit meaningful budget, resolve that requirement
-as a design amendment; do not silently substitute a refresh period or 75% of it.
+budget. The NDK reference only rejects negative initial targets, and says the
+value "may be ignored otherwise or set to zero" when the work-duration API is not
+used, so pass zero. Do not equate that sentinel with a zero-time deadline.
+Confirm on the targeted released implementation that creation with a zero target
+and automatic timing succeeds and is managed automatically. If a device requires
+an explicit meaningful budget, resolve that requirement as a design amendment;
+do not silently substitute a refresh period or 75% of it.
 
 There are no `AWorkDuration` reports, per-frame target updates, GPU-tail estimates,
 or target hysteresis in this path. Flutter continues collecting its ordinary
 frame timings for diagnostics. Those timings do not drive the automatic session.
+
+### What automatic CPU timing observes
+
+The platform describes a graphics-pipeline work period as running from the start
+of frame production until the buffer is fully drawn. How it detects the start
+for a surface-attached session is not documented. Flutter builds a frame on the
+UI thread before the raster thread dequeues a buffer, and the two stages overlap
+across frames. If the platform anchors the period at buffer dequeue, or only
+observes the thread that queues the buffer, UI build time may be invisible to it
+and build-bound frames may not be boosted. This does not affect correctness, but
+it bounds the benefit. Establish it with a device trace before building the full
+integration: compare the session's timing and boost activity against the UI and
+raster slices of build-bound, raster-bound, and GPU-bound frames.
 
 ## Session creation and lifecycle
 
@@ -259,6 +319,13 @@ void Reconcile() {
 
 All configuration/result handling follows the actual versioned API. Release
 configuration objects on every path. Failed creation never interrupts rendering.
+
+`EBUSY` needs explicit handling. When the cumulative graphics-pipeline thread
+count exceeds the per-app limit, creation still returns a session but reports
+`EBUSY`, and the platform documents all graphics-pipeline sessions in the app,
+potentially including ones Flutter does not own, as having undefined behavior.
+Treat `EBUSY` as a failure: close the returned session immediately, record the
+reason, and do not retry until the thread topology changes.
 
 State transitions:
 
@@ -410,20 +477,47 @@ do not compensate with device-specific target multipliers.
 
 ## Implementation sequence and open verification items
 
-1. Verify the complete released ABI and runtime capability contract on a target
-   device. Confirm fully automatic operation without a manual target budget.
-2. Implement the injectable wrapper, eligibility policy, and RAII session owner.
-3. Integrate execution-group ownership, main surfaces, and cadence behind a flag.
-4. Integrate overlays, SurfaceControl producers, migration, and engine groups.
-5. Add lifecycle tests and device benchmarks; identify topology restrictions only
+1. Build a throwaway spike before the controller. Resolve the API 36 entry
+   points dynamically and create one session over the UI and raster threads with
+   graphics-pipeline mode, the main and overlay outputs attached, automatic CPU
+   and GPU timing, a zero target, and a frame-rate vote on those outputs. Run the
+   required 30-widget/30-SurfaceView workload and a light workload against a
+   no-session baseline, measuring presented-frame jank from SurfaceFlinger's
+   frame timeline, and energy. Use it to answer the risks below. Continue only
+   if it shows a repeatable benefit.
+2. Verify the complete released ABI and runtime capability contract, and choose
+   between an NDK roll and pinned local declarations.
+3. Implement the injectable wrapper, eligibility policy, and RAII session owner.
+4. Land the surface frame-rate vote as its own change, behind a flag.
+5. Integrate execution-group ownership, main surfaces, and cadence behind a flag.
+6. Integrate overlays, SurfaceControl producers, migration, and engine groups.
+7. Add lifecycle tests and device benchmarks; identify topology restrictions only
    where the actual contract requires them.
-6. Enable by default for eligible configurations and maintain evidence-based
+8. Enable by default for eligible configurations and maintain evidence-based
    exclusions through normal releases.
 
-Specific items to resolve during steps 1-4 are the released feature-query API,
-target omission semantics, multiple-output timing semantics, canonical producer
-handles per backend, and per-app thread-limit accounting. These are concrete
-contract/integration questions, not a mandate to invent a fallback governor.
+Specific items to resolve during steps 1-6 are the released feature-query API,
+what automatic CPU timing observes, multiple-output timing semantics, canonical
+producer handles per backend, and per-app thread-limit accounting including
+HWUI's threads. Target omission is documented as zero; confirm it on device.
+These are concrete contract/integration questions, not a mandate to invent a
+fallback governor.
+
+## Risks and open questions
+
+None of these is a confirmed blocker. The first three can limit the benefit or
+change the design, and the step 1 spike should settle them before the controller
+is built.
+
+| Risk | Blocker? | Resolution |
+| --- | --- | --- |
+| Flutter does not vote a surface frame rate, and automatic timing requires one | No, but it is new user-visible behavior | Separate frame-rate change; verify whether "no preference" satisfies automatic timing; measure idle and LTPO power |
+| Automatic CPU timing may not observe UI build time | Limits benefit for build-bound frames | Spike trace across build-, raster-, and GPU-bound frames |
+| The merged main thread is shared with HWUI and a per-app thread limit applies | Could make the default thread topology ineligible | Query the limit on device and test main-thread membership; raster-only membership would be a design amendment |
+| `EBUSY` still returns a session | No | Close it immediately and record the reason |
+| The engine's NDK lacks the declarations | No | NDK roll, or local declarations pinned to a released header |
+| Target omission semantics | Resolved by the NDK reference | Pass zero; confirm on device |
+| Reach is API 36 plus vendor support for automatic CPU and GPU timing | No | Record capability availability across the device lab; expect a small initial population, possibly only recent Pixels |
 
 ## Alternatives
 
