@@ -285,6 +285,16 @@ DEF_SWITCH(EnableAndroidHcppAndSurfaceControl,
            "enable-hcpp-and-surface-control",
            "Enable the HCPP platform view mode and SurfaceControl backed "
            "swapchain when supported.")
+DEF_SWITCH(EnableAndroidAdpf,
+           "enable-android-adpf",
+           "Whether to create automatic Android Dynamic Performance Framework "
+           "(ADPF) graphics pipeline hint sessions on devices that support "
+           "them. Android only. Accepts true or false; unset uses the engine "
+           "default.")
+DEF_SWITCH(AndroidAdpfIgnoreDenylist,
+           "android-adpf-ignore-denylist",
+           "Developer override that ignores the compiled ADPF device denylist. "
+           "Android only. Only meaningful with enable-android-adpf.")
 DEF_SWITCH(EnableFlutterGPU,
            "enable-flutter-gpu",
            "Whether Flutter GPU is enabled.")

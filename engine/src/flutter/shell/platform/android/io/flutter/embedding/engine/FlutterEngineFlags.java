@@ -223,6 +223,17 @@ public final class FlutterEngineFlags {
       new Flag("--enable-hcpp-and-surface-control", "EnableHcpp", true);
 
   /**
+   * Sets whether the engine creates automatic Android Dynamic Performance Framework (ADPF)
+   * graphics pipeline hint sessions on devices that support them. Set to {@code true} to opt in
+   * while the integration is experimental, or {@code false} to opt out once it is on by default.
+   *
+   * <p>Allowed in release because the setting is a production performance policy. Settable via the
+   * manifest and the command line.
+   */
+  private static final Flag ENABLE_ANDROID_ADPF =
+      new Flag("--enable-android-adpf=", "EnableAndroidAdpf", true);
+
+  /**
    * Enables the Flutter GPU backend.
    *
    * <p>Allowed in release for developers to use the Flutter GPU backend in production. Settable via
@@ -264,6 +275,15 @@ public final class FlutterEngineFlags {
    */
   private static final Flag IMPELLER_VULKAN_GPU_TRACING =
       new Flag("--enable-vulkan-gpu-tracing", "EnableVulkanGPUTracing");
+
+  /**
+   * Ignores the compiled ADPF device denylist so that an excluded device can be tested. Only
+   * meaningful together with {@link #ENABLE_ANDROID_ADPF}.
+   *
+   * <p>Only settable via the manifest.
+   */
+  private static final Flag ANDROID_ADPF_IGNORE_DENYLIST =
+      new Flag("--android-adpf-ignore-denylist", "AndroidAdpfIgnoreDenylist");
 
   /**
    * Ensures deterministic Skia rendering by skipping CPU feature swaps.
@@ -468,7 +488,9 @@ public final class FlutterEngineFlags {
               IMPELLER_LAZY_SHADER_MODER,
               IMPELLER_OPENGL_GPU_TRACING,
               IMPELLER_VULKAN_GPU_TRACING,
-              ENABLE_HCPP));
+              ENABLE_HCPP,
+              ENABLE_ANDROID_ADPF,
+              ANDROID_ADPF_IGNORE_DENYLIST));
 
   // Flags that have been turned off.
   private static final List<Flag> DISABLED_FLAGS =

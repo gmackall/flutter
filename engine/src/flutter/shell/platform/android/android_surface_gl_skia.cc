@@ -41,6 +41,7 @@ void AndroidSurfaceGLSkia::TeardownOnScreenContext() {
   // https://github.com/flutter/flutter/issues/64414
   android_context_->ClearCurrent();
   onscreen_surface_ = nullptr;
+  output_producer_ = nullptr;
 }
 
 bool AndroidSurfaceGLSkia::IsValid() const {
@@ -104,6 +105,10 @@ bool AndroidSurfaceGLSkia::SetNativeWindow(
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
   FML_DCHECK(IsValid());
   FML_DCHECK(window);
+  if (native_window_ != window) {
+    // A different window is a different producer.
+    output_producer_ = nullptr;
+  }
   native_window_ = window;
   // Ensure the destructor is called since it destroys the `EGLSurface` before
   // creating a new onscreen surface.
@@ -113,7 +118,17 @@ bool AndroidSurfaceGLSkia::SetNativeWindow(
   if (!onscreen_surface_->IsValid()) {
     return false;
   }
+  if (!output_producer_) {
+    // EGL presents straight to the window, so the window is the producer.
+    output_producer_ =
+        AndroidOutputProducer::MakeForNativeWindow(window->handle());
+  }
   return true;
+}
+
+std::shared_ptr<const AndroidOutputProducer>
+AndroidSurfaceGLSkia::GetOutputProducer() const {
+  return output_producer_;
 }
 
 std::unique_ptr<GLContextResult> AndroidSurfaceGLSkia::GLContextMakeCurrent() {

@@ -17,8 +17,10 @@ OverlayLayer::OverlayLayer(int id,
 
 OverlayLayer::~OverlayLayer() = default;
 
-SurfacePool::SurfacePool(bool use_new_surface_methods)
-    : use_new_surface_methods_(use_new_surface_methods) {}
+SurfacePool::SurfacePool(bool use_new_surface_methods,
+                         AndroidOverlayOutputsCallback on_outputs_changed)
+    : use_new_surface_methods_(use_new_surface_methods),
+      on_outputs_changed_(std::move(on_outputs_changed)) {}
 
 SurfacePool::~SurfacePool() = default;
 
@@ -70,6 +72,7 @@ std::shared_ptr<OverlayLayer> SurfacePool::GetLayer(
         );
     layer->gr_context_key = gr_context_key;
     layers_.push_back(layer);
+    NotifyOutputsChangedLocked();
   }
 
   std::shared_ptr<OverlayLayer> layer = layers_[available_layer_index_];
@@ -116,6 +119,20 @@ void SurfacePool::DestroyLayersLocked(
   }
   layers_.clear();
   available_layer_index_ = 0;
+  NotifyOutputsChangedLocked();
+}
+
+void SurfacePool::NotifyOutputsChangedLocked() {
+  if (!on_outputs_changed_) {
+    return;
+  }
+  AndroidOutputProducerList outputs;
+  for (const std::shared_ptr<OverlayLayer>& layer : layers_) {
+    if (auto producer = layer->android_surface->GetOutputProducer()) {
+      outputs.push_back(std::move(producer));
+    }
+  }
+  on_outputs_changed_(std::move(outputs));
 }
 
 std::vector<std::shared_ptr<OverlayLayer>> SurfacePool::GetUnusedLayers() {
@@ -140,5 +157,6 @@ void SurfacePool::TrimLayers() {
   std::lock_guard lock(mutex_);
   layers_.erase(layers_.begin() + available_layer_index_, layers_.end());
   available_layer_index_ = 0;
+  NotifyOutputsChangedLocked();
 }
 }  // namespace flutter

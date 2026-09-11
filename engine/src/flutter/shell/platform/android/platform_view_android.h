@@ -14,6 +14,7 @@
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/snapshot_surface_producer.h"
+#include "flutter/shell/platform/android/adpf/android_graphics_performance_controller.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
 #include "flutter/shell/platform/android/platform_message_handler_android.h"
@@ -47,7 +48,9 @@ class PlatformViewAndroid final : public PlatformView {
   PlatformViewAndroid(PlatformView::Delegate& delegate,
                       const flutter::TaskRunners& task_runners,
                       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-                      AndroidRenderingAPI rendering_api);
+                      AndroidRenderingAPI rendering_api,
+                      std::shared_ptr<AndroidGraphicsPerformanceController>
+                          performance_controller = nullptr);
 
   //----------------------------------------------------------------------------
   /// @brief      Creates a new PlatformViewAndroid but using an existing
@@ -58,7 +61,9 @@ class PlatformViewAndroid final : public PlatformView {
       PlatformView::Delegate& delegate,
       const flutter::TaskRunners& task_runners,
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-      const std::shared_ptr<flutter::AndroidContext>& android_context);
+      const std::shared_ptr<flutter::AndroidContext>& android_context,
+      std::shared_ptr<AndroidGraphicsPerformanceController>
+          performance_controller = nullptr);
 
   ~PlatformViewAndroid() override;
 
@@ -138,6 +143,13 @@ class PlatformViewAndroid final : public PlatformView {
   std::shared_ptr<PlatformMessageHandlerAndroid> platform_message_handler_;
   bool android_meets_hcpp_criteria_ = false;
 
+  // Shared by every engine in the execution group; may be null in tests.
+  std::shared_ptr<AndroidGraphicsPerformanceController> performance_controller_;
+  // This engine's membership in the group's ADPF workload. Shared so that
+  // tasks that outlive this platform view keep it valid.
+  std::shared_ptr<AndroidGraphicsPerformanceController::Registration>
+      performance_registration_;
+
   // |PlatformView|
   void UpdateSemantics(
       int64_t view_id,
@@ -185,6 +197,11 @@ class PlatformViewAndroid final : public PlatformView {
 
   // |PlatformView|
   void RequestDartDeferredLibrary(intptr_t loading_unit_id) override;
+
+  // Reports the main output producer and visibility to the performance hint
+  // integration. Called on the platform thread after the raster-thread task
+  // that changed the surface has completed.
+  void PublishMainOutput(bool visible);
 
   void InstallFirstFrameCallback();
 

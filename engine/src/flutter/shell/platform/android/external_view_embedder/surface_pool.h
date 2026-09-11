@@ -9,6 +9,7 @@
 
 #include "flutter/flow/surface.h"
 #include "flutter/shell/platform/android/context/android_context.h"
+#include "flutter/shell/platform/android/surface/android_output_producer.h"
 #include "flutter/shell/platform/android/surface/android_surface.h"
 
 namespace flutter {
@@ -45,7 +46,12 @@ struct OverlayLayer {
 
 class SurfacePool {
  public:
-  explicit SurfacePool(bool use_new_surface_methods);
+  // `on_outputs_changed`, if set, is invoked with the complete set of live
+  // overlay output producers whenever a layer is created or destroyed. It is
+  // invoked while the pool lock is held and must not call back into the pool.
+  explicit SurfacePool(
+      bool use_new_surface_methods,
+      AndroidOverlayOutputsCallback on_outputs_changed = nullptr);
 
   ~SurfacePool();
 
@@ -109,8 +115,14 @@ class SurfacePool {
   std::mutex mutex_;
   bool use_new_surface_methods_ = false;
 
+  const AndroidOverlayOutputsCallback on_outputs_changed_;
+
   void DestroyLayersLocked(
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade);
+
+  // Reports the producers of every live layer. Must be called with the lock
+  // held, after the set of layers changed.
+  void NotifyOutputsChangedLocked();
 };
 
 }  // namespace flutter

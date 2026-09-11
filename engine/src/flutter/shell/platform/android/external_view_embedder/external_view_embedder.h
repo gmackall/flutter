@@ -32,7 +32,8 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
       const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
       std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-      const TaskRunners& task_runners);
+      const TaskRunners& task_runners,
+      AndroidWorkloadCallbacks workload_callbacks = {});
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -78,6 +79,9 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
   bool SupportsDynamicThreadMerging() override;
 
   // |ExternalViewEmbedder|
+  void OnRasterThreadConfigurationChanged() override;
+
+  // |ExternalViewEmbedder|
   void Teardown() override;
 
   // Gets the rect based on the device pixel ratio of a platform view displayed
@@ -106,6 +110,9 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
 
   // The task runners.
   const TaskRunners task_runners_;
+
+  // Reports raster thread migration to the performance hint integration.
+  const std::function<void()> on_raster_thread_configuration_changed_;
 
   // The size of the root canvas.
   DlISize frame_size_;

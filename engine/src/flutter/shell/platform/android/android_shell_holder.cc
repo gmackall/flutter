@@ -21,6 +21,8 @@
 #include "flutter/shell/common/rasterizer.h"
 #include "flutter/shell/common/run_configuration.h"
 #include "flutter/shell/common/thread_host.h"
+#include "flutter/shell/platform/android/adpf/android_adpf_policy.h"
+#include "flutter/shell/platform/android/adpf/android_graphics_performance_controller.h"
 #include "flutter/shell/platform/android/android_display.h"
 #include "flutter/shell/platform/android/android_image_generator.h"
 #include "flutter/shell/platform/android/android_rendering_selector.h"
@@ -112,16 +114,22 @@ AndroidShellHolder::AndroidShellHolder(
 
   thread_host_ = std::make_shared<ThreadHost>(host_config);
 
+  // Created once the task runners exist, before the shell asks for the
+  // platform view. Captured by reference because the callback runs
+  // synchronously inside Shell::Create.
+  std::shared_ptr<AndroidGraphicsPerformanceController> performance_controller;
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, &weak_platform_view, rendering_api](Shell& shell) {
+      [&jni_facade, &weak_platform_view, rendering_api,
+       &performance_controller](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
             shell.GetTaskRunners(),  // task runners
             jni_facade,              // JNI interop
-            rendering_api            // rendering API
+            rendering_api,           // rendering API
+            performance_controller   // ADPF integration
         );
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
@@ -154,6 +162,10 @@ AndroidShellHolder::AndroidShellHolder(
                                     ui_runner,        // ui
                                     io_runner         // io
   );
+
+  performance_controller = AndroidGraphicsPerformanceController::Create(
+      AutomaticAdpfPolicy::FromSettings(settings_), task_runners);
+  performance_controller_ = performance_controller;
 
   shell_ =
       Shell::Create(GetDefaultPlatformData(),  // window data
@@ -190,11 +202,14 @@ AndroidShellHolder::AndroidShellHolder(
     std::unique_ptr<Shell> shell,
     std::unique_ptr<APKAssetProvider> apk_asset_provider,
     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-    AndroidRenderingAPI rendering_api)
+    AndroidRenderingAPI rendering_api,
+    std::shared_ptr<AndroidGraphicsPerformanceController>
+        performance_controller)
     : settings_(settings),
       jni_facade_(jni_facade),
       platform_view_(platform_view),
       thread_host_(thread_host),
+      performance_controller_(std::move(performance_controller)),
       shell_(std::move(shell)),
       apk_asset_provider_(std::move(apk_asset_provider)),
       android_rendering_api_(rendering_api) {
@@ -250,13 +265,15 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
 
   // This is a synchronous call, so the captures don't have race checks.
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, android_context, &weak_platform_view](Shell& shell) {
+      [&jni_facade, android_context, &weak_platform_view,
+       performance_controller = performance_controller_](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
             shell.GetTaskRunners(),  // task runners
             jni_facade,              // JNI interop
-            android_context          // Android context
+            android_context,          // Android context
+            performance_controller   // shared ADPF integration
         );
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
@@ -281,7 +298,8 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
   return std::unique_ptr<AndroidShellHolder>(new AndroidShellHolder(
       GetSettings(), jni_facade, thread_host_, std::move(shell),
       apk_asset_provider_->Clone(), weak_platform_view,
-      android_context->RenderingApi()));
+      android_context->RenderingApi(),
+      performance_controller_));
 }
 
 void AndroidShellHolder::Launch(
@@ -301,6 +319,18 @@ void AndroidShellHolder::Launch(
   }
   config->SetEngineId(engine_id);
   UpdateDisplayMetrics();
+  if (settings_.merged_platform_ui_thread ==
+      Settings::MergedPlatformUIThread::kMergeAfterLaunch) {
+    // The UI task runner moves to the platform thread during the launch. The
+    // result callback runs after that move, so the ADPF session can be
+    // rebuilt from the thread that actually executes UI work now.
+    shell_->RunEngine(
+        std::move(config.value()),
+        [controller = performance_controller_](Engine::RunStatus) {
+          controller->NotifyThreadTopologyChanged();
+        });
+    return;
+  }
   shell_->RunEngine(std::move(config.value()));
 }
 

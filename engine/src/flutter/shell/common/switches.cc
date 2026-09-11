@@ -525,6 +525,17 @@ Settings SettingsFromCommandLine(const fml::CommandLine& command_line,
     }
   }
 
+  {
+    std::string enable_android_adpf_value;
+    if (command_line.GetOptionValue(FlagForSwitch(Switch::EnableAndroidAdpf),
+                                    &enable_android_adpf_value)) {
+      settings.enable_android_adpf = enable_android_adpf_value.empty() ||
+                                     "true" == enable_android_adpf_value;
+    }
+  }
+  settings.android_adpf_ignore_denylist = command_line.HasOption(
+      FlagForSwitch(Switch::AndroidAdpfIgnoreDenylist));
+
   constexpr std::string_view kMergedThreadEnabled = "enabled";
   constexpr std::string_view kMergedThreadDisabled = "disabled";
   constexpr std::string_view kMergedThreadMergeAfterLaunch = "mergeAfterLaunch";

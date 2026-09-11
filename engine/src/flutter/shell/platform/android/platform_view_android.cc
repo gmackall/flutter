@@ -136,7 +136,9 @@ PlatformViewAndroid::PlatformViewAndroid(
     PlatformView::Delegate& delegate,
     const flutter::TaskRunners& task_runners,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-    AndroidRenderingAPI rendering_api)
+    AndroidRenderingAPI rendering_api,
+    std::shared_ptr<AndroidGraphicsPerformanceController>
+        performance_controller)
     : PlatformViewAndroid(
           delegate,
           task_runners,
@@ -146,18 +148,25 @@ PlatformViewAndroid::PlatformViewAndroid(
               rendering_api,
               delegate.OnPlatformViewGetSettings().enable_opengl_gpu_tracing,
               CreateContextSettings(delegate.OnPlatformViewGetSettings()),
-              delegate.OnPlatformViewGetShutdownSafeIOTaskRunner())) {}
+              delegate.OnPlatformViewGetShutdownSafeIOTaskRunner()),
+          std::move(performance_controller)) {}
 
 PlatformViewAndroid::PlatformViewAndroid(
     PlatformView::Delegate& delegate,
     const flutter::TaskRunners& task_runners,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-    const std::shared_ptr<flutter::AndroidContext>& android_context)
+    const std::shared_ptr<flutter::AndroidContext>& android_context,
+    std::shared_ptr<AndroidGraphicsPerformanceController>
+        performance_controller)
     : PlatformView(delegate, task_runners),
       jni_facade_(jni_facade),
       android_context_(android_context),
       platform_view_android_delegate_(jni_facade),
-      platform_message_handler_(new PlatformMessageHandlerAndroid(jni_facade)) {
+      platform_message_handler_(new PlatformMessageHandlerAndroid(jni_facade)),
+      performance_controller_(std::move(performance_controller)) {
+  if (performance_controller_) {
+    performance_registration_ = performance_controller_->RegisterEngine();
+  }
   if (android_context_) {
     FML_CHECK(android_context_->IsValid())
         << "Could not create surface from invalid Android context.";
@@ -198,6 +207,7 @@ void PlatformViewAndroid::NotifyCreated(
   }
 
   PlatformView::NotifyCreated();
+  PublishMainOutput(/*visible=*/true);
 }
 
 void PlatformViewAndroid::NotifySurfaceWindowChanged(
@@ -215,6 +225,7 @@ void PlatformViewAndroid::NotifySurfaceWindowChanged(
     latch.Wait();
   }
 
+  PublishMainOutput(/*visible=*/true);
   PlatformView::ScheduleFrame();
 }
 
@@ -231,6 +242,7 @@ void PlatformViewAndroid::NotifyDestroyed() {
         });
     latch.Wait();
   }
+  PublishMainOutput(/*visible=*/false);
 }
 
 void PlatformViewAndroid::NotifyChanged(const DlISize& size) {
@@ -245,6 +257,7 @@ void PlatformViewAndroid::NotifyChanged(const DlISize& size) {
         latch.Signal();
       });
   latch.Wait();
+  PublishMainOutput(/*visible=*/true);
 }
 
 void PlatformViewAndroid::DispatchPlatformMessage(JNIEnv* env,
@@ -434,9 +447,21 @@ std::unique_ptr<Surface> PlatformViewAndroid::CreateRenderingSurface() {
 // |PlatformView|
 std::shared_ptr<ExternalViewEmbedder>
 PlatformViewAndroid::CreateExternalViewEmbedder() {
+  AndroidWorkloadCallbacks workload_callbacks;
+  if (performance_registration_) {
+    workload_callbacks.on_overlay_outputs_changed =
+        [registration = performance_registration_](
+            AndroidOutputProducerList outputs) {
+          registration->SetOverlayOutputs(std::move(outputs));
+        };
+    workload_callbacks.on_raster_thread_configuration_changed =
+        [controller = performance_controller_]() {
+          controller->NotifyThreadTopologyChanged();
+        };
+  }
   return std::make_shared<AndroidExternalViewEmbedderWrapper>(
       android_meets_hcpp_criteria_, *android_context_, jni_facade_,
-      surface_factory_, task_runners_);
+      surface_factory_, task_runners_, std::move(workload_callbacks));
 }
 
 // |PlatformView|
@@ -547,6 +572,22 @@ void PlatformViewAndroid::InstallFirstFrameCallback() {
 
 void PlatformViewAndroid::FireFirstFrameCallback() {
   jni_facade_->FlutterViewOnFirstFrame();
+}
+
+void PlatformViewAndroid::PublishMainOutput(bool visible) {
+  if (!performance_registration_) {
+    return;
+  }
+  // Every caller has just waited for the raster-thread task that changed the
+  // surface, so the producer it reports is settled.
+  std::shared_ptr<const AndroidOutputProducer> output;
+  if (visible && android_surface_) {
+    output = android_surface_->GetOutputProducer();
+  }
+  // A backend without an identifiable producer of its own (software) has no
+  // workload the platform can attribute to Flutter; it contributes nothing.
+  performance_registration_->SetMainOutput(output);
+  performance_registration_->SetVisible(visible && output != nullptr);
 }
 
 double PlatformViewAndroid::GetScaledFontSize(double unscaled_font_size,

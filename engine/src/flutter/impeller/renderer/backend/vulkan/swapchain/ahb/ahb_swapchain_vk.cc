@@ -61,6 +61,13 @@ void AHBSwapchainVK::AddFinalCommandBuffer(
 }
 
 // |SwapchainVK|
+std::shared_ptr<android::SurfaceControl> AHBSwapchainVK::GetSurfaceControl()
+    const {
+  // The control outlives resizes: only the impl at a given size is replaced.
+  return surface_control_;
+}
+
+// |SwapchainVK|
 void AHBSwapchainVK::UpdateSurfaceSize(const ISize& size) {
   if (impl_ && impl_->GetSize() == size) {
     return;

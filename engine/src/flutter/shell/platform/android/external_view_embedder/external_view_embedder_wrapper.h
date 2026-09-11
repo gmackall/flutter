@@ -28,7 +28,8 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
       const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
       std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-      const TaskRunners& task_runners);
+      const TaskRunners& task_runners,
+      AndroidWorkloadCallbacks workload_callbacks = {});
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -74,6 +75,9 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
   bool SupportsDynamicThreadMerging() override;
 
   // |ExternalViewEmbedder|
+  void OnRasterThreadConfigurationChanged() override;
+
+  // |ExternalViewEmbedder|
   void Teardown() override;
 
  private:
@@ -85,6 +89,7 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
   const TaskRunners& task_runners_;
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   std::shared_ptr<AndroidSurfaceFactory> surface_factory_;
+  AndroidWorkloadCallbacks workload_callbacks_;
   std::unique_ptr<AndroidExternalViewEmbedder> non_hcpp_view_embedder_;
   std::unique_ptr<AndroidExternalViewEmbedder2> hcpp_view_embedder_;
 };

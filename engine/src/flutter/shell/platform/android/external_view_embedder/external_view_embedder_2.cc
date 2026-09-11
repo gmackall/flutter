@@ -39,13 +39,15 @@ AndroidExternalViewEmbedder2::AndroidExternalViewEmbedder2(
     const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
     std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-    const TaskRunners& task_runners)
+    const TaskRunners& task_runners,
+    AndroidWorkloadCallbacks workload_callbacks)
     : ExternalViewEmbedder(),
       android_context_(android_context),
       jni_facade_(std::move(jni_facade)),
       surface_factory_(std::move(surface_factory)),
-      surface_pool_(
-          std::make_unique<SurfacePool>(/*use_new_surface_methods=*/true)),
+      surface_pool_(std::make_unique<SurfacePool>(
+          /*use_new_surface_methods=*/true,
+          std::move(workload_callbacks.on_overlay_outputs_changed))),
       task_runners_(task_runners) {}
 
 // |ExternalViewEmbedder|

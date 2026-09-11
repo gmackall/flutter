@@ -16,6 +16,7 @@
 
 #if FML_OS_ANDROID
 #include "impeller/toolkit/android/native_window.h"
+#include "impeller/toolkit/android/surface_control.h"
 #include "impeller/toolkit/android/surface_transaction.h"
 #endif  // FML_OS_ANDROID
 
@@ -65,6 +66,15 @@ class SwapchainVK {
   /// @brief Mark the current swapchain configuration as dirty, forcing it to be
   ///        recreated on the next frame.
   virtual void UpdateSurfaceSize(const ISize& size) = 0;
+
+#if FML_OS_ANDROID
+  /// @brief The surface control this swapchain presents to, if it presents
+  ///        through one of its own. Swapchains that present to the window
+  ///        directly return nullptr; for those, the window is the producer.
+  virtual std::shared_ptr<android::SurfaceControl> GetSurfaceControl() const {
+    return nullptr;
+  }
+#endif  // FML_OS_ANDROID
 
  protected:
   SwapchainVK();

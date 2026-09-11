@@ -36,6 +36,7 @@ bool AndroidSurfaceVKImpeller::IsValid() const {
 
 void AndroidSurfaceVKImpeller::TeardownOnScreenContext() {
   surface_context_vk_->TeardownSwapchain();
+  output_producer_.reset();
 }
 
 std::unique_ptr<Surface> AndroidSurfaceVKImpeller::CreateGPUSurface(
@@ -59,6 +60,9 @@ std::unique_ptr<Surface> AndroidSurfaceVKImpeller::CreateGPUSurface(
 }
 
 bool AndroidSurfaceVKImpeller::OnScreenSurfaceResize(const DlISize& size) {
+  // Both swapchain kinds keep their producer across a resize: the KHR
+  // swapchain presents to the same window and the AHB swapchain keeps its
+  // surface control while only the sized implementation is replaced.
   surface_context_vk_->UpdateSurfaceSize(
       impeller::ISize{size.width, size.height});
   return true;
@@ -80,6 +84,7 @@ bool AndroidSurfaceVKImpeller::SetNativeWindow(
   }
 
   native_window_ = nullptr;
+  output_producer_.reset();
 
   if (!window || !window->IsValid()) {
     return false;
@@ -99,8 +104,25 @@ bool AndroidSurfaceVKImpeller::SetNativeWindow(
           surface_context_vk_->GetParent()),
       window->handle(), cb);
 
+  if (!swapchain) {
+    return false;
+  }
+
+  // Determine the canonical producer at the backend boundary: an AHB
+  // swapchain presents through a child surface control of the window, so the
+  // control (not the container window) is what the compositor sees Flutter
+  // produce into. A KHR swapchain presents to the window itself.
+  std::shared_ptr<const AndroidOutputProducer> producer;
+  if (auto surface_control = swapchain->GetSurfaceControl()) {
+    producer = AndroidOutputProducer::MakeForSurfaceControl(
+        surface_control->GetHandle());
+  } else {
+    producer = AndroidOutputProducer::MakeForNativeWindow(window->handle());
+  }
+
   if (surface_context_vk_->SetSwapchain(std::move(swapchain))) {
     native_window_ = std::move(window);
+    output_producer_ = std::move(producer);
     return true;
   }
 
@@ -110,6 +132,11 @@ bool AndroidSurfaceVKImpeller::SetNativeWindow(
 std::shared_ptr<impeller::Context>
 AndroidSurfaceVKImpeller::GetImpellerContext() {
   return surface_context_vk_;
+}
+
+std::shared_ptr<const AndroidOutputProducer>
+AndroidSurfaceVKImpeller::GetOutputProducer() const {
+  return output_producer_;
 }
 
 }  // namespace flutter

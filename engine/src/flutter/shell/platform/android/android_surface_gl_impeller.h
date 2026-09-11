@@ -53,6 +53,10 @@ class AndroidSurfaceGLImpeller final : public GPUSurfaceGLDelegate,
   // |AndroidSurface|
   std::shared_ptr<impeller::Context> GetImpellerContext() override;
 
+  // |AndroidSurface|
+  std::shared_ptr<const AndroidOutputProducer> GetOutputProducer()
+      const override;
+
   // |GPUSurfaceGLDelegate|
   std::unique_ptr<GLContextResult> GLContextMakeCurrent() override;
 
@@ -78,6 +82,7 @@ class AndroidSurfaceGLImpeller final : public GPUSurfaceGLDelegate,
   std::shared_ptr<AndroidContextGLImpeller> android_context_;
   std::unique_ptr<impeller::egl::Surface> onscreen_surface_;
   std::unique_ptr<impeller::egl::Surface> offscreen_surface_;
+  std::shared_ptr<const AndroidOutputProducer> output_producer_;
   fml::RefPtr<AndroidNativeWindow> native_window_;
 
   bool is_valid_ = false;

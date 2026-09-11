@@ -59,6 +59,9 @@ class AHBSwapchainVK final : public SwapchainVK {
   void AddFinalCommandBuffer(
       std::shared_ptr<CommandBuffer> cmd_buffer) const override;
 
+  // |SwapchainVK|
+  std::shared_ptr<android::SurfaceControl> GetSurfaceControl() const override;
+
  private:
   friend class SwapchainVK;
   FML_FRIEND_TEST(android::testing::AndroidAHBSwapchainTest,

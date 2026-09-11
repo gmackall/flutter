@@ -12,6 +12,7 @@
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
 #include "flutter/shell/platform/android/surface/android_native_window.h"
+#include "flutter/shell/platform/android/surface/android_output_producer.h"
 
 namespace impeller {
 class Context;
@@ -47,6 +48,19 @@ class AndroidSurface {
   virtual std::shared_ptr<impeller::Context> GetImpellerContext();
 
   virtual void SetupImpellerSurface();
+
+  //----------------------------------------------------------------------------
+  /// @brief      The buffer-bearing output this surface currently presents
+  ///             to, for association with a performance hint session. The
+  ///             same instance is returned for as long as the producer lives;
+  ///             a new instance means the producer was replaced. Null when
+  ///             the surface has no on-screen producer, or when the backend
+  ///             renders to a producer that is not its own (software).
+  ///
+  /// @note       Raster thread only, like the rest of this interface.
+  ///
+  virtual std::shared_ptr<const AndroidOutputProducer> GetOutputProducer()
+      const;
 
  protected:
   AndroidSurface();

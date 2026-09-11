@@ -38,14 +38,18 @@ AndroidExternalViewEmbedder::AndroidExternalViewEmbedder(
     const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
     std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-    const TaskRunners& task_runners)
+    const TaskRunners& task_runners,
+    AndroidWorkloadCallbacks workload_callbacks)
     : ExternalViewEmbedder(),
       android_context_(android_context),
       jni_facade_(std::move(jni_facade)),
       surface_factory_(std::move(surface_factory)),
-      surface_pool_(
-          std::make_unique<SurfacePool>(/*use_new_surface_methods=*/false)),
-      task_runners_(task_runners) {}
+      surface_pool_(std::make_unique<SurfacePool>(
+          /*use_new_surface_methods=*/false,
+          std::move(workload_callbacks.on_overlay_outputs_changed))),
+      task_runners_(task_runners),
+      on_raster_thread_configuration_changed_(std::move(
+          workload_callbacks.on_raster_thread_configuration_changed)) {}
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder::PrerollCompositeEmbeddedView(
@@ -283,6 +287,13 @@ void AndroidExternalViewEmbedder::EndFrame(
 // |ExternalViewEmbedder|
 bool AndroidExternalViewEmbedder::SupportsDynamicThreadMerging() {
   return true;
+}
+
+// |ExternalViewEmbedder|
+void AndroidExternalViewEmbedder::OnRasterThreadConfigurationChanged() {
+  if (on_raster_thread_configuration_changed_) {
+    on_raster_thread_configuration_changed_();
+  }
 }
 
 // |ExternalViewEmbedder|

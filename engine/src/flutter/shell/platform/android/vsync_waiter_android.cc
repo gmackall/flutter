@@ -12,6 +12,7 @@
 #include "flutter/fml/platform/android/jni_util.h"
 #include "flutter/fml/platform/android/scoped_java_ref.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/shell/platform/android/adpf/android_performance_hint_registry.h"
 #include "impeller/toolkit/android/choreographer.h"
 
 namespace flutter {
@@ -119,6 +120,10 @@ void VsyncWaiterAndroid::OnUpdateRefreshRate(JNIEnv* env,
                                              jfloat refresh_rate) {
   FML_DCHECK(refresh_rate > 0);
   g_refresh_rate_ = static_cast<uint>(refresh_rate);
+  // The same value is the intended cadence the ADPF integration publishes on
+  // Flutter's outputs; the embedding reports it once here for both.
+  AndroidPerformanceHintRegistry::GetProcessInstance().SetDisplayRefreshRate(
+      refresh_rate);
 }
 
 // static

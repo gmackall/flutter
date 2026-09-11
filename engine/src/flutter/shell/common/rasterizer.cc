@@ -107,6 +107,9 @@ void Rasterizer::Setup(std::unique_ptr<Surface> surface) {
       if (surface_) {
         surface_->ClearRenderContext();
       }
+      if (external_view_embedder_) {
+        external_view_embedder_->OnRasterThreadConfigurationChanged();
+      }
     });
   }
 }

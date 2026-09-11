@@ -1,7 +1,9 @@
 # Automatic ADPF integration for Flutter on Android
 
-Status: proposed design; no engine implementation is included. See
-[Risks and open questions](#risks-and-open-questions) before implementation.
+Status: implemented behind the experimental `--enable-android-adpf` flag; see
+[Implementation](#implementation) for the shipped shape and
+[Risks and open questions](#risks-and-open-questions) for what remains to be
+verified on devices.
 
 ## Decision
 
@@ -364,15 +366,16 @@ an unsupported device does not repeatedly attempt creation on each overlay.
 Starting from master, add the controller and typed API wrapper rather than
 cherry-picking manual reporting into this design.
 
-| Area | Proposed responsibility |
+| Area | Responsibility |
 | --- | --- |
+| `shell/platform/android/adpf/` | Typed NDK wrapper, policy and denylist, process registry, controller |
 | `shell/platform/android/android_shell_holder.*` | Shared controller ownership, engine registration and spawn propagation |
 | `shell/platform/android/platform_view_android.*` | Main output attachment, visibility, destruction |
-| `shell/platform/android/external_view_embedder/` | Flutter overlay producer lifetime and ownership |
-| `impeller/toolkit/android/` and Android swapchain implementations | Canonical retained window/control handles and association events |
-| Thread merger and execution-topology integration | Accurate participating TIDs before/after migration |
-| Android display/surface policy | Intended cadence propagation |
-| Android embedding flags/settings | Developer disable control and rollout policy |
+| `shell/platform/android/surface/android_output_producer.*` and the `AndroidSurface` backends | Canonical retained window/control producers |
+| `shell/platform/android/external_view_embedder/` | Flutter overlay producer lifetime and raster thread migration |
+| `impeller/renderer/backend/vulkan/swapchain/` | Exposes the buffer-bearing surface control of the AHB swapchain |
+| `shell/platform/android/vsync_waiter_android.cc` | Intended cadence propagation |
+| `shell/common/switch_defs.h` and `FlutterEngineFlags.java` | Developer disable control and rollout policy |
 
 These are integration boundaries; exact hook placement should follow the backend
 that owns each resource. Keep Android ADPF concepts out of cross-platform frame
@@ -518,6 +521,104 @@ is built.
 | The engine's NDK lacks the declarations | No | NDK roll, or local declarations pinned to a released header |
 | Target omission semantics | Resolved by the NDK reference | Pass zero; confirm on device |
 | Reach is API 36 plus vendor support for automatic CPU and GPU timing | No | Record capability availability across the device lab; expect a small initial population, possibly only recent Pixels |
+
+## Implementation
+
+The engine implements this design as follows. Names below are the shipped
+ones; the interfaces sketched earlier in this document were proposals.
+
+### Components
+
+- `AndroidPerformanceHintApi` (`adpf/android_performance_hint_api.h`) is the
+  typed, injectable wrapper. The platform implementation resolves every entry
+  point from `libandroid.so` at runtime. API 36 signatures are pinned to the
+  `android16-release` header and documented at the definition; entry points the
+  engine NDK already declares use `decltype` so drift fails to compile. The
+  interface exposes no manual report or target entry points at all.
+- `AutomaticAdpfPolicy`, `AndroidDeviceIdentity` and the denylist
+  (`adpf/android_adpf_policy.h`) resolve the application policy from settings
+  and match exact normalized identifiers with bounded API-level ranges. The
+  compiled denylist is empty; the entry template in the source documents what
+  each entry must carry.
+- `AndroidPerformanceHintRegistry` holds process-wide state: the lazily
+  started `io.flutter.adpf` management thread on which every NDK call is
+  serialized, the immutable capability evaluation, per-application graphics
+  pipeline thread accounting across execution groups (unique thread ids), and
+  the intended display cadence with its observers.
+- `AndroidGraphicsPerformanceController` owns the session for one execution
+  group and is shared by every `AndroidShellHolder` in that group, including
+  spawned engines. Each `PlatformViewAndroid` holds a `Registration` whose
+  contribution is visibility, the main output producer and the live overlay
+  producers. Threads are not part of a contribution: engines in a group share
+  task runners, so the controller captures the thread ids that currently
+  execute the UI and raster runners itself, on those runners, at every
+  reconciliation.
+- `AndroidOutputProducer` (`surface/android_output_producer.h`) is the retained
+  canonical producer. Each `AndroidSurface` backend creates one per producer
+  lifetime: the window for EGL and KHR swapchains, the buffer-bearing child
+  surface control for the AHB swapchain. Identity is a process-unique id, never
+  a handle address, and the producer holds an NDK reference until the session
+  that used it is closed.
+
+### Behavior
+
+- Eligibility is evaluated in two stages. Policy, API level and the denylist
+  are checked synchronously when the controller is created, without touching
+  the NDK; devices that fail there never start the management thread. Symbol
+  resolution, the manager and the five required features are evaluated once on
+  the management thread and cached for the process.
+- A session is created only when a visible engine has a main output. Every
+  session uses graphics-pipeline mode with automatic CPU and GPU timing and no
+  target work duration. Sessions are reused while their thread set is
+  unchanged; output-only changes use `APerformanceHint_setNativeSurfaces`, and
+  fall back to recreation if that reports `ENOTSUP`. Thread changes retire and
+  recreate the session.
+- Thread topology transitions are reported at the transition: the raster
+  thread merger callback in `Rasterizer::Setup` now notifies the external view
+  embedder (`ExternalViewEmbedder::OnRasterThreadConfigurationChanged`), which
+  the Android hybrid composition embedder forwards to the controller; the
+  merge-after-launch move is reported from the `RunEngine` result callback.
+- `EBUSY` closes the returned session and blocks retries until the thread set
+  changes. `ENOTSUP` is cached for the process. `EINVAL` exhausts the retry
+  budget immediately. Other failures count against a budget of three per
+  controller, retried only at the next lifecycle change.
+- The intended cadence is the refresh rate the embedding already reports
+  through `FlutterJNI.updateRefreshRate`. While a session is active it is
+  published on every associated producer (`ANativeWindow_setFrameRate...` or a
+  surface control transaction) with default compatibility and seamless-only
+  changes, and withdrawn when the session closes. Nothing is published when
+  the embedding has not reported a rate.
+- Shutdown posts the close to the management thread without referencing the
+  controller, so a session can never be resurrected after its controller is
+  gone. Output producers are released only after the session is closed.
+- Every state change is logged once with its reason and counts and emitted as
+  an `AndroidAdpfState` trace instant. `GetDiagnostics()` exposes the same
+  data. Nothing is logged per frame.
+
+### Flags
+
+- `--enable-android-adpf=true|false` (manifest key
+  `io.flutter.embedding.android.EnableAndroidAdpf`, allowed in release). Unset
+  follows `kAndroidAdpfEnabledByDefault`, which is `false` while the
+  integration is experimental. A disable request always wins.
+- `--android-adpf-ignore-denylist` (manifest key
+  `io.flutter.embedding.android.AndroidAdpfIgnoreDenylist`, not allowed in
+  release) tests a denylisted device. It never bypasses missing platform
+  support.
+
+### Verified in tests, still to verify on devices
+
+The deterministic tests in `adpf/*_unittests.cc` cover the validation list
+above with a fake API. The following remain device work before the default is
+flipped, in the order of the implementation sequence:
+
+- Fully automatic creation with an unset target on a shipping API 36 device,
+  and the platform's answer to the merged main thread and its per-application
+  thread limit alongside the framework's own threads.
+- What automatic CPU timing observes for build-bound frames.
+- Whether the seamless-only cadence vote is sufficient for automatic timing,
+  and its idle and LTPO power cost.
+- The presented-frame benchmarks that gate the default-on decision.
 
 ## Alternatives
 

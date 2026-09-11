@@ -11,6 +11,7 @@
 #include "flutter/shell/common/run_configuration.h"
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/thread_host.h"
+#include "flutter/shell/platform/android/adpf/android_graphics_performance_controller.h"
 #include "flutter/shell/platform/android/android_rendering_selector.h"
 #include "flutter/shell/platform/android/apk_asset_provider.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
@@ -114,6 +115,8 @@ class AndroidShellHolder {
   const std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   fml::WeakPtr<PlatformViewAndroid> platform_view_;
   std::shared_ptr<ThreadHost> thread_host_;
+  // Owns the automatic ADPF session for the engines sharing thread_host_.
+  std::shared_ptr<AndroidGraphicsPerformanceController> performance_controller_;
   std::unique_ptr<Shell> shell_;
   bool is_valid_ = false;
   uint64_t next_pointer_flow_id_ = 0;
@@ -137,7 +140,9 @@ class AndroidShellHolder {
                      std::unique_ptr<Shell> shell,
                      std::unique_ptr<APKAssetProvider> apk_asset_provider,
                      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+                     AndroidRenderingAPI rendering_api,
+                     std::shared_ptr<AndroidGraphicsPerformanceController>
+                         performance_controller);
   static void ThreadDestructCallback(void* value);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,

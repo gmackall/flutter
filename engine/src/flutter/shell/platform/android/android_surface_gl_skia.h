@@ -53,6 +53,10 @@ class AndroidSurfaceGLSkia final : public GPUSurfaceGLDelegate,
   // |AndroidSurface|
   virtual std::unique_ptr<Surface> CreateSnapshotSurface() override;
 
+  // |AndroidSurface|
+  std::shared_ptr<const AndroidOutputProducer> GetOutputProducer()
+      const override;
+
   // |GPUSurfaceGLDelegate|
   std::unique_ptr<GLContextResult> GLContextMakeCurrent() override;
 
@@ -87,6 +91,7 @@ class AndroidSurfaceGLSkia final : public GPUSurfaceGLDelegate,
   fml::RefPtr<AndroidNativeWindow> native_window_;
   std::unique_ptr<AndroidEGLSurface> onscreen_surface_;
   std::unique_ptr<AndroidEGLSurface> offscreen_surface_;
+  std::shared_ptr<const AndroidOutputProducer> output_producer_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(AndroidSurfaceGLSkia);
 };

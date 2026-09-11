@@ -9,6 +9,7 @@
 #include "flutter/fml/macros.h"
 #include "flutter/impeller/display_list/aiks_context.h"
 #include "flutter/impeller/renderer/backend/vulkan/surface_context_vk.h"
+#include "flutter/impeller/renderer/backend/vulkan/swapchain/swapchain_vk.h"
 #include "flutter/shell/platform/android/android_context_vk_impeller.h"
 #include "flutter/shell/platform/android/surface/android_native_window.h"
 #include "flutter/shell/platform/android/surface/android_surface.h"
@@ -50,9 +51,14 @@ class AndroidSurfaceVKImpeller : public AndroidSurface {
       fml::RefPtr<AndroidNativeWindow> window,
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) override;
 
+  // |AndroidSurface|
+  std::shared_ptr<const AndroidOutputProducer> GetOutputProducer()
+      const override;
+
  private:
   std::shared_ptr<impeller::SurfaceContextVK> surface_context_vk_;
   fml::RefPtr<AndroidNativeWindow> native_window_;
+  std::shared_ptr<const AndroidOutputProducer> output_producer_;
   bool is_valid_ = false;
 
   FML_DISALLOW_COPY_AND_ASSIGN(AndroidSurfaceVKImpeller);

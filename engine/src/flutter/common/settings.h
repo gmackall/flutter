@@ -237,6 +237,17 @@ struct Settings {
   // Enable android surface control swapchains where supported.
   bool enable_surface_control = false;
 
+  // Android only. Whether the engine creates automatic ADPF graphics pipeline
+  // hint sessions on devices that support them. Unset follows the engine
+  // default for the current rollout stage (see
+  // docs/engine/Android-Automatic-ADPF.md). A device that lacks the required
+  // platform support never creates a session regardless of this value.
+  std::optional<bool> enable_android_adpf;
+
+  // Android only. Developer override that ignores the compiled ADPF device
+  // denylist. Only meaningful with enable_android_adpf.
+  bool android_adpf_ignore_denylist = false;
+
   // Whether to lazily initialize impeller PSO state.
   bool impeller_enable_lazy_shader_mode = false;
 

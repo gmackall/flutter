@@ -115,6 +115,7 @@ std::unique_ptr<Surface> AndroidSurfaceGLImpeller::CreateGPUSurface(
 void AndroidSurfaceGLImpeller::TeardownOnScreenContext() {
   GLContextClearCurrent();
   onscreen_surface_.reset();
+  output_producer_.reset();
 }
 
 // |AndroidSurface|
@@ -141,7 +142,11 @@ bool AndroidSurfaceGLImpeller::ResourceContextClearCurrent() {
 bool AndroidSurfaceGLImpeller::SetNativeWindow(
     fml::RefPtr<AndroidNativeWindow> window,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
-  native_window_ = std::move(window);
+  if (native_window_ != window) {
+    // A different window is a different producer.
+    output_producer_.reset();
+    native_window_ = std::move(window);
+  }
   return RecreateOnscreenSurfaceAndMakeOnscreenContextCurrent();
 }
 
@@ -171,6 +176,12 @@ std::unique_ptr<Surface> AndroidSurfaceGLImpeller::CreateSnapshotSurface() {
 std::shared_ptr<impeller::Context>
 AndroidSurfaceGLImpeller::GetImpellerContext() {
   return android_context_->GetImpellerContext();
+}
+
+// |AndroidSurface|
+std::shared_ptr<const AndroidOutputProducer>
+AndroidSurfaceGLImpeller::GetOutputProducer() const {
+  return output_producer_;
 }
 
 // |GPUSurfaceGLDelegate|
@@ -260,6 +271,11 @@ bool AndroidSurfaceGLImpeller::
     return false;
   }
   onscreen_surface_ = std::move(onscreen_surface);
+  if (!output_producer_) {
+    // EGL presents straight to the window, so the window is the producer.
+    output_producer_ =
+        AndroidOutputProducer::MakeForNativeWindow(native_window_->handle());
+  }
   return OnGLContextMakeCurrent();
 }
 

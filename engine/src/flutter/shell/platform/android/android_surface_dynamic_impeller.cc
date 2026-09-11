@@ -118,4 +118,15 @@ AndroidSurfaceDynamicImpeller::GetImpellerContext() {
   return android_context_->GetImpellerContext();
 }
 
+std::shared_ptr<const AndroidOutputProducer>
+AndroidSurfaceDynamicImpeller::GetOutputProducer() const {
+  if (vulkan_surface_) {
+    return vulkan_surface_->GetOutputProducer();
+  }
+  if (gl_surface_) {
+    return gl_surface_->GetOutputProducer();
+  }
+  return nullptr;
+}
+
 }  // namespace flutter

@@ -35,10 +35,12 @@ void AndroidExternalViewEmbedderWrapper::EnsureInitialized() {
       impeller::ContextVK::Cast(*android_context_.GetImpellerContext())
           .GetShouldEnableSurfaceControlSwapchain()) {
     hcpp_view_embedder_ = std::make_unique<AndroidExternalViewEmbedder2>(
-        android_context_, jni_facade_, surface_factory_, task_runners_);
+        android_context_, jni_facade_, surface_factory_, task_runners_,
+        std::move(workload_callbacks_));
   } else {
     non_hcpp_view_embedder_ = std::make_unique<AndroidExternalViewEmbedder>(
-        android_context_, jni_facade_, surface_factory_, task_runners_);
+        android_context_, jni_facade_, surface_factory_, task_runners_,
+        std::move(workload_callbacks_));
   }
 }
 
@@ -163,6 +165,15 @@ void AndroidExternalViewEmbedderWrapper::Teardown() {
     hcpp_view_embedder_->Teardown();
   } else {
     non_hcpp_view_embedder_->Teardown();
+  }
+}
+
+// |ExternalViewEmbedder|
+void AndroidExternalViewEmbedderWrapper::OnRasterThreadConfigurationChanged() {
+  // Only the hybrid composition embedder merges threads, and only it can
+  // have been initialized when the merger fires.
+  if (non_hcpp_view_embedder_) {
+    non_hcpp_view_embedder_->OnRasterThreadConfigurationChanged();
   }
 }
 

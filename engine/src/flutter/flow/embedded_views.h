@@ -513,6 +513,15 @@ class ExternalViewEmbedder {
       bool should_resubmit_frame,
       const fml::RefPtr<fml::RasterThreadMerger>& raster_thread_merger) {}
 
+  // Called right after the raster thread merger merged the raster task runner
+  // into the platform thread, or unmerged it again. The threads executing
+  // raster work have changed at this point.
+  //
+  // Only called for embedders that return `true` from
+  // |SupportsDynamicThreadMerging|. May be called on the raster or platform
+  // thread while the merger lock is held, so implementations must not block.
+  virtual void OnRasterThreadConfigurationChanged() {}
+
   // Whether the embedder should support dynamic thread merging.
   //
   // Returning `true` results a |RasterThreadMerger| instance to be created.

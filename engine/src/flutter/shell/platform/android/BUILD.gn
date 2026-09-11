@@ -44,6 +44,8 @@ executable("flutter_shell_native_unittests") {
   testonly = true
   sources = [
     "android_context_gl_impeller_unittests.cc",
+    "adpf/android_adpf_policy_unittests.cc",
+    "adpf/android_graphics_performance_controller_unittests.cc",
     "android_image_generator_unittests.cc",
     "android_shell_holder_unittests.cc",
     "apk_asset_provider_unittests.cc",
@@ -60,6 +62,7 @@ executable("flutter_shell_native_unittests") {
     ":flutter_shell_native_src",
     "//flutter/fml",
     "//flutter/shell/platform/android/jni:jni_mock",
+    "//flutter/shell/platform/android/adpf:test_support",
     "//flutter/shell/platform/android/jni:mock_jni_env",
     "//flutter/third_party/googletest:gmock",
     "//flutter/third_party/googletest:gtest",
@@ -174,6 +177,7 @@ source_set("flutter_shell_native_src") {
     "//flutter/runtime",
     "//flutter/runtime:libdart",
     "//flutter/shell/common",
+    "//flutter/shell/platform/android/adpf",
     "//flutter/shell/platform/android/context",
     "//flutter/shell/platform/android/external_view_embedder",
     "//flutter/shell/platform/android/jni",

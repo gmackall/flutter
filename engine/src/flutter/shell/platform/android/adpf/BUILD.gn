@@ -1,0 +1,38 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Automatic Android Dynamic Performance Framework (ADPF) integration. See
+# docs/engine/Android-Automatic-ADPF.md.
+source_set("adpf") {
+  sources = [
+    "android_adpf_policy.cc",
+    "android_adpf_policy.h",
+    "android_graphics_performance_controller.cc",
+    "android_graphics_performance_controller.h",
+    "android_performance_hint_api.cc",
+    "android_performance_hint_api.h",
+    "android_performance_hint_registry.cc",
+    "android_performance_hint_registry.h",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  public_deps = [
+    "//flutter/common",
+    "//flutter/fml",
+    "//flutter/shell/platform/android/surface:native_window",
+  ]
+
+  libs = [ "android" ]
+}
+
+source_set("test_support") {
+  testonly = true
+
+  sources = [ "android_performance_hint_fake.h" ]
+
+  public_configs = [ "//flutter:config" ]
+
+  public_deps = [ ":adpf" ]
+}

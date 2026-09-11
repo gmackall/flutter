@@ -21,4 +21,9 @@ std::shared_ptr<impeller::Context> AndroidSurface::GetImpellerContext() {
 
 void AndroidSurface::SetupImpellerSurface() {}
 
+std::shared_ptr<const AndroidOutputProducer> AndroidSurface::GetOutputProducer()
+    const {
+  return nullptr;
+}
+
 }  // namespace flutter

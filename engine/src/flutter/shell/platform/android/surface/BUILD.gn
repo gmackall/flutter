@@ -29,6 +29,8 @@ source_set("native_window") {
   sources = [
     "android_native_window.cc",
     "android_native_window.h",
+    "android_output_producer.cc",
+    "android_output_producer.h",
   ]
 
   public_configs = [ "//flutter:config" ]
