@@ -6,7 +6,7 @@ plugins:
     diagnostics:
       no_stopwatches: true
   dependency_overrides:
-    analysis_server_plugin: ^0.3.22
+    analysis_server_plugin: ^0.3.99-dev
 
 linter:
   rules:
