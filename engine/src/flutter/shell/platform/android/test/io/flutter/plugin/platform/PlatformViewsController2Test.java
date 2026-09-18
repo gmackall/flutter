@@ -52,7 +52,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -61,6 +60,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
@@ -605,7 +605,7 @@ public class PlatformViewsController2Test {
     verify(rasterTx2, never()).close();
   }
 
-  /** How the controller discards a frame while a producer still holds its raster transaction. */
+  /** How the controller discards a frame that has a published raster transaction. */
   private enum FrameDiscard {
     /** Drop an active frame by swapping again, as a skipped onEndFrame() would. */
     SWAP_AGAIN,
@@ -617,23 +617,32 @@ public class PlatformViewsController2Test {
 
   @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
-  public void swapTransactionsDoesNotCloseRasterTransactionInUse() throws Exception {
-    assertRasterTransactionInUseIsNotClosed(FrameDiscard.SWAP_AGAIN);
+  public void swapTransactionsDoesNotCloseDiscardedRasterTransaction() throws Exception {
+    assertDiscardedRasterTransaction(FrameDiscard.SWAP_AGAIN, /* expectAppliedAndClosed= */ false);
   }
 
   @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
-  public void detachFromViewDoesNotCloseRasterTransactionInUse() throws Exception {
-    assertRasterTransactionInUseIsNotClosed(FrameDiscard.DETACH_BEFORE_SWAP);
+  public void detachFromViewAppliesRasterTransactionBeforeClosingIt() throws Exception {
+    assertDiscardedRasterTransaction(
+        FrameDiscard.DETACH_BEFORE_SWAP, /* expectAppliedAndClosed= */ true);
   }
 
   @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
-  public void onEndFrameDoesNotCloseRasterTransactionInUseAfterDetach() throws Exception {
-    assertRasterTransactionInUseIsNotClosed(FrameDiscard.DETACH_THEN_END_FRAME);
+  public void detachThenEndFrameAppliesRasterTransactionBeforeClosingIt() throws Exception {
+    assertDiscardedRasterTransaction(
+        FrameDiscard.DETACH_THEN_END_FRAME, /* expectAppliedAndClosed= */ true);
   }
 
-  private void assertRasterTransactionInUseIsNotClosed(FrameDiscard discard) throws Exception {
+  /**
+   * A raster transaction becomes visible to the platform thread only once its native producer has
+   * submitted it, at which point the producer is done writing into it. Discard paths that drop such
+   * a transaction must therefore apply it before closing it, so that the completion callback the
+   * producer registered fires and the buffer it holds is released.
+   */
+  private void assertDiscardedRasterTransaction(
+      FrameDiscard discard, boolean expectAppliedAndClosed) throws Exception {
     final SurfaceControl.Transaction rasterTx = spy(new SurfaceControl.Transaction());
     PlatformViewsController2 controller =
         new PlatformViewsController2() {
@@ -647,50 +656,49 @@ public class PlatformViewsController2Test {
     FlutterView flutterView = mock(FlutterView.class);
     controller.attachToView(flutterView);
 
-    final CountDownLatch published = new CountDownLatch(1);
-    final CountDownLatch releaseProducer = new CountDownLatch(1);
+    // Publish from a non-platform thread, the way the raster thread does through FlutterJNI.
     final AtomicReference<Throwable> producerFailure = new AtomicReference<>();
     Thread rasterThread =
         new Thread(
             () -> {
               try {
-                SurfaceControl.Transaction tx = controller.createTransaction();
-                published.countDown();
-                // Model native code retaining the borrowed transaction after createTransaction().
-                if (!releaseProducer.await(10, TimeUnit.SECONDS)) {
-                  throw new AssertionError("Platform thread did not release the producer");
-                }
+                SurfaceControl.Transaction tx = controller.createUnpublishedTransaction();
+                // Native writes into the transaction happen here, before it is submitted.
                 verify(tx, never()).close();
+                controller.submitTransaction(tx);
               } catch (Throwable t) {
                 producerFailure.set(t);
               }
             });
     rasterThread.setDaemon(true);
     rasterThread.start();
-    try {
-      assertTrue("Producer did not publish a transaction", published.await(10, TimeUnit.SECONDS));
-      switch (discard) {
-        case SWAP_AGAIN:
-          controller.swapTransactions();
-          controller.swapTransactions();
-          break;
-        case DETACH_BEFORE_SWAP:
-          controller.detachFromView();
-          break;
-        case DETACH_THEN_END_FRAME:
-          controller.swapTransactions();
-          controller.detachFromView();
-          controller.onEndFrame();
-          break;
-      }
-      verify(rasterTx, never()).close();
-    } finally {
-      releaseProducer.countDown();
-      rasterThread.join(10000);
-    }
+    rasterThread.join(10000);
     assertFalse("Producer did not terminate", rasterThread.isAlive());
     if (producerFailure.get() != null) {
       throw new AssertionError("Raster producer failed", producerFailure.get());
+    }
+
+    switch (discard) {
+      case SWAP_AGAIN:
+        controller.swapTransactions();
+        controller.swapTransactions();
+        break;
+      case DETACH_BEFORE_SWAP:
+        controller.detachFromView();
+        break;
+      case DETACH_THEN_END_FRAME:
+        controller.swapTransactions();
+        controller.detachFromView();
+        controller.onEndFrame();
+        break;
+    }
+
+    if (expectAppliedAndClosed) {
+      InOrder inOrder = inOrder(rasterTx);
+      inOrder.verify(rasterTx).apply();
+      inOrder.verify(rasterTx).close();
+    } else {
+      verify(rasterTx, never()).close();
     }
   }
 

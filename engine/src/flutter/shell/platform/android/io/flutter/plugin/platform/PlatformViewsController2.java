@@ -707,7 +707,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final AttachedSurfaceControl rootSurfaceControl =
         flutterView == null ? null : flutterView.getRootSurfaceControl();
     if (rootSurfaceControl == null) {
-      // Release the unapplied transaction and its owned fence FDs.
+      // Apply before closing so the completion callbacks the native producers registered on the
+      // merged raster transactions fire, then release the transaction and its owned fence FDs.
+      tx.apply();
       tx.close();
       return;
     }
@@ -739,14 +741,26 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
    *
    * <p>Platform transactions are closed here: they only touch SurfaceControls that this detach
    * invalidates, including the overlay that {@link #destroyOverlaySurface()} just released, and
-   * nothing outside the platform thread references them. Raster transactions are dropped without
-   * closing them, because their native producers may still be writing into them.
+   * nothing outside the platform thread references them.
+   *
+   * <p>Raster transactions are applied before being closed. A raster transaction only reaches these
+   * lists once its native producer has called {@link #submitTransaction}, so it is safe to touch
+   * here, and closing it without applying it would drop the completion callback the producer
+   * registered on it, leaking the buffer that transaction is holding.
    */
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   private void dropTransactions() {
+    for (SurfaceControl.Transaction rasterTx : activeRasterTransactions) {
+      rasterTx.apply();
+      rasterTx.close();
+    }
     activeRasterTransactions.clear();
     synchronized (transactionLock) {
+      for (SurfaceControl.Transaction rasterTx : pendingRasterTransactions) {
+        rasterTx.apply();
+        rasterTx.close();
+      }
       pendingRasterTransactions.clear();
     }
 
