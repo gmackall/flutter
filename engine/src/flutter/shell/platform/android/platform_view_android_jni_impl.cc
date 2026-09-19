@@ -2114,7 +2114,7 @@ PlatformViewAndroidJNIImpl::createTransactionWithSubmitCallback(
                                global_tx->obj());
         FML_CHECK(fml::jni::CheckException(cb_env));
       }
-      global_tx->reset();
+      global_tx->Reset();
     };
   }
 

@@ -64,6 +64,7 @@ import org.mockito.InOrder;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
+import org.robolectric.annotation.RealObject;
 import org.robolectric.shadows.ShadowDialog;
 import org.robolectric.shadows.ShadowSurfaceView;
 
@@ -704,6 +705,73 @@ public class PlatformViewsController2Test {
 
   @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void unpublishedTransactionIsIgnoredUntilSubmittedThroughFlutterJNI() {
+    final SurfaceControl.Transaction rasterTx = spy(new SurfaceControl.Transaction());
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          SurfaceControl.Transaction newTransaction() {
+            return rasterTx;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+    FlutterJNI jni = new FlutterJNI();
+    jni.setPlatformViewsController2(controller);
+
+    FlutterView flutterView = mock(FlutterView.class);
+    controller.attachToView(flutterView);
+
+    // Allocate via FlutterJNI without submitting yet (simulating in-flight native writes).
+    SurfaceControl.Transaction tx = jni.createTransaction();
+    assertSame(rasterTx, tx);
+
+    // Platform swap/endFrame and detach must not touch an unpublished transaction.
+    controller.swapTransactions();
+    controller.onEndFrame();
+    controller.detachFromView();
+    verify(rasterTx, never()).apply();
+    verify(rasterTx, never()).close();
+
+    // Once submitted through FlutterJNI, a subsequent discard applies before closing.
+    controller.attachToView(flutterView);
+    jni.submitTransaction(tx);
+    controller.detachFromView();
+    InOrder inOrder = inOrder(rasterTx);
+    inOrder.verify(rasterTx).apply();
+    inOrder.verify(rasterTx).close();
+  }
+
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      })
+  public void onEndFrameAppliesMergedRasterTransactionBeforeClosingWhenWindowDetaches() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    FlutterView flutterView = mock(FlutterView.class);
+    when(flutterView.getRootSurfaceControl()).thenReturn(mock(AttachedSurfaceControl.class));
+    controller.attachToView(flutterView);
+
+    SurfaceControl.Transaction rasterTx = controller.createUnpublishedTransaction();
+    controller.submitTransaction(rasterTx);
+    controller.swapTransactions();
+
+    // Window detaches before the posted onEndFrame() runs, without controller.detachFromView()
+    // having cleared activeRasterTransactions.
+    when(flutterView.getRootSurfaceControl()).thenReturn(null);
+    controller.onEndFrame();
+
+    assertEquals(Arrays.asList(rasterTx), ShadowRecordingTransaction.merged);
+    assertEquals(Arrays.asList("merge", "apply", "close"), ShadowRecordingTransaction.events);
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
   public void onEndFrameUsesSeparateMergeDestinationForRasterOnlyFrame() {
     PlatformViewsController2 controller = new PlatformViewsController2();
     controller.setRegistry(new PlatformViewRegistryImpl());
@@ -1292,6 +1360,35 @@ public class PlatformViewsController2Test {
     @Implementation
     public SurfaceHolder getHolder() {
       return holder;
+    }
+  }
+
+  @Implements(SurfaceControl.Transaction.class)
+  public static class ShadowRecordingTransaction {
+    @RealObject private SurfaceControl.Transaction realObject;
+    static final List<SurfaceControl.Transaction> merged = new ArrayList<>();
+    static final List<String> events = new ArrayList<>();
+
+    static void reset() {
+      merged.clear();
+      events.clear();
+    }
+
+    @Implementation
+    protected SurfaceControl.Transaction merge(SurfaceControl.Transaction other) {
+      merged.add(other);
+      events.add("merge");
+      return realObject;
+    }
+
+    @Implementation
+    protected void apply() {
+      events.add("apply");
+    }
+
+    @Implementation
+    protected void close() {
+      events.add("close");
     }
   }
 }
