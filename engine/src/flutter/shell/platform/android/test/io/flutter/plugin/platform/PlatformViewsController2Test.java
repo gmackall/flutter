@@ -755,6 +755,36 @@ public class PlatformViewsController2Test {
   }
 
   @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      })
+  public void onEndFrameAppliesMergedRasterTransactionBeforeClosingWhenWindowDetaches() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+    FlutterView flutterView = mock(FlutterView.class);
+    when(flutterView.getRootSurfaceControl()).thenReturn(mock(AttachedSurfaceControl.class));
+    controller.attachToView(flutterView);
+
+    SurfaceControl.Transaction rasterTx = controller.createUnpublishedTransaction();
+    controller.submitTransaction(rasterTx);
+    controller.swapTransactions();
+
+    // The window detaches before the posted onEndFrame() runs, without detachFromView() having
+    // dropped the frame's raster transactions.
+    when(flutterView.getRootSurfaceControl()).thenReturn(null);
+    controller.onEndFrame();
+
+    // Merging moved the producer's completion callback into the frame's transaction, so that
+    // transaction must be applied before it is closed or the callback never fires.
+    assertEquals(Arrays.asList(rasterTx), ShadowRecordingTransaction.merged);
+    assertEquals(Arrays.asList("merge", "apply", "close"), ShadowRecordingTransaction.events);
+  }
+
+  @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
   public void swapTransactionsClosesDiscardedPlatformTransaction() {
     TransactionTrackingController controller = new TransactionTrackingController();
@@ -1328,21 +1358,37 @@ public class PlatformViewsController2Test {
     }
   }
 
-  /** Records every transaction merged into another, so tests can see what a frame picked up. */
+  /**
+   * Records every transaction merged into another, and the order of merge, apply and close calls,
+   * so tests can see what a frame picked up and how it was released.
+   */
   @Implements(SurfaceControl.Transaction.class)
   public static class ShadowRecordingTransaction {
     static final List<SurfaceControl.Transaction> merged = new ArrayList<>();
+    static final List<String> events = new ArrayList<>();
 
     @RealObject private SurfaceControl.Transaction realObject;
 
     static void reset() {
       merged.clear();
+      events.clear();
     }
 
     @Implementation
     protected SurfaceControl.Transaction merge(SurfaceControl.Transaction other) {
       merged.add(other);
+      events.add("merge");
       return realObject;
+    }
+
+    @Implementation
+    protected void apply() {
+      events.add("apply");
+    }
+
+    @Implementation
+    protected void close() {
+      events.add("close");
     }
   }
 }
