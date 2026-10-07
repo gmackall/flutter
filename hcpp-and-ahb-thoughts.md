@@ -7,60 +7,39 @@ Personal branch, not intended to land.
 Move landed items to Resolved rather than deleting them. Evidence is **observed**
 (reproduced on device), **derived** (follows from the code), or **suspected** (plausible,
 not chased down). References lead with function names; line numbers drift.
+Open items are ordered by priority (a judgement call, weighing user impact, evidence and
+dependencies), not by id.
 
-Last updated: 2026-09-11.
+Last updated: 2026-10-07.
 
 ## Open
 
-| Id | Severity | Evidence | Summary |
-|----|----------|----------|---------|
-| PV-1 | High | derived | `swapTransactions()` can promote a later frame's buffers, dropping a frame |
-| PV-2 | Medium | derived | Platform-view position and crop travel on different channels |
-| PV-3 | High | derived | Native writes to a transaction after it is published to Java |
-| PV-4 | High | derived | GC can free a borrowed native transaction still in use |
-| PV-5 | Low | derived | `SurfacePool::ResetLayers()` is unsynchronised |
-| PV-6 | Low | derived | `bringToFront()` on every visible platform view, every frame |
-| PV-7 | Unknown | suspected | Overlay z is hardcoded; platform-view z comes from the View hierarchy |
-| PV-8 | Unknown | suspected | Overlay resized in place while the view resize is unlatched |
-| PV-9 | Trivial | derived | `hidePlatformView` builds a view hierarchy in order to hide it |
-| PV-10 | Trivial | derived | Dead `SurfacePool` methods on the HCPP path |
-| PV-11 | High | observed | Swapchain double-buffering (`kMaxPendingPresents = 2u`) causes 30 FPS lockstep stalls |
-| PV-12 | High | observed | Energy-Aware Scheduling strands raster thread on Little cores without ADPF |
-| PV-13 | Medium | observed | AHB swapchain incurs JNI and Java allocation overhead when zero platform views are active |
-| PV-14 | Medium | observed | Cross-stream `tx.merge()` overhead and mutex stalls in `onEndFrame()` |
-| PV-15 | Medium | derived | Raster thread can block on the platform thread's monitor |
-
-### PV-1 — Raster run-ahead breaks frame attribution
-
-Suspected cause of the intermittent jitter. `Present` never blocks (`AHBTexturePoolVK::Pop`
-allocates when the pool is empty) and `SubmitFlutterView` posts the platform task without
-waiting, so the raster thread can be a frame ahead. `swapTransactions()` then promotes
-buffers from both frames, `onEndFrame()` merges them, and two `setBuffer` calls on one
-`SurfaceControl` mean the last wins: frame N is dropped and N+1's content is shown against
-N's clips.
-
-Platform-thread lag is the trigger, so this and PV-13 are the same problem from two ends.
-The coupling may be inherent; discarding frames is not.
-
-**Interacts with PV-11.** The window is bounded by `kMaxPendingPresents`, today 2 — enough
-to overlap one frame. Raising it to 3 to fix PV-11's lockstep stall widens this window.
-The two should be landed together, or PV-1 fixed first.
-
-**Confirm:** trace counter on `pendingRasterTransactions.size()` at the top of
-`swapTransactions()`. Above one present per frame means this is happening.
-
-**Fix:** tag transactions with a frame id; promote only that frame's, leave later ones
-pending. Composes with the PV-3/PV-4 fix.
-
-### PV-2 — Position and crop travel on different channels
-
-In one platform task, `onDisplayPlatformView` sets geometry via `readyToDisplay()` →
-`setLayoutParams()` (View layout pipeline) and clipping via `maybeApplyClipToSurfaceView()` →
-`setCrop()` (SurfaceControl transaction). They coincide only because both usually land in the
-same traversal, and a SurfaceView's position is additionally updated by the View system's own
-transaction. Same failure mode as #189946, on the channel that fix didn't cover.
+| # | Id | Severity | Evidence | Summary |
+|---|----|----------|----------|---------|
+| 1 | PV-3 / PV-4 | High | derived | Native writes after publish; GC frees a borrowed transaction in use. **In review: #192969** |
+| 2 | PV-16 | Medium | derived | Dropped raster transactions leak their completion callback and AHB |
+| 3 | PV-1 | High | derived | `swapTransactions()` can promote a later frame's buffers, dropping a frame |
+| 4 | PV-11 | High | observed | Swapchain double-buffering (`kMaxPendingPresents = 2u`) causes 30 FPS lockstep stalls |
+| 5 | PV-12 | High | observed | Energy-Aware Scheduling strands raster thread on Little cores without ADPF |
+| 6 | PV-13 | Medium | observed | AHB swapchain incurs JNI and Java allocation overhead when zero platform views are active |
+| 7 | PV-14 | Medium | observed | Cross-stream `tx.merge()` overhead and mutex stalls in `onEndFrame()` |
+| 8 | PV-2 | Medium | derived | Platform-view position and crop travel on different channels |
+| 9 | PV-17 | Low | derived | HCPP JNI entry points abort the process on Java-side state errors |
+| 10 | PV-7 | Unknown | suspected | Overlay z is hardcoded; platform-view z comes from the View hierarchy |
+| 11 | PV-8 | Unknown | suspected | Overlay resized in place while the view resize is unlatched |
+| 12 | PV-18 | Low | derived | `activeRasterTransactions` is vestigial; collapse swap + end frame |
+| 13 | PV-15 | Low | derived | Raster thread can block on the platform thread's monitor |
+| 14 | PV-5 | Low | derived | `SurfacePool::ResetLayers()` is unsynchronised |
+| 15 | PV-6 | Low | derived | `bringToFront()` on every visible platform view, every frame |
+| 16 | PV-19 | Trivial | derived | JNI exception paths have no unit coverage |
+| 17 | PV-9 / PV-10 | Trivial | derived | `hidePlatformView` builds a hierarchy to hide it; dead `SurfacePool` methods |
 
 ### PV-3 / PV-4 — Ownership of the borrowed transaction
+
+**Active PR:** [#192969](https://github.com/flutter/flutter/pull/192969), the global-ref
+direction below, with `submitTransaction` named `publishTransaction` and the raster entry
+renamed `createUnpublishedTransaction()`. If publishing fails (`FlutterJNI` collected, or
+Java throws), native applies the transaction itself so its completion callback still fires.
 
 `createTransaction()` publishes to the pending list before the native producer is done.
 `PlatformViewAndroidJNIImpl::createTransaction` drops its JNI local ref, then `Present` calls
@@ -85,37 +64,67 @@ Open question for it and for the caching variant below: whether the pool can be 
 without the platform thread becoming the bottleneck again when it stalls — an empty pool
 needs a fallback, and the fallback is the JNI path it was meant to avoid.
 
-### PV-5 — `SurfacePool::ResetLayers()` is unsynchronised
+### PV-16 — Dropped raster transactions leak their completion callback and buffer
 
-The only method in the class that doesn't take `mutex_`, though it writes
-`available_layer_index_` from the raster thread every frame. `GetLayer` is called from the
-platform thread in the overlay-creation path, where a latch orders it in practice — so
-latent, not active. Looks like an oversight next to `RecycleLayers`.
+`SurfaceTransaction::Apply()` registers its completion callback with a heap context that is
+freed only when the callback runs, and the callback holds the presented
+`AHBTextureSourceVK`. Java drops raster transactions without applying them in three places:
+`dropTransactions()` on detach, `swapTransactions()` clearing an active list whose
+`onEndFrame()` never ran (PV-18), and `onEndFrame()` closing the merged transaction when the
+root surface control is gone. A transaction that is never applied never completes, so the
+context and its hardware buffer leak. The pool allocates a replacement, so nothing stalls
+and the leak is silent.
 
-### PV-6 — `bringToFront()` every frame
+Detach is the reachable path: add-to-app, and apps that attach and detach `FlutterView`
+repeatedly, lose roughly one full-screen buffer per dropped present. #192969 applies natively
+when publishing fails for the same reason; these paths have the same problem on the Java
+side.
 
-`onDisplayPlatformView` calls it for every visible platform view on every frame; each call
-reorders the child array and requests a layout. Present since #161829, so not a regression —
-but it is on the critical path (PV-13) and widens the PV-1 window.
+**Fix direction:** apply rather than drop, even when the target is going away, so the
+callback runs and the texture returns to the pool. **Confirm:** an unapplied transaction freed
+by the cleaner does not fire its completion callbacks; then count AHB allocations across
+repeated attach/detach.
 
-### PV-7 — Overlay z-order is hardcoded
+### PV-1 — Raster run-ahead breaks frame attribution
 
-`createOverlaySurface()` pins the overlay with `setLayer(1000)` while platform-view
-SurfaceViews get layers from the View hierarchy. Nothing coordinates the two. **Confirm:**
-`adb shell dumpsys SurfaceFlinger` while the glitch is visible.
+Suspected cause of the intermittent jitter. `Present` never blocks (`AHBTexturePoolVK::Pop`
+allocates when the pool is empty) and `SubmitFlutterView` posts the platform task without
+waiting, so the raster thread can be a frame ahead. `swapTransactions()` then promotes
+buffers from both frames, `onEndFrame()` merges them, and two `setBuffer` calls on one
+`SurfaceControl` mean the last wins: frame N is dropped and N+1's content is shown against
+N's clips.
 
-### PV-8 — Overlay resize versus view resize
+Platform-thread lag is the trigger, so this and PV-13 are the same problem from two ends.
+The coupling may be inherent; discarding frames is not.
 
-Since #190638 the overlay is resized in place by `SurfacePool::GetLayer` rather than
-destroyed, while `MaybeResizeSurfaceView` is posted without a latch — deliberately, to avoid
-the deadlock that PR fixed. For a frame or two after a size change the overlay can present at
-the old size. Start here if the jitter is worse right after rotation.
+**Interacts with PV-11.** The window is bounded by `kMaxPendingPresents`, today 2 — enough
+to overlap one frame. Raising it to 3 to fix PV-11's lockstep stall widens this window.
+The two should be landed together, or PV-1 fixed first.
 
-### PV-9 / PV-10 — Minor
+**Confirm:** trace counter on `pendingRasterTransactions.size()` at the top of
+`swapTransactions()`. Above one present per frame means this is happening.
 
-`hidePlatformView` calls `initializePlatformViewIfNeeded`, so hiding a view with no parent
-builds and attaches the hierarchy purely to set it `GONE`. `RecycleLayers()`, `TrimLayers()`
-and `GetUnusedLayers()` are unused by `AndroidExternalViewEmbedder2`.
+**History (derived).** The pending/active split was originally this guard. Jonah's first
+platform task (#162493) called `swapTransaction()` first and `onEndFrame2()` last, so
+anything the raster thread published while the task ran stayed pending for the next frame.
+Platform-thread transactions shared that list, though, and any created after the swap
+lagged a frame: #176742 moved overlay show/hide ahead of it, and #189946 moved the swap to
+directly before `onEndFrame2()`. Right trade: a one-frame lag on every frame versus a race
+window one platform task long. But it closed the window entirely (see PV-18), and swap-first
+never covered the larger case anyway: a platform task queued behind a raster thread that is
+already ahead.
+
+**Fix:** neither ordering gives real frame isolation. That needs transactions tagged with
+their frame, with `onEndFrame(N)` taking only the raster transactions up to N and leaving
+later ones pending. Now that platform transactions have their own slot (#192606), that's
+straightforward. Fold it into the PV-18 cleanup, gated on the counter below actually showing
+run-ahead. Composes with the PV-3/PV-4 fix.
+
+**Possibly worse (suspected).** With two overlay presents in one merged transaction, both
+`OnTextureUpdatedOnSurfaceControl` callbacks fire for a single latch. If they run out of
+order, `currently_displayed_texture_` records N while the surface shows N+1, and N+1 goes
+back to the pool while on screen: the next render into it would tear. Depends on callback
+order within a merged transaction; unverified.
 
 ### PV-11 — Swapchain double-buffering causes 30 FPS / lockstep stalls
 
@@ -224,13 +233,85 @@ merging into a raster input and closing it could free a native pointer the produ
 using (PV-3/PV-4). A unified per-frame transaction needs the ownership handoff first, or it
 reintroduces that hazard. Since merges happen on the platform thread, this also feeds PV-13.
 
+### PV-2 — Position and crop travel on different channels
+
+In one platform task, `onDisplayPlatformView` sets geometry via `readyToDisplay()` →
+`setLayoutParams()` (View layout pipeline) and clipping via `maybeApplyClipToSurfaceView()` →
+`setCrop()` (SurfaceControl transaction). They coincide only because both usually land in the
+same traversal, and a SurfaceView's position is additionally updated by the View system's own
+transaction. Same failure mode as #189946, on the channel that fix didn't cover.
+
+### PV-17 — HCPP JNI entry points abort the process on Java-side state errors
+
+`FlutterJNI.swapTransactions()` and `endFrame2()` throw `RuntimeException("")` when
+`platformViewsController2` is null, and their native callers
+`FML_CHECK(CheckException(env))`, which aborts in release. #192969 hardened the transaction
+entry points (exceptions are cleared and fall back to a native apply); the rest of the HCPP
+JNI surface wasn't audited. Not known to be reachable, but the failure mode is a process kill
+and the fix is cheap: log and return, and give the exceptions a message.
+
+### PV-7 — Overlay z-order is hardcoded
+
+`createOverlaySurface()` pins the overlay with `setLayer(1000)` while platform-view
+SurfaceViews get layers from the View hierarchy. Nothing coordinates the two. **Confirm:**
+`adb shell dumpsys SurfaceFlinger` while the glitch is visible.
+
+### PV-8 — Overlay resize versus view resize
+
+Since #190638 the overlay is resized in place by `SurfacePool::GetLayer` rather than
+destroyed, while `MaybeResizeSurfaceView` is posted without a latch — deliberately, to avoid
+the deadlock that PR fixed. For a frame or two after a size change the overlay can present at
+the old size. Start here if the jitter is worse right after rotation.
+
+### PV-18 — `activeRasterTransactions` is vestigial
+
+Since #189946, `swapTransaction()` and `onEndFrame2()` run back to back in the same platform
+task at both call sites, so the active list is filled and drained immediately. The
+"previous `onEndFrame()` never ran" cleanup in `swapTransactions()` is reachable only if
+something fails between those two adjacent calls. See PV-1 for how it got this way.
+
+**Fix direction:** collapse into one `applyFrame()`: drain pending under the lock, merge with
+the platform transaction into a fresh destination, `applyTransactionOnDraw`. Removes both
+active slots, one JNI call per frame, and one of PV-16's drop paths. Decide alongside PV-1,
+since frame tagging changes what "drain" means. Pairs naturally with PV-14.
+
 ### PV-15 — Raster thread blocks on the platform thread's monitor
 
 `createTransaction()` takes `transactionLock` on the raster thread, while the platform thread
 holds it across `swapTransactions()` — including a native `close()`. A high-priority raster
 thread waiting on a normal-priority platform thread is priority inversion, and it bites
 exactly when the platform thread is busy. Small today, but new with the locking added in
-#192606, and it sits on the present path. Both fix directions under PV-3/PV-4 remove it.
+#192606, and it sits on the present path. Only the pre-vended pool under PV-3/PV-4 removes it.
+
+**Update (2026-10-07).** #192969 takes the global-ref direction, which keeps the lock:
+`publishTransaction()` takes `transactionLock` on the raster thread once per present. The
+platform thread now holds it only to move list entries (the platform-transaction `close()`
+is outside it), so the hold is short. Low until a trace says otherwise.
+
+### PV-5 — `SurfacePool::ResetLayers()` is unsynchronised
+
+The only method in the class that doesn't take `mutex_`, though it writes
+`available_layer_index_` from the raster thread every frame. `GetLayer` is called from the
+platform thread in the overlay-creation path, where a latch orders it in practice — so
+latent, not active. Looks like an oversight next to `RecycleLayers`.
+
+### PV-6 — `bringToFront()` every frame
+
+`onDisplayPlatformView` calls it for every visible platform view on every frame; each call
+reorders the child array and requests a layout. Present since #161829, so not a regression —
+but it is on the critical path (PV-13) and widens the PV-1 window.
+
+### PV-19 — JNI exception paths have no unit coverage
+
+`MockJNIEnv` doesn't implement the JNI calls `fml::jni::CheckException` makes to log, so the
+throw and fallback branches added in #192969 are untested. Extending the mock would cover
+them and PV-17's fix.
+
+### PV-9 / PV-10 — Minor
+
+`hidePlatformView` calls `initializePlatformViewIfNeeded`, so hiding a view with no parent
+builds and attaches the hierarchy purely to set it `GONE`. `RecycleLayers()`, `TrimLayers()`
+and `GetUnusedLayers()` are unused by `AndroidExternalViewEmbedder2`.
 
 ## Directions
 
@@ -271,6 +352,7 @@ Not defects — design options.
 - **Pending-transaction counter** in `swapTransactions()` — tests PV-1, near-zero cost.
 - **Perfetto**, using the existing `SubmitFlutterView` marker: the gap between raster submit
   and the platform task, relative to vsync. Tests PV-13.
+- **AHB count across attach/detach** (`dumpsys meminfo`, graphics) — tests PV-16.
 - **`dumpsys SurfaceFlinger`** — relative z and buffer sizes of overlay versus platform-view
   controls. Tests PV-7 and PV-8.
 - **Robolectric harness** — `PlatformViewsController2Test` runs standalone against the engine
