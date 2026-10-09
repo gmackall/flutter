@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <functional>
+
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/testing/testing.h"
 #include "impeller/toolkit/android/choreographer.h"

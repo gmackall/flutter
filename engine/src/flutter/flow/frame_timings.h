@@ -146,11 +146,10 @@ class FrameTimingsRecorder {
   FML_FRIEND_TEST(FrameTimingsRecorderTest,
                   ThrowWhenRecordRasterBeforeBuildEnd);
 
-  [[nodiscard]] fml::Status RecordVsyncImpl(
-      fml::TimePoint vsync_start,
-      fml::TimePoint vsync_target,
-      int64_t preferred_vsync_id = kInvalidVsyncId,
-      int64_t next_vsync_id = kInvalidVsyncId);
+  [[nodiscard]] fml::Status RecordVsyncImpl(fml::TimePoint vsync_start,
+                                            fml::TimePoint vsync_target,
+                                            int64_t preferred_vsync_id,
+                                            int64_t next_vsync_id);
   [[nodiscard]] fml::Status RecordBuildStartImpl(fml::TimePoint build_start);
   [[nodiscard]] fml::Status RecordBuildEndImpl(fml::TimePoint build_end);
   [[nodiscard]] fml::Status RecordRasterStartImpl(fml::TimePoint raster_start);
