@@ -40,6 +40,8 @@ constexpr double kWorkloadSpikeFactor = 1.2;
 
 enum class AdpfRuntimeMode {
   kImproved,
+  kMaxStage8_3ms,
+  kDualSession8_3ms,
   kTarget6_25ms,
   kTarget8_3ms,
   kPhase4,
@@ -56,6 +58,12 @@ AdpfRuntimeMode GetAdpfRuntimeMode() {
     if (std::strcmp(prop, "phase4") == 0) {
       return AdpfRuntimeMode::kPhase4;
     }
+    if (std::strcmp(prop, "max_stage_8.3ms") == 0) {
+      return AdpfRuntimeMode::kMaxStage8_3ms;
+    }
+    if (std::strcmp(prop, "dual_session_8.3ms") == 0) {
+      return AdpfRuntimeMode::kDualSession8_3ms;
+    }
     if (std::strcmp(prop, "target_8.3ms") == 0) {
       return AdpfRuntimeMode::kTarget8_3ms;
     }
@@ -68,6 +76,8 @@ AdpfRuntimeMode GetAdpfRuntimeMode() {
 
 bool ModeEnablesHints(AdpfRuntimeMode mode) {
   return mode == AdpfRuntimeMode::kImproved ||
+         mode == AdpfRuntimeMode::kMaxStage8_3ms ||
+         mode == AdpfRuntimeMode::kDualSession8_3ms ||
          mode == AdpfRuntimeMode::kTarget6_25ms ||
          mode == AdpfRuntimeMode::kTarget8_3ms;
 }

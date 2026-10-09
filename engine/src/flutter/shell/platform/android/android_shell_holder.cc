@@ -165,30 +165,52 @@ AndroidShellHolder::AndroidShellHolder(
       __system_property_get("debug.flutter.adpf_mode", adpf_mode_prop) > 0;
   const bool is_phase4_mode =
       has_adpf_prop && std::strcmp(adpf_mode_prop, "phase4") == 0;
-  const bool is_single_vsync_clamp =
-      has_adpf_prop && (std::strcmp(adpf_mode_prop, "target_6.25ms") == 0 ||
-                        std::strcmp(adpf_mode_prop, "target_8.3ms") == 0);
-  const bool is_full_vsync_target =
+  const bool is_phase4_hints_mode =
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "phase4_hints") == 0;
+  const bool is_target_8_3ms_mode =
       has_adpf_prop && std::strcmp(adpf_mode_prop, "target_8.3ms") == 0;
+  const bool is_target_6_25ms_mode =
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "target_6.25ms") == 0;
+  const bool is_dual_session_mode =
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "dual_session_8.3ms") == 0;
+  const bool is_max_stage_mode =
+      !is_phase4_mode && !is_phase4_hints_mode && !is_target_8_3ms_mode &&
+      !is_target_6_25ms_mode && !is_dual_session_mode;
+  const bool is_single_vsync_clamp = !is_phase4_mode && !is_phase4_hints_mode;
+  const bool is_full_vsync_target =
+      is_max_stage_mode || is_dual_session_mode || is_target_8_3ms_mode;
   const double target_work_ratio =
       is_full_vsync_target ? 1.0 : kTargetFrameWorkRatio;
 
-  // Because the ADPF session includes both the UI and Raster threads and
-  // reports cpu_duration_ns = build_ns + raster_ns (the sum of two pipelined
-  // stages), the nominal 2-stage pipeline horizon is 2 * vsync_interval
-  // (~16.6ms at 120Hz -> 12.45ms target at 0.75 ratio). Clamping to 1 *
-  // vsync_interval (6.25ms target) causes PowerHAL's JankCheckTimeFactor (1.2x
-  // = 7.5ms) to trigger heuristic boost whenever build + raster > 7.5ms even on
-  // light 120Hz scrolls (+84% CPU power). Clamping to 2 * vsync_interval
-  // preserves the 2-stage pipeline budget while still preventing 3-4 VSync
-  // target inflation during SurfaceFlinger buffer stuffing.
   const int64_t initial_pipeline_interval_ns =
       is_single_vsync_clamp ? initial_nominal_interval_ns
                             : (initial_nominal_interval_ns * 2);
   int64_t target_duration_ns =
       static_cast<int64_t>(initial_pipeline_interval_ns * target_work_ratio);
 
-  if (!tids.empty()) {
+  std::shared_ptr<AndroidPerformanceHintManager> raster_hint_manager;
+  if (is_dual_session_mode) {
+    std::vector<int32_t> ui_tids;
+    if (ui_tid.load() > 0) {
+      ui_tids.push_back(ui_tid.load());
+    }
+    if ((settings.merged_platform_ui_thread ==
+             Settings::MergedPlatformUIThread::kEnabled ||
+         settings.merged_platform_ui_thread ==
+             Settings::MergedPlatformUIThread::kMergeAfterLaunch) &&
+        std::find(ui_tids.begin(), ui_tids.end(), gettid()) == ui_tids.end()) {
+      ui_tids.push_back(gettid());
+    }
+    if (!ui_tids.empty()) {
+      performance_hint_manager_ =
+          AndroidPerformanceHintManager::Create(ui_tids, target_duration_ns);
+    }
+    if (raster_tid.load() > 0) {
+      std::vector<int32_t> raster_tids = {raster_tid.load()};
+      raster_hint_manager = AndroidPerformanceHintManager::Create(
+          raster_tids, target_duration_ns);
+    }
+  } else if (!tids.empty()) {
     performance_hint_manager_ =
         AndroidPerformanceHintManager::Create(tids, target_duration_ns);
   }
@@ -197,15 +219,16 @@ AndroidShellHolder::AndroidShellHolder(
   if (performance_hint_manager_) {
     FrameRasterizedCallback prev_callback =
         shell_settings.frame_rasterized_callback;
-    shell_settings.frame_rasterized_callback = [perf_hint =
-                                                    performance_hint_manager_,
-                                                nominal_interval =
-                                                    nominal_frame_interval_ns_,
-                                                is_phase4_mode,
-                                                is_single_vsync_clamp,
-                                                target_work_ratio,
-                                                prev_callback](
-                                                   const FrameTiming& timing) {
+    shell_settings
+        .frame_rasterized_callback = [perf_hint = performance_hint_manager_,
+                                      raster_perf_hint = raster_hint_manager,
+                                      nominal_interval =
+                                          nominal_frame_interval_ns_,
+                                      is_phase4_mode, is_max_stage_mode,
+                                      is_dual_session_mode,
+                                      is_single_vsync_clamp, target_work_ratio,
+                                      prev_callback](
+                                         const FrameTiming& timing) {
       if (prev_callback) {
         prev_callback(timing);
       }
@@ -233,27 +256,59 @@ AndroidShellHolder::AndroidShellHolder(
         int64_t dynamic_target_ns =
             static_cast<int64_t>(frame_interval_ns * target_work_ratio);
         perf_hint->UpdateTargetWorkDuration(dynamic_target_ns);
+        if (raster_perf_hint) {
+          raster_perf_hint->UpdateTargetWorkDuration(dynamic_target_ns);
+        }
       }
-      int64_t total_duration_ns = 0;
-      if (vsync_start_ns > 0) {
-        total_duration_ns = (timing.Get(FrameTiming::kRasterFinish) -
-                             timing.Get(FrameTiming::kVsyncStart))
-                                .ToNanoseconds();
-      } else {
-        vsync_start_ns =
-            timing.Get(FrameTiming::kBuildStart).ToEpochDelta().ToNanoseconds();
-        total_duration_ns = (timing.Get(FrameTiming::kRasterFinish) -
-                             timing.Get(FrameTiming::kBuildStart))
-                                .ToNanoseconds();
-      }
+      int64_t build_start_ns =
+          timing.Get(FrameTiming::kBuildStart).ToEpochDelta().ToNanoseconds();
+      int64_t raster_start_ns =
+          timing.Get(FrameTiming::kRasterStart).ToEpochDelta().ToNanoseconds();
       int64_t build_ns = (timing.Get(FrameTiming::kBuildFinish) -
                           timing.Get(FrameTiming::kBuildStart))
                              .ToNanoseconds();
       int64_t raster_ns = (timing.Get(FrameTiming::kRasterFinish) -
                            timing.Get(FrameTiming::kRasterStart))
                               .ToNanoseconds();
-      int64_t cpu_duration_ns = build_ns + raster_ns;
-      if (!is_phase4_mode) {
+
+      if (is_dual_session_mode) {
+        int64_t ui_start_ns =
+            vsync_start_ns > 0 ? vsync_start_ns : build_start_ns;
+        int64_t ui_total_ns = vsync_start_ns > 0
+                                  ? (timing.Get(FrameTiming::kBuildFinish) -
+                                     timing.Get(FrameTiming::kVsyncStart))
+                                        .ToNanoseconds()
+                                  : build_ns;
+        ui_total_ns = std::max(ui_total_ns, build_ns);
+        if (ui_start_ns > 0 && ui_total_ns > 0 && build_ns > 0) {
+          perf_hint->ReportActualWorkDuration(ui_start_ns, ui_total_ns,
+                                              build_ns, 0);
+        }
+        if (raster_perf_hint && raster_start_ns > 0 && raster_ns > 0) {
+          raster_perf_hint->NotifyWorkloadReset();
+          raster_perf_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
+                                                     raster_ns, 0);
+        }
+        return;
+      }
+
+      int64_t total_duration_ns = 0;
+      if (vsync_start_ns > 0) {
+        total_duration_ns = (timing.Get(FrameTiming::kRasterFinish) -
+                             timing.Get(FrameTiming::kVsyncStart))
+                                .ToNanoseconds();
+      } else {
+        vsync_start_ns = build_start_ns;
+        total_duration_ns = (timing.Get(FrameTiming::kRasterFinish) -
+                             timing.Get(FrameTiming::kBuildStart))
+                                .ToNanoseconds();
+      }
+      int64_t cpu_duration_ns = is_max_stage_mode
+                                    ? std::max(build_ns, raster_ns)
+                                    : (build_ns + raster_ns);
+      if (is_max_stage_mode) {
+        total_duration_ns = cpu_duration_ns;
+      } else if (!is_phase4_mode) {
         total_duration_ns = std::max(total_duration_ns, cpu_duration_ns);
       }
       if (vsync_start_ns > 0 && total_duration_ns > 0 && cpu_duration_ns > 0) {
