@@ -426,7 +426,8 @@ void PlatformViewAndroid::RegisterImageTexture(
 
 // |PlatformView|
 std::unique_ptr<VsyncWaiter> PlatformViewAndroid::CreateVSyncWaiter() {
-  return std::make_unique<VsyncWaiterAndroid>(task_runners_);
+  return std::make_unique<VsyncWaiterAndroid>(task_runners_,
+                                              transaction_router_);
 }
 
 // |PlatformView|

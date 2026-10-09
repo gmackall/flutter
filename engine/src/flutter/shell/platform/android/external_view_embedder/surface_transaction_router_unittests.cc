@@ -15,6 +15,8 @@ TEST(SurfaceTransactionRouter, DefaultsToDirectRouteWithNothingUncommitted) {
   SurfaceTransactionRouter router;
 
   EXPECT_EQ(router.GetFrameRoute(), Route::kDirect);
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(),
+            SurfaceTransactionRouter::kInvalidVsyncId);
   EXPECT_FALSE(router.HasUncommittedPlatformFrames());
 }
 
@@ -29,6 +31,42 @@ TEST(SurfaceTransactionRouter, FrameRouteIsLatchedUntilSetAgain) {
 
   router.SetFrameRoute(Route::kDirect);
   EXPECT_EQ(router.GetFrameRoute(), Route::kDirect);
+}
+
+TEST(SurfaceTransactionRouter, FrameTimelineVsyncIdFollowsFrameRoute) {
+  SurfaceTransactionRouter router;
+  router.SetVsyncTimeline(/*direct_vsync_id=*/100, /*platform_vsync_id=*/101);
+
+  EXPECT_EQ(router.GetFrameRoute(), Route::kDirect);
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 100);
+
+  router.SetFrameRoute(Route::kPlatform);
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 101);
+
+  router.SetFrameRoute(Route::kDirect);
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 100);
+}
+
+TEST(SurfaceTransactionRouter,
+     LatchedVsyncTimelineIsIsolatedFromSubsequentUiVsync) {
+  SurfaceTransactionRouter router;
+  router.SetVsyncTimeline(/*direct_vsync_id=*/100, /*platform_vsync_id=*/101);
+  router.LatchVsyncTimeline();
+
+  // Simulate the UI thread receiving the next vsync while the raster thread is
+  // still rendering the current frame.
+  router.SetVsyncTimeline(/*direct_vsync_id=*/200, /*platform_vsync_id=*/201);
+
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 100);
+  router.SetFrameRoute(Route::kPlatform);
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 101);
+
+  // When the next raster frame starts and latches the timeline, it picks up
+  // the new vsync IDs.
+  router.LatchVsyncTimeline();
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 201);
+  router.SetFrameRoute(Route::kDirect);
+  EXPECT_EQ(router.GetFrameTimelineVsyncId(), 200);
 }
 
 TEST(SurfaceTransactionRouter, PlatformFramesStayUncommittedUntilEachCommits) {

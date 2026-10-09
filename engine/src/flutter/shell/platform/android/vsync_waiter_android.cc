@@ -20,8 +20,11 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_vsync_waiter_class = nullptr;
 static jmethodID g_async_wait_for_vsync_method_ = nullptr;
 static std::atomic_uint g_refresh_rate_ = 60;
 
-VsyncWaiterAndroid::VsyncWaiterAndroid(const flutter::TaskRunners& task_runners)
-    : VsyncWaiter(task_runners) {}
+VsyncWaiterAndroid::VsyncWaiterAndroid(
+    const flutter::TaskRunners& task_runners,
+    std::shared_ptr<SurfaceTransactionRouter> transaction_router)
+    : VsyncWaiter(task_runners),
+      transaction_router_(std::move(transaction_router)) {}
 
 VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 
@@ -36,13 +39,17 @@ void VsyncWaiterAndroid::AwaitVSync() {
         task_runners_.GetUITaskRunner(), [weak_this]() {
           const auto& choreographer =
               impeller::android::Choreographer::GetInstance();
-          choreographer.PostFrameCallback([weak_this](auto time) {
-            auto time_ns =
-                std::chrono::time_point_cast<std::chrono::nanoseconds>(time)
-                    .time_since_epoch()
-                    .count();
-            OnVsyncFromNDK(time_ns, weak_this);
-          });
+          choreographer.PostVsyncCallback(
+              [weak_this](const impeller::android::Choreographer::VsyncData&
+                              vsync_data) {
+                auto time_ns =
+                    std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                        vsync_data.frame_time)
+                        .time_since_epoch()
+                        .count();
+                OnVsyncFromNDK(time_ns, vsync_data.preferred_vsync_id,
+                               vsync_data.next_vsync_id, weak_this);
+              });
         });
   } else {
     // TODO(99798): Remove it when we drop support for API level < 29 and 32-bit
@@ -61,7 +68,10 @@ void VsyncWaiterAndroid::AwaitVSync() {
 }
 
 // static
-void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos, void* data) {
+void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos,
+                                        int64_t preferred_vsync_id,
+                                        int64_t next_vsync_id,
+                                        void* data) {
   auto frame_time = fml::TimePoint::FromEpochDelta(
       fml::TimeDelta::FromNanoseconds(frame_nanos));
   auto now = fml::TimePoint::Now();
@@ -77,6 +87,13 @@ void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos, void* data) {
                    target_time.ToEpochDelta().ToMicroseconds());
 
   auto* weak_this = reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(data);
+  if (auto shared_this = weak_this->lock()) {
+    auto* android_waiter = static_cast<VsyncWaiterAndroid*>(shared_this.get());
+    if (android_waiter->transaction_router_) {
+      android_waiter->transaction_router_->SetVsyncTimeline(preferred_vsync_id,
+                                                            next_vsync_id);
+    }
+  }
   ConsumePendingCallback(weak_this, frame_time, target_time);
 }
 

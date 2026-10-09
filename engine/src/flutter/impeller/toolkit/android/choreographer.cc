@@ -75,9 +75,75 @@ bool Choreographer::PostFrameCallback(FrameCallback callback) const {
   return false;
 }
 
+bool Choreographer::PostVsyncCallback(VsyncCallback callback) const {
+  if (!callback || !IsValid()) {
+    return false;
+  }
+
+  const auto& table = GetProcTable();
+  if (table.AChoreographer_postVsyncCallback &&
+      table.AChoreographerFrameCallbackData_getFrameTimeNanos &&
+      table.AChoreographerFrameCallbackData_getFrameTimelinesLength &&
+      table.AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex &&
+      table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId) {
+    struct InFlightVsyncData {
+      VsyncCallback callback;
+    };
+
+    auto data = std::make_unique<InFlightVsyncData>();
+    data->callback = std::move(callback);
+
+    table.AChoreographer_postVsyncCallback(
+        const_cast<AChoreographer*>(instance_),
+        [](const AChoreographerFrameCallbackData* frame_data, void* p_data) {
+          auto data = reinterpret_cast<InFlightVsyncData*>(p_data);
+          const auto& table = GetProcTable();
+
+          const int64_t frame_time_nanos =
+              table.AChoreographerFrameCallbackData_getFrameTimeNanos(
+                  frame_data);
+          const size_t timelines_length =
+              table.AChoreographerFrameCallbackData_getFrameTimelinesLength(
+                  frame_data);
+          const size_t preferred_idx =
+              table
+                  .AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex(
+                      frame_data);
+
+          VsyncData vsync_data;
+          vsync_data.frame_time =
+              ClockMonotonicNanosToFrameTimePoint(frame_time_nanos);
+          if (preferred_idx < timelines_length) {
+            vsync_data.preferred_vsync_id =
+                table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId(
+                    frame_data, preferred_idx);
+            const size_t next_idx = preferred_idx + 1 < timelines_length
+                                        ? preferred_idx + 1
+                                        : preferred_idx;
+            vsync_data.next_vsync_id =
+                table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId(
+                    frame_data, next_idx);
+          }
+
+          data->callback(vsync_data);
+          delete data;
+        },
+        data.release());
+    return true;
+  }
+
+  return PostFrameCallback(
+      [callback = std::move(callback)](FrameTimePoint time) {
+        VsyncData vsync_data;
+        vsync_data.frame_time = time;
+        callback(vsync_data);
+      });
+}
+
 bool Choreographer::IsAvailableOnPlatform() {
   return GetProcTable().AChoreographer_getInstance &&
-         (GetProcTable().AChoreographer_postFrameCallback64 ||
+         (GetProcTable().AChoreographer_postVsyncCallback ||
+          GetProcTable().AChoreographer_postFrameCallback64 ||
           GetProcTable().AChoreographer_postFrameCallback);
 }
 

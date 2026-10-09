@@ -59,6 +59,21 @@ class Choreographer {
   using FrameTimePoint = std::chrono::time_point<FrameClock>;
   using FrameCallback = std::function<void(FrameTimePoint)>;
 
+  static constexpr AVsyncId kInvalidVsyncId = -1;
+
+  struct VsyncData {
+    FrameTimePoint frame_time;
+    // The platform-preferred frame timeline vsync ID (1-vsync deadline), used
+    // when the swapchain transaction is applied directly from the raster
+    // thread.
+    AVsyncId preferred_vsync_id = kInvalidVsyncId;
+    // The vsync ID of the timeline immediately following the preferred one
+    // (2-vsync deadline), used when the swapchain transaction is handed to
+    // ViewRootImpl via applyTransactionOnDraw for the next View traversal.
+    AVsyncId next_vsync_id = kInvalidVsyncId;
+  };
+  using VsyncCallback = std::function<void(const VsyncData&)>;
+
   //----------------------------------------------------------------------------
   /// @brief      Posts a frame callback. The time that the frame is being
   ///             rendered will be available in the callback as an argument.
@@ -72,6 +87,18 @@ class Choreographer {
   ///             See `IsAvailableOnPlatform`.
   ///
   bool PostFrameCallback(FrameCallback callback) const;
+
+  //----------------------------------------------------------------------------
+  /// @brief      Posts a vsync callback. On API 33+, this extracts the
+  ///             platform-preferred frame timeline vsync ID as well as the
+  ///             subsequent frame timeline vsync ID. On older API levels, the
+  ///             vsync IDs will be `kInvalidVsyncId`.
+  ///
+  /// @param[in]  callback  The callback receiving `VsyncData`.
+  ///
+  /// @return     `true` if the vsync callback could be posted.
+  ///
+  bool PostVsyncCallback(VsyncCallback callback) const;
 
  private:
   AChoreographer* instance_ = nullptr;

@@ -1727,9 +1727,16 @@ TEST(AndroidExternalViewEmbedder2,
       *android_context, jni_mock, surface_factory, router, task_runners);
 
   std::atomic<Route> observed_route{Route::kDirect};
+  std::atomic<int64_t> observed_vsync_id{
+      SurfaceTransactionRouter::kInvalidVsyncId};
   SurfaceFrame::FramebufferInfo framebuffer_info;
-  auto submit_frame = [&](const DlISize& size) {
+  auto submit_frame = [&](const DlISize& size, int64_t direct_vsync_id,
+                          int64_t platform_vsync_id) {
+    router->SetVsyncTimeline(direct_vsync_id, platform_vsync_id);
     embedder->PrepareFlutterView(size, 1.0);
+    // Simulate a subsequent UI vsync arriving while the raster frame is in
+    // flight; PrepareFlutterView must have already latched this frame's IDs.
+    router->SetVsyncTimeline(direct_vsync_id + 1000, platform_vsync_id + 1000);
     PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
       embedder->SubmitFlutterView(
           kImplicitViewId, nullptr, nullptr,
@@ -1740,6 +1747,7 @@ TEST(AndroidExternalViewEmbedder2,
               [](const SurfaceFrame&, DlCanvas*) { return true; },
               [&](const SurfaceFrame&) {
                 observed_route.store(router->GetFrameRoute());
+                observed_vsync_id.store(router->GetFrameTimelineVsyncId());
                 return true;
               },
               size));
@@ -1751,16 +1759,20 @@ TEST(AndroidExternalViewEmbedder2,
   EXPECT_CALL(*jni_mock, onBeginFrame2()).Times(0);
   EXPECT_CALL(*jni_mock, swapTransaction()).Times(0);
   EXPECT_CALL(*jni_mock, onEndFrame2()).Times(0);
-  submit_frame(DlISize(100, 100));
+  submit_frame(DlISize(100, 100), /*direct_vsync_id=*/10,
+               /*platform_vsync_id=*/11);
   EXPECT_EQ(observed_route.load(), Route::kDirect);
+  EXPECT_EQ(observed_vsync_id.load(), 10);
   EXPECT_FALSE(router->HasUncommittedPlatformFrames());
 
   // A resize goes through the platform thread.
   EXPECT_CALL(*jni_mock, onBeginFrame2());
   EXPECT_CALL(*jni_mock, swapTransaction());
   EXPECT_CALL(*jni_mock, onEndFrame2());
-  submit_frame(DlISize(200, 200));
+  submit_frame(DlISize(200, 200), /*direct_vsync_id=*/20,
+               /*platform_vsync_id=*/21);
   EXPECT_EQ(observed_route.load(), Route::kPlatform);
+  EXPECT_EQ(observed_vsync_id.load(), 21);
   EXPECT_TRUE(router->HasUncommittedPlatformFrames());
 
   // The platform task ran, but Java has not reported the commit, so the next
@@ -1768,8 +1780,10 @@ TEST(AndroidExternalViewEmbedder2,
   EXPECT_CALL(*jni_mock, onBeginFrame2());
   EXPECT_CALL(*jni_mock, swapTransaction());
   EXPECT_CALL(*jni_mock, onEndFrame2());
-  submit_frame(DlISize(200, 200));
+  submit_frame(DlISize(200, 200), /*direct_vsync_id=*/30,
+               /*platform_vsync_id=*/31);
   EXPECT_EQ(observed_route.load(), Route::kPlatform);
+  EXPECT_EQ(observed_vsync_id.load(), 31);
   EXPECT_TRUE(router->HasUncommittedPlatformFrames());
 
   // Both platform frames commit.
@@ -1781,8 +1795,10 @@ TEST(AndroidExternalViewEmbedder2,
   EXPECT_CALL(*jni_mock, onBeginFrame2()).Times(0);
   EXPECT_CALL(*jni_mock, swapTransaction()).Times(0);
   EXPECT_CALL(*jni_mock, onEndFrame2()).Times(0);
-  submit_frame(DlISize(200, 200));
+  submit_frame(DlISize(200, 200), /*direct_vsync_id=*/40,
+               /*platform_vsync_id=*/41);
   EXPECT_EQ(observed_route.load(), Route::kDirect);
+  EXPECT_EQ(observed_vsync_id.load(), 40);
 
   embedder->Teardown();
   embedder.reset();

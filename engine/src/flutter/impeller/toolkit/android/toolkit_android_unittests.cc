@@ -86,9 +86,22 @@ TEST(ToolkitAndroidTest, CanApplySurfaceTransaction) {
   ASSERT_TRUE(SurfaceTransaction::IsAvailableOnPlatform());
   SurfaceTransaction transaction;
   ASSERT_TRUE(transaction.IsValid());
+  if (GetProcTable().ASurfaceTransaction_setFrameTimeline.IsAvailable()) {
+    EXPECT_TRUE(transaction.SetFrameTimeline(42));
+  }
   fml::AutoResetWaitableEvent event;
   ASSERT_TRUE(transaction.Apply([&event](auto) { event.Signal(); }));
   event.Wait();
+}
+
+TEST(ToolkitAndroidTest, SurfaceTransactionSetFrameTimelineIfAPIUnavailable) {
+  if (!SurfaceTransaction::IsAvailableOnPlatform()) {
+    GTEST_SKIP() << "Surface controls are not supported on this platform.";
+  }
+  DISABLE_ANDROID_PROC(ASurfaceTransaction_setFrameTimeline);
+  SurfaceTransaction transaction;
+  ASSERT_TRUE(transaction.IsValid());
+  EXPECT_FALSE(transaction.SetFrameTimeline(42));
 }
 
 TEST(ToolkitAndroidTest, SurfacControlsAreAvailable) {
@@ -112,6 +125,17 @@ TEST(ToolkitAndroidTest, CanPostAndNotWaitForFrameCallbacks) {
   const auto& choreographer = Choreographer::GetInstance();
   ASSERT_TRUE(choreographer.IsValid());
   ASSERT_TRUE(choreographer.PostFrameCallback([](auto) {}));
+  ASSERT_TRUE(choreographer.PostVsyncCallback([](const auto&) {}));
+}
+
+TEST(ToolkitAndroidTest, CanPostVsyncCallbacksWithFallback) {
+  if (!Choreographer::IsAvailableOnPlatform()) {
+    GTEST_SKIP() << "Choreographer is not supported on this platform.";
+  }
+  DISABLE_ANDROID_PROC(AChoreographer_postVsyncCallback);
+  const auto& choreographer = Choreographer::GetInstance();
+  ASSERT_TRUE(choreographer.IsValid());
+  ASSERT_TRUE(choreographer.PostVsyncCallback([](const auto&) {}));
 }
 
 TEST(ToolkitAndroidTest, CanPostAndWaitForFrameCallbacks) {

@@ -93,15 +93,32 @@ bool AndroidSurfaceVKImpeller::SetNativeWindow(
     // The embedder latches the route for the whole frame submission; see
     // |SurfaceTransactionRouter|. Without a router every frame goes through
     // the platform thread.
-    if (router &&
-        router->GetFrameRoute() == SurfaceTransactionRouter::Route::kDirect) {
-      return impeller::android::SurfaceTransaction();
+    impeller::android::SurfaceTransaction transaction = [&]() {
+      if (router &&
+          router->GetFrameRoute() == SurfaceTransactionRouter::Route::kDirect) {
+        return impeller::android::SurfaceTransaction();
+      }
+      ASurfaceTransaction* tx = jni_facade->createTransaction();
+      if (tx == nullptr) {
+        return impeller::android::SurfaceTransaction();
+      }
+      return impeller::android::SurfaceTransaction(tx);
+    }();
+    if (router) {
+      // For Route::kDirect, this is the preferred timeline vsync ID (1-vsync
+      // deadline). For Route::kPlatform, this is the next timeline vsync ID
+      // (2-vsync deadline) to match the next ViewRootImpl traversal where
+      // applyTransactionOnDraw is applied; note that when ViewRootImpl draws a
+      // buffer on that traversal, AOSP's
+      // SurfaceComposerClient::Transaction::mergeFrameTimelineInfo currently
+      // overwrites older vsync IDs with newer ones until that AOSP bug is
+      // fixed.
+      const int64_t vsync_id = router->GetFrameTimelineVsyncId();
+      if (vsync_id != SurfaceTransactionRouter::kInvalidVsyncId) {
+        transaction.SetFrameTimeline(vsync_id);
+      }
     }
-    ASurfaceTransaction* tx = jni_facade->createTransaction();
-    if (tx == nullptr) {
-      return impeller::android::SurfaceTransaction();
-    }
-    return impeller::android::SurfaceTransaction(tx);
+    return transaction;
   };
 
   auto swapchain = impeller::SwapchainVK::Create(

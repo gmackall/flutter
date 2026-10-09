@@ -138,6 +138,18 @@ class SurfaceTransaction {
   [[nodiscard]] bool SetParent(const SurfaceControl& control,
                                const SurfaceControl* new_parent = nullptr);
 
+  //----------------------------------------------------------------------------
+  /// @brief      Encodes the Choreographer frame timeline (vsync ID) on the
+  ///             transaction so SurfaceFlinger can pace the frame and score
+  ///             jank against the corresponding deadline.
+  ///
+  /// @param[in]  vsync_id  The vsync ID obtained from
+  ///                       `AChoreographerFrameCallbackData_getFrameTimelineVsyncId`.
+  ///
+  /// @return     `true` if the frame timeline was set on the transaction.
+  ///
+  bool SetFrameTimeline(AVsyncId vsync_id);
+
  private:
   struct UniqueASurfaceTransactionTraits {
     static WrappedSurfaceTransaction InvalidValue() { return {}; }

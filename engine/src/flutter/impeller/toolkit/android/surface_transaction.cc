@@ -112,6 +112,16 @@ bool SurfaceTransaction::SetParent(const SurfaceControl& control,
   return true;
 }
 
+bool SurfaceTransaction::SetFrameTimeline(AVsyncId vsync_id) {
+  if (!IsValid() ||
+      !GetProcTable().ASurfaceTransaction_setFrameTimeline.IsAvailable()) {
+    return false;
+  }
+  GetProcTable().ASurfaceTransaction_setFrameTimeline(transaction_.get().tx,
+                                                      vsync_id);
+  return true;
+}
+
 bool SurfaceTransaction::IsAvailableOnPlatform() {
   return GetProcTable().IsValid() &&
          GetProcTable().ASurfaceTransaction_create.IsAvailable();

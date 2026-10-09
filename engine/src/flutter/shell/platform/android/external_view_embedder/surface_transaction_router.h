@@ -43,6 +43,8 @@ namespace flutter {
 ///
 class SurfaceTransactionRouter {
  public:
+  static constexpr int64_t kInvalidVsyncId = -1;
+
   enum class Route {
     kDirect,
     kPlatform,
@@ -71,6 +73,58 @@ class SurfaceTransactionRouter {
   Route GetFrameRoute() const;
 
   //----------------------------------------------------------------------------
+  /// @brief      Records the Choreographer frame timeline vsync IDs for the
+  ///             vsync that is starting on the UI thread:
+  ///
+  ///             - |direct_vsync_id|: the platform-preferred timeline vsync ID
+  ///               (`preferredFrameTimelineIndex`, 1-vsync deadline), used when
+  ///               the swapchain applies its transaction directly on the raster
+  ///               thread (|Route::kDirect|).
+  ///             - |platform_vsync_id|: the next timeline vsync ID
+  ///               (`preferredFrameTimelineIndex + 1`, 2-vsync deadline), used
+  ///               when the transaction is routed through the platform thread
+  ///               (|Route::kPlatform|) and handed to ViewRootImpl via
+  ///               `AttachedSurfaceControl.applyTransactionOnDraw` to be
+  ///               applied on the next View hierarchy traversal.
+  ///
+  ///               NOTE: When ViewRootImpl draws a buffer on that traversal,
+  ///               `BLASTBufferQueue` merges the `applyTransactionOnDraw`
+  ///               transaction into its buffer transaction. Due to an AOSP bug
+  ///               in
+  ///               `SurfaceComposerClient::Transaction::mergeFrameTimelineInfo`
+  ///               (`SurfaceComposerClient.cpp`, which checks
+  ///               `other.vsyncId > t.vsyncId` instead of `<` despite its
+  ///               comment stating "When merging vsync Ids we take the oldest
+  ///               valid one"), ViewRootImpl's newer vsync ID overwrites
+  ///               |platform_vsync_id| until that AOSP bug is fixed.
+  ///
+  /// @note       Thread safe.
+  ///
+  void SetVsyncTimeline(int64_t direct_vsync_id, int64_t platform_vsync_id);
+
+  //----------------------------------------------------------------------------
+  /// @brief      Snapshots the latest vsync timeline recorded by
+  ///             |SetVsyncTimeline| for the raster frame that is starting, so
+  ///             that a subsequent UI-thread vsync arriving while the raster
+  ///             thread is still rendering does not overwrite this frame's
+  ///             vsync IDs before submission.
+  ///
+  /// @note       Raster thread only.
+  ///
+  void LatchVsyncTimeline();
+
+  //----------------------------------------------------------------------------
+  /// @brief      Returns the frame timeline vsync ID matching the current
+  ///             |GetFrameRoute|: the direct vsync ID (`preferredIndex`) for
+  ///             |Route::kDirect|, or the platform vsync ID
+  ///             (`preferredIndex + 1`) for |Route::kPlatform|. Returns
+  ///             |kInvalidVsyncId| if no timeline has been recorded.
+  ///
+  /// @note       Raster thread only.
+  ///
+  int64_t GetFrameTimelineVsyncId() const;
+
+  //----------------------------------------------------------------------------
   /// @brief      Records that a frame was handed to the platform thread.
   ///
   /// @note       Thread safe.
@@ -97,7 +151,12 @@ class SurfaceTransactionRouter {
  private:
   // Raster thread only.
   Route frame_route_ = Route::kDirect;
+  bool vsync_timeline_latched_ = false;
+  int64_t latched_direct_vsync_id_ = kInvalidVsyncId;
+  int64_t latched_platform_vsync_id_ = kInvalidVsyncId;
 
+  std::atomic<int64_t> pending_direct_vsync_id_{kInvalidVsyncId};
+  std::atomic<int64_t> pending_platform_vsync_id_{kInvalidVsyncId};
   std::atomic<int32_t> uncommitted_platform_frames_{0};
 
   FML_DISALLOW_COPY_AND_ASSIGN(SurfaceTransactionRouter);

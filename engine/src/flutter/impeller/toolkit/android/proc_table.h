@@ -45,6 +45,11 @@ ASurfaceTransaction* ASurfaceTransaction_fromJava(JNIEnv* env,
   INVOKE(AChoreographer_postFrameCallback, 24)                     \
   _Pragma("GCC diagnostic pop")                                    \
   INVOKE(AChoreographer_postFrameCallback64, 29)                   \
+  INVOKE(AChoreographer_postVsyncCallback, 33)                     \
+  INVOKE(AChoreographerFrameCallbackData_getFrameTimeNanos, 33)    \
+  INVOKE(AChoreographerFrameCallbackData_getFrameTimelinesLength, 33) \
+  INVOKE(AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex, 33) \
+  INVOKE(AChoreographerFrameCallbackData_getFrameTimelineVsyncId, 33) \
   INVOKE(AHardwareBuffer_acquire, 26)                              \
   INVOKE(AHardwareBuffer_allocate, 26)                             \
   INVOKE(AHardwareBuffer_describe, 26)                             \
@@ -66,6 +71,7 @@ ASurfaceTransaction* ASurfaceTransaction_fromJava(JNIEnv* env,
   INVOKE(ASurfaceTransaction_reparent, 29)                         \
   INVOKE(ASurfaceTransaction_setBuffer, 29)                        \
   INVOKE(ASurfaceTransaction_setColor, 29)                         \
+  INVOKE(ASurfaceTransaction_setFrameTimeline, 33)                 \
   INVOKE(ASurfaceTransaction_setOnComplete, 29)                    \
   INVOKE(ASurfaceTransactionStats_getPreviousReleaseFenceFd, 29)   \
   INVOKE(ASurfaceTransaction_fromJava, 34)                         \

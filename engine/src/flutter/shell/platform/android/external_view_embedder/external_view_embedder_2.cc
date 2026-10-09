@@ -307,6 +307,7 @@ void AndroidExternalViewEmbedder2::PrepareFlutterView(
     DlISize frame_size,
     double device_pixel_ratio) {
   Reset();
+  transaction_router_->LatchVsyncTimeline();
 
   // The singular overlay surface is persistent, so it is resized in place by
   // |SurfacePool::GetLayer| rather than destroyed and recreated here.
