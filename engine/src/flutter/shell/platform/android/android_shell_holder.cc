@@ -160,18 +160,38 @@ AndroidShellHolder::AndroidShellHolder(
       static_cast<int64_t>(1e9 / refresh_rate);
   nominal_frame_interval_ns_ =
       std::make_shared<std::atomic<int64_t>>(initial_nominal_interval_ns);
+  char adpf_mode_prop[PROP_VALUE_MAX] = {0};
+  const bool has_adpf_prop =
+      __system_property_get("debug.flutter.adpf_mode", adpf_mode_prop) > 0;
+  const bool is_phase4_mode =
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "phase4") == 0;
+  const bool is_single_vsync_clamp =
+      has_adpf_prop && (std::strcmp(adpf_mode_prop, "target_6.25ms") == 0 ||
+                        std::strcmp(adpf_mode_prop, "target_8.3ms") == 0);
+  const bool is_full_vsync_target =
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "target_8.3ms") == 0;
+  const double target_work_ratio =
+      is_full_vsync_target ? 1.0 : kTargetFrameWorkRatio;
+
+  // Because the ADPF session includes both the UI and Raster threads and
+  // reports cpu_duration_ns = build_ns + raster_ns (the sum of two pipelined
+  // stages), the nominal 2-stage pipeline horizon is 2 * vsync_interval
+  // (~16.6ms at 120Hz -> 12.45ms target at 0.75 ratio). Clamping to 1 *
+  // vsync_interval (6.25ms target) causes PowerHAL's JankCheckTimeFactor (1.2x
+  // = 7.5ms) to trigger heuristic boost whenever build + raster > 7.5ms even on
+  // light 120Hz scrolls (+84% CPU power). Clamping to 2 * vsync_interval
+  // preserves the 2-stage pipeline budget while still preventing 3-4 VSync
+  // target inflation during SurfaceFlinger buffer stuffing.
+  const int64_t initial_pipeline_interval_ns =
+      is_single_vsync_clamp ? initial_nominal_interval_ns
+                            : (initial_nominal_interval_ns * 2);
   int64_t target_duration_ns =
-      static_cast<int64_t>(initial_nominal_interval_ns * kTargetFrameWorkRatio);
+      static_cast<int64_t>(initial_pipeline_interval_ns * target_work_ratio);
 
   if (!tids.empty()) {
     performance_hint_manager_ =
         AndroidPerformanceHintManager::Create(tids, target_duration_ns);
   }
-
-  char adpf_mode_prop[PROP_VALUE_MAX] = {0};
-  const bool is_phase4_mode =
-      (__system_property_get("debug.flutter.adpf_mode", adpf_mode_prop) > 0 &&
-       std::strcmp(adpf_mode_prop, "phase4") == 0);
 
   flutter::Settings shell_settings = settings_;
   if (performance_hint_manager_) {
@@ -181,7 +201,10 @@ AndroidShellHolder::AndroidShellHolder(
                                                     performance_hint_manager_,
                                                 nominal_interval =
                                                     nominal_frame_interval_ns_,
-                                                is_phase4_mode, prev_callback](
+                                                is_phase4_mode,
+                                                is_single_vsync_clamp,
+                                                target_work_ratio,
+                                                prev_callback](
                                                    const FrameTiming& timing) {
       if (prev_callback) {
         prev_callback(timing);
@@ -193,19 +216,13 @@ AndroidShellHolder::AndroidShellHolder(
       if (deadline_ns > vsync_start_ns) {
         int64_t frame_interval_ns = deadline_ns - vsync_start_ns;
         if (!is_phase4_mode) {
-          // SurfaceFlinger's preferred frame timeline deadline represents
-          // the end-to-end pipeline latch horizon (~2 VSync periods, e.g.
-          // 16.6ms at 120Hz, or 25ms+ when buffer-stuffed). Because ADPF
-          // compares actual CPU duration (UI build + Raster) against
-          // targetWorkDuration on every frame, using the 2-frame latch
-          // horizon sets a 12.45ms target at 120Hz—causing 8.5-12ms frames
-          // (which miss 120Hz) to report negative PID error and downclock.
-          // Clamp to the single-frame VSync interval (with a 4ms sanity
-          // floor) so the ADPF target matches the true per-frame budget.
           if (nominal_interval) {
-            const int64_t max_interval_ns =
+            const int64_t base_interval_ns =
                 nominal_interval->load(std::memory_order_relaxed);
-            if (max_interval_ns > 0) {
+            if (base_interval_ns > 0) {
+              const int64_t max_interval_ns = is_single_vsync_clamp
+                                                  ? base_interval_ns
+                                                  : (base_interval_ns * 2);
               frame_interval_ns = std::min(frame_interval_ns, max_interval_ns);
             }
           }
@@ -214,7 +231,7 @@ AndroidShellHolder::AndroidShellHolder(
               std::max(frame_interval_ns, kMinValidFrameIntervalNs);
         }
         int64_t dynamic_target_ns =
-            static_cast<int64_t>(frame_interval_ns * kTargetFrameWorkRatio);
+            static_cast<int64_t>(frame_interval_ns * target_work_ratio);
         perf_hint->UpdateTargetWorkDuration(dynamic_target_ns);
       }
       int64_t total_duration_ns = 0;

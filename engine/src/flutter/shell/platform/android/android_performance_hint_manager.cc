@@ -40,6 +40,8 @@ constexpr double kWorkloadSpikeFactor = 1.2;
 
 enum class AdpfRuntimeMode {
   kImproved,
+  kTarget6_25ms,
+  kTarget8_3ms,
   kPhase4,
   kOff,
 };
@@ -54,8 +56,20 @@ AdpfRuntimeMode GetAdpfRuntimeMode() {
     if (std::strcmp(prop, "phase4") == 0) {
       return AdpfRuntimeMode::kPhase4;
     }
+    if (std::strcmp(prop, "target_8.3ms") == 0) {
+      return AdpfRuntimeMode::kTarget8_3ms;
+    }
+    if (std::strcmp(prop, "target_6.25ms") == 0) {
+      return AdpfRuntimeMode::kTarget6_25ms;
+    }
   }
   return AdpfRuntimeMode::kImproved;
+}
+
+bool ModeEnablesHints(AdpfRuntimeMode mode) {
+  return mode == AdpfRuntimeMode::kImproved ||
+         mode == AdpfRuntimeMode::kTarget6_25ms ||
+         mode == AdpfRuntimeMode::kTarget8_3ms;
 }
 }  // namespace
 
@@ -306,7 +320,7 @@ AndroidPerformanceHintManager::AndroidPerformanceHintManager(
 AndroidPerformanceHintManager::~AndroidPerformanceHintManager() = default;
 
 void AndroidPerformanceHintManager::NotifyWorkloadReset() {
-  if (!impl_ || impl_->mode != AdpfRuntimeMode::kImproved) {
+  if (!impl_ || !ModeEnablesHints(impl_->mode)) {
     return;
   }
   const int64_t now_ns = fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
@@ -360,7 +374,7 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
   // already elevated above UclampMin_LoadUp (480).
   const int64_t prev_cpu_duration_ns = impl_->last_cpu_duration_ns;
   impl_->last_cpu_duration_ns = actual_cpu_duration_ns;
-  if (impl_->mode == AdpfRuntimeMode::kImproved && impl_->send_hint &&
+  if (ModeEnablesHints(impl_->mode) && impl_->send_hint &&
       impl_->applied_target_duration_ns > 0 && prev_cpu_duration_ns > 0 &&
       prev_cpu_duration_ns <= impl_->applied_target_duration_ns &&
       actual_cpu_duration_ns >
