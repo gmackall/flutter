@@ -115,6 +115,19 @@ void AndroidExternalViewEmbedderWrapper::BeginFrame(
 }
 
 // |ExternalViewEmbedder|
+void AndroidExternalViewEmbedderWrapper::SetFrameTimelineVsyncIds(
+    int64_t direct_vsync_id,
+    int64_t platform_vsync_id) {
+  EnsureInitialized();
+  if (hcpp_view_embedder_) {
+    hcpp_view_embedder_->SetFrameTimelineVsyncIds(direct_vsync_id,
+                                                  platform_vsync_id);
+  } else if (transaction_router_) {
+    transaction_router_->SetVsyncTimeline(direct_vsync_id, platform_vsync_id);
+  }
+}
+
+// |ExternalViewEmbedder|
 void AndroidExternalViewEmbedderWrapper::PrepareFlutterView(
     DlISize frame_size,
     double device_pixel_ratio) {

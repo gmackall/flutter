@@ -303,11 +303,17 @@ void AndroidExternalViewEmbedder2::BeginFrame(
     const fml::RefPtr<fml::RasterThreadMerger>& raster_thread_merger) {}
 
 // |ExternalViewEmbedder|
+void AndroidExternalViewEmbedder2::SetFrameTimelineVsyncIds(
+    int64_t direct_vsync_id,
+    int64_t platform_vsync_id) {
+  transaction_router_->SetVsyncTimeline(direct_vsync_id, platform_vsync_id);
+}
+
+// |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder2::PrepareFlutterView(
     DlISize frame_size,
     double device_pixel_ratio) {
   Reset();
-  transaction_router_->LatchVsyncTimeline();
 
   // The singular overlay surface is persistent, so it is resized in place by
   // |SurfacePool::GetLayer| rather than destroyed and recreated here.

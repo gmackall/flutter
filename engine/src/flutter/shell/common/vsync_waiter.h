@@ -54,8 +54,11 @@ class VsyncWaiter : public std::enable_shared_from_this<VsyncWaiter> {
 
   // Schedules the callback on the UI task runner. Needs to be invoked as close
   // to the `frame_start_time` as possible.
-  void FireCallback(fml::TimePoint frame_start_time,
-                    fml::TimePoint frame_target_time);
+  void FireCallback(
+      fml::TimePoint frame_start_time,
+      fml::TimePoint frame_target_time,
+      int64_t preferred_vsync_id = FrameTimingsRecorder::kInvalidVsyncId,
+      int64_t next_vsync_id = FrameTimingsRecorder::kInvalidVsyncId);
 
  private:
   void PauseDartEventLoopTasks();

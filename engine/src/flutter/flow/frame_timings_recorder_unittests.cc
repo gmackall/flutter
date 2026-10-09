@@ -27,6 +27,22 @@ TEST(FrameTimingsRecorderTest, RecordVsync) {
 
   ASSERT_EQ(st, recorder->GetVsyncStartTime());
   ASSERT_EQ(en, recorder->GetVsyncTargetTime());
+  ASSERT_EQ(FrameTimingsRecorder::kInvalidVsyncId,
+            recorder->GetPreferredVsyncId());
+  ASSERT_EQ(FrameTimingsRecorder::kInvalidVsyncId, recorder->GetNextVsyncId());
+}
+
+TEST(FrameTimingsRecorderTest, RecordVsyncWithVsyncIds) {
+  auto recorder = std::make_unique<FrameTimingsRecorder>();
+  const auto st = fml::TimePoint::Now();
+  const auto en = st + fml::TimeDelta::FromMillisecondsF(16);
+  recorder->RecordVsync(st, en, /*preferred_vsync_id=*/101,
+                        /*next_vsync_id=*/102);
+
+  ASSERT_EQ(st, recorder->GetVsyncStartTime());
+  ASSERT_EQ(en, recorder->GetVsyncTargetTime());
+  ASSERT_EQ(101, recorder->GetPreferredVsyncId());
+  ASSERT_EQ(102, recorder->GetNextVsyncId());
 }
 
 TEST(FrameTimingsRecorderTest, RecordBuildTimes) {
@@ -170,12 +186,15 @@ TEST(FrameTimingsRecorderTest, ClonedHasSameVsyncStartAndTarget) {
   auto recorder = std::make_unique<FrameTimingsRecorder>();
 
   const auto now = fml::TimePoint::Now();
-  recorder->RecordVsync(now, now + fml::TimeDelta::FromMilliseconds(16));
+  recorder->RecordVsync(now, now + fml::TimeDelta::FromMilliseconds(16),
+                        /*preferred_vsync_id=*/201, /*next_vsync_id=*/202);
 
   auto cloned = recorder->CloneUntil(FrameTimingsRecorder::State::kVsync);
   ASSERT_EQ(recorder->GetFrameNumber(), cloned->GetFrameNumber());
   ASSERT_EQ(recorder->GetVsyncStartTime(), cloned->GetVsyncStartTime());
   ASSERT_EQ(recorder->GetVsyncTargetTime(), cloned->GetVsyncTargetTime());
+  ASSERT_EQ(201, cloned->GetPreferredVsyncId());
+  ASSERT_EQ(202, cloned->GetNextVsyncId());
 }
 
 TEST(FrameTimingsRecorderTest, ClonedHasSameBuildStart) {

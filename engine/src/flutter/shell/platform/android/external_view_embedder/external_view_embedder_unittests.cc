@@ -1732,12 +1732,9 @@ TEST(AndroidExternalViewEmbedder2,
   SurfaceFrame::FramebufferInfo framebuffer_info;
   auto submit_frame = [&](const DlISize& size, int64_t direct_vsync_id,
                           int64_t platform_vsync_id) {
-    router->SetVsyncTimeline(direct_vsync_id, platform_vsync_id);
-    embedder->PrepareFlutterView(size, 1.0);
-    // Simulate a subsequent UI vsync arriving while the raster frame is in
-    // flight; PrepareFlutterView must have already latched this frame's IDs.
-    router->SetVsyncTimeline(direct_vsync_id + 1000, platform_vsync_id + 1000);
     PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
+      embedder->SetFrameTimelineVsyncIds(direct_vsync_id, platform_vsync_id);
+      embedder->PrepareFlutterView(size, 1.0);
       embedder->SubmitFlutterView(
           kImplicitViewId, nullptr, nullptr,
           std::make_unique<SurfaceFrame>(

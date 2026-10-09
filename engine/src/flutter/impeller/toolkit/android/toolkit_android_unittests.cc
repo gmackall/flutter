@@ -138,6 +138,84 @@ TEST(ToolkitAndroidTest, CanPostVsyncCallbacksWithFallback) {
   ASSERT_TRUE(choreographer.PostVsyncCallback([](const auto&) {}));
 }
 
+TEST(ToolkitAndroidTest, PostVsyncCallbackExtractsPreferredAndNextVsyncIds) {
+  if (!Choreographer::IsAvailableOnPlatform()) {
+    GTEST_SKIP() << "Choreographer is not supported on this platform.";
+  }
+  const auto& choreographer = Choreographer::GetInstance();
+  ASSERT_TRUE(choreographer.IsValid());
+
+  auto& table = GetMutableProcTable();
+  const auto orig_post_vsync = table.AChoreographer_postVsyncCallback.proc;
+  const auto orig_get_time =
+      table.AChoreographerFrameCallbackData_getFrameTimeNanos.proc;
+  const auto orig_get_len =
+      table.AChoreographerFrameCallbackData_getFrameTimelinesLength.proc;
+  const auto orig_get_pref =
+      table.AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex.proc;
+  const auto orig_get_id =
+      table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId.proc;
+
+  struct ScopedRestore {
+    std::function<void()> restore;
+    ~ScopedRestore() { restore(); }
+  } restore{[&]() {
+    table.AChoreographer_postVsyncCallback.proc = orig_post_vsync;
+    table.AChoreographerFrameCallbackData_getFrameTimeNanos.proc =
+        orig_get_time;
+    table.AChoreographerFrameCallbackData_getFrameTimelinesLength.proc =
+        orig_get_len;
+    table.AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex.proc =
+        orig_get_pref;
+    table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId.proc =
+        orig_get_id;
+  }};
+
+  static size_t fake_timelines_length = 7;
+  static size_t fake_preferred_index = 0;
+
+  table.AChoreographer_postVsyncCallback.proc =
+      [](AChoreographer*, AChoreographer_vsyncCallback callback, void* data) {
+        callback(reinterpret_cast<const AChoreographerFrameCallbackData*>(0x1),
+                 data);
+      };
+  table.AChoreographerFrameCallbackData_getFrameTimeNanos.proc =
+      [](const AChoreographerFrameCallbackData*) -> int64_t {
+    return 123456789LL;
+  };
+  table.AChoreographerFrameCallbackData_getFrameTimelinesLength.proc =
+      [](const AChoreographerFrameCallbackData*) -> size_t {
+    return fake_timelines_length;
+  };
+  table.AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex.proc =
+      [](const AChoreographerFrameCallbackData*) -> size_t {
+    return fake_preferred_index;
+  };
+  table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId.proc =
+      [](const AChoreographerFrameCallbackData*, size_t index) -> AVsyncId {
+    return static_cast<AVsyncId>(1000 + index);
+  };
+
+  // Multi-timeline case (standard 7 timelines): preferred = 1000, next = 1001.
+  Choreographer::VsyncData observed{};
+  ASSERT_TRUE(choreographer.PostVsyncCallback(
+      [&](const Choreographer::VsyncData& data) { observed = data; }));
+  EXPECT_EQ(observed.frame_time,
+            Choreographer::FrameTimePoint{std::chrono::nanoseconds(123456789)});
+  EXPECT_EQ(observed.preferred_vsync_id, 1000);
+  EXPECT_EQ(observed.next_vsync_id, 1001);
+
+  // Single-timeline edge case (preferred_idx + 1 == timelines_length):
+  // next_vsync_id must stay kInvalidVsyncId rather than clamping to preferred.
+  fake_timelines_length = 1;
+  fake_preferred_index = 0;
+  observed = {};
+  ASSERT_TRUE(choreographer.PostVsyncCallback(
+      [&](const Choreographer::VsyncData& data) { observed = data; }));
+  EXPECT_EQ(observed.preferred_vsync_id, 1000);
+  EXPECT_EQ(observed.next_vsync_id, Choreographer::kInvalidVsyncId);
+}
+
 TEST(ToolkitAndroidTest, CanPostAndWaitForFrameCallbacks) {
   if (!Choreographer::IsAvailableOnPlatform()) {
     GTEST_SKIP() << "Choreographer is not supported on this platform.";

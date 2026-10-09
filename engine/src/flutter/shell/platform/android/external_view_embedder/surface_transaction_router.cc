@@ -21,29 +21,12 @@ SurfaceTransactionRouter::Route SurfaceTransactionRouter::GetFrameRoute()
 
 void SurfaceTransactionRouter::SetVsyncTimeline(int64_t direct_vsync_id,
                                                 int64_t platform_vsync_id) {
-  pending_direct_vsync_id_.store(direct_vsync_id, std::memory_order_release);
-  pending_platform_vsync_id_.store(platform_vsync_id,
-                                   std::memory_order_release);
-}
-
-void SurfaceTransactionRouter::LatchVsyncTimeline() {
-  latched_direct_vsync_id_ =
-      pending_direct_vsync_id_.load(std::memory_order_acquire);
-  latched_platform_vsync_id_ =
-      pending_platform_vsync_id_.load(std::memory_order_acquire);
-  vsync_timeline_latched_ = true;
+  direct_vsync_id_ = direct_vsync_id;
+  platform_vsync_id_ = platform_vsync_id;
 }
 
 int64_t SurfaceTransactionRouter::GetFrameTimelineVsyncId() const {
-  const int64_t direct_id =
-      vsync_timeline_latched_
-          ? latched_direct_vsync_id_
-          : pending_direct_vsync_id_.load(std::memory_order_acquire);
-  const int64_t platform_id =
-      vsync_timeline_latched_
-          ? latched_platform_vsync_id_
-          : pending_platform_vsync_id_.load(std::memory_order_acquire);
-  return frame_route_ == Route::kDirect ? direct_id : platform_id;
+  return frame_route_ == Route::kDirect ? direct_vsync_id_ : platform_vsync_id_;
 }
 
 void SurfaceTransactionRouter::OnPlatformFrameSubmitted() {

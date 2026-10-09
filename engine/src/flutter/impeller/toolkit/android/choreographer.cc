@@ -117,12 +117,11 @@ bool Choreographer::PostVsyncCallback(VsyncCallback callback) const {
             vsync_data.preferred_vsync_id =
                 table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId(
                     frame_data, preferred_idx);
-            const size_t next_idx = preferred_idx + 1 < timelines_length
-                                        ? preferred_idx + 1
-                                        : preferred_idx;
-            vsync_data.next_vsync_id =
-                table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId(
-                    frame_data, next_idx);
+            if (preferred_idx + 1 < timelines_length) {
+              vsync_data.next_vsync_id =
+                  table.AChoreographerFrameCallbackData_getFrameTimelineVsyncId(
+                      frame_data, preferred_idx + 1);
+            }
           }
 
           data->callback(vsync_data);

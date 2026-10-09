@@ -686,6 +686,9 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   if (external_view_embedder_) {
     FML_DCHECK(!external_view_embedder_->GetUsedThisFrame());
     external_view_embedder_->SetUsedThisFrame(true);
+    external_view_embedder_->SetFrameTimelineVsyncIds(
+        frame_timings_recorder.GetPreferredVsyncId(),
+        frame_timings_recorder.GetNextVsyncId());
     external_view_embedder_->BeginFrame(surface_->GetContext(),
                                         raster_thread_merger_);
   }

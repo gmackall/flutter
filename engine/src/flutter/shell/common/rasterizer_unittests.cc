@@ -104,6 +104,10 @@ class MockExternalViewEmbedder : public ExternalViewEmbedder {
        const fml::RefPtr<fml::RasterThreadMerger>& raster_thread_merger),
       (override));
   MOCK_METHOD(void,
+              SetFrameTimelineVsyncIds,
+              (int64_t direct_vsync_id, int64_t platform_vsync_id),
+              (override));
+  MOCK_METHOD(void,
               PrepareFlutterView,
               (DlISize frame_size, double device_pixel_ratio),
               (override));
@@ -1518,6 +1522,102 @@ TEST(RasterizerTest, presentationTimeNotSetWhenVsyncTargetInPast) {
   });
   latch.Wait();
 #endif  // false
+}
+
+TEST(RasterizerTest, drawPipelineDepthTwoPreservesPerFrameVsyncIds) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  EXPECT_CALL(delegate, OnFrameRasterized(_)).Times(2);
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+
+  std::shared_ptr<NiceMock<MockExternalViewEmbedder>> external_view_embedder =
+      std::make_shared<NiceMock<MockExternalViewEmbedder>>();
+  rasterizer->SetExternalViewEmbedder(external_view_embedder);
+
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, AcquireFrame(DlISize())).WillRepeatedly([]() {
+    SurfaceFrame::FramebufferInfo framebuffer_info;
+    framebuffer_info.supports_readback = true;
+    return std::make_unique<SurfaceFrame>(
+        /*surface=*/nullptr, framebuffer_info,
+        /*encode_callback=*/[](const SurfaceFrame&, DlCanvas*) { return true; },
+        /*submit_callback=*/[](const SurfaceFrame&) { return true; },
+        /*frame_size=*/DlISize(800, 600));
+  });
+  EXPECT_CALL(*surface, MakeRenderContextCurrent()).WillOnce([]() {
+    return std::make_unique<GLContextDefaultResult>(true);
+  });
+
+  std::vector<std::pair<int64_t, int64_t>> observed_vsync_ids;
+  ON_CALL(*external_view_embedder, SetFrameTimelineVsyncIds(_, _))
+      .WillByDefault([&](int64_t direct_id, int64_t platform_id) {
+        observed_vsync_ids.emplace_back(direct_id, platform_id);
+      });
+
+  rasterizer->Setup(std::move(surface));
+  fml::AutoResetWaitableEvent latch;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    auto pipeline = std::make_shared<FramePipeline>(/*depth=*/2);
+    const auto now = fml::TimePoint::Now();
+
+    // Enqueue two frames into the depth-2 pipeline before the rasterizer
+    // consumes either one, simulating a slow prior raster frame where two UI
+    // vsyncs have produced items into the pipeline.
+    auto recorder1 = std::make_unique<FrameTimingsRecorder>();
+    recorder1->RecordVsync(now, now, /*preferred_vsync_id=*/100,
+                           /*next_vsync_id=*/101);
+    recorder1->RecordBuildStart(now);
+    recorder1->RecordBuildEnd(now);
+    auto item1 = std::make_unique<FrameItem>(
+        SingleLayerTreeList(
+            kImplicitViewId,
+            std::make_unique<LayerTree>(/*root_layer=*/nullptr, DlISize()),
+            kDevicePixelRatio),
+        std::move(recorder1));
+    EXPECT_TRUE(pipeline->Produce().Complete(std::move(item1)).success);
+
+    auto recorder2 = std::make_unique<FrameTimingsRecorder>();
+    recorder2->RecordVsync(now, now, /*preferred_vsync_id=*/200,
+                           /*next_vsync_id=*/201);
+    recorder2->RecordBuildStart(now);
+    recorder2->RecordBuildEnd(now);
+    auto item2 = std::make_unique<FrameItem>(
+        SingleLayerTreeList(
+            kImplicitViewId,
+            std::make_unique<LayerTree>(/*root_layer=*/nullptr, DlISize()),
+            kDevicePixelRatio),
+        std::move(recorder2));
+    EXPECT_TRUE(pipeline->Produce().Complete(std::move(item2)).success);
+
+    ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+    rasterizer->Draw(pipeline);
+  });
+  // Rasterizer::Draw consumes the first item and posts a continuation task on
+  // the raster task runner to consume the second item; wait after that task.
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    thread_host.raster_thread->GetTaskRunner()->PostTask(
+        [&] { latch.Signal(); });
+  });
+  latch.Wait();
+
+  ASSERT_EQ(observed_vsync_ids.size(), 2u);
+  EXPECT_EQ(observed_vsync_ids[0], std::make_pair(int64_t{100}, int64_t{101}));
+  EXPECT_EQ(observed_vsync_ids[1], std::make_pair(int64_t{200}, int64_t{201}));
 }
 
 }  // namespace flutter

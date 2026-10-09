@@ -20,11 +20,8 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_vsync_waiter_class = nullptr;
 static jmethodID g_async_wait_for_vsync_method_ = nullptr;
 static std::atomic_uint g_refresh_rate_ = 60;
 
-VsyncWaiterAndroid::VsyncWaiterAndroid(
-    const flutter::TaskRunners& task_runners,
-    std::shared_ptr<SurfaceTransactionRouter> transaction_router)
-    : VsyncWaiter(task_runners),
-      transaction_router_(std::move(transaction_router)) {}
+VsyncWaiterAndroid::VsyncWaiterAndroid(const flutter::TaskRunners& task_runners)
+    : VsyncWaiter(task_runners) {}
 
 VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 
@@ -87,14 +84,8 @@ void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos,
                    target_time.ToEpochDelta().ToMicroseconds());
 
   auto* weak_this = reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(data);
-  if (auto shared_this = weak_this->lock()) {
-    auto* android_waiter = static_cast<VsyncWaiterAndroid*>(shared_this.get());
-    if (android_waiter->transaction_router_) {
-      android_waiter->transaction_router_->SetVsyncTimeline(preferred_vsync_id,
-                                                            next_vsync_id);
-    }
-  }
-  ConsumePendingCallback(weak_this, frame_time, target_time);
+  ConsumePendingCallback(weak_this, frame_time, target_time,
+                         preferred_vsync_id, next_vsync_id);
 }
 
 // static
@@ -121,12 +112,15 @@ void VsyncWaiterAndroid::OnVsyncFromJava(JNIEnv* env,
 void VsyncWaiterAndroid::ConsumePendingCallback(
     std::weak_ptr<VsyncWaiter>* weak_this,
     fml::TimePoint frame_start_time,
-    fml::TimePoint frame_target_time) {
+    fml::TimePoint frame_target_time,
+    int64_t preferred_vsync_id,
+    int64_t next_vsync_id) {
   auto shared_this = weak_this->lock();
   delete weak_this;
 
   if (shared_this) {
-    shared_this->FireCallback(frame_start_time, frame_target_time);
+    shared_this->FireCallback(frame_start_time, frame_target_time,
+                              preferred_vsync_id, next_vsync_id);
   }
 }
 

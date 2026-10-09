@@ -60,6 +60,10 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
                       raster_thread_merger) override;
 
   // |ExternalViewEmbedder|
+  void SetFrameTimelineVsyncIds(int64_t direct_vsync_id,
+                                int64_t platform_vsync_id) override;
+
+  // |ExternalViewEmbedder|
   void PrepareFlutterView(DlISize frame_size,
                           double device_pixel_ratio) override;
 

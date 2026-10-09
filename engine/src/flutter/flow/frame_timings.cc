@@ -62,6 +62,18 @@ fml::TimePoint FrameTimingsRecorder::GetVsyncTargetTime() const {
   return vsync_target_;
 }
 
+int64_t FrameTimingsRecorder::GetPreferredVsyncId() const {
+  std::scoped_lock state_lock(state_mutex_);
+  FML_DCHECK(state_ >= State::kVsync);
+  return preferred_vsync_id_;
+}
+
+int64_t FrameTimingsRecorder::GetNextVsyncId() const {
+  std::scoped_lock state_lock(state_mutex_);
+  FML_DCHECK(state_ >= State::kVsync);
+  return next_vsync_id_;
+}
+
 fml::TimePoint FrameTimingsRecorder::GetBuildStartTime() const {
   std::scoped_lock state_lock(state_mutex_);
   FML_DCHECK(state_ >= State::kBuildStart);
@@ -127,8 +139,11 @@ size_t FrameTimingsRecorder::GetPictureCacheBytes() const {
 }
 
 void FrameTimingsRecorder::RecordVsync(fml::TimePoint vsync_start,
-                                       fml::TimePoint vsync_target) {
-  fml::Status status = RecordVsyncImpl(vsync_start, vsync_target);
+                                       fml::TimePoint vsync_target,
+                                       int64_t preferred_vsync_id,
+                                       int64_t next_vsync_id) {
+  fml::Status status = RecordVsyncImpl(vsync_start, vsync_target,
+                                       preferred_vsync_id, next_vsync_id);
   FML_DCHECK(status.ok());
   (void)status;
 }
@@ -152,7 +167,9 @@ void FrameTimingsRecorder::RecordRasterStart(fml::TimePoint raster_start) {
 }
 
 fml::Status FrameTimingsRecorder::RecordVsyncImpl(fml::TimePoint vsync_start,
-                                                  fml::TimePoint vsync_target) {
+                                                  fml::TimePoint vsync_target,
+                                                  int64_t preferred_vsync_id,
+                                                  int64_t next_vsync_id) {
   std::scoped_lock state_lock(state_mutex_);
   if (state_ != State::kUninitialized) {
     return fml::Status(fml::StatusCode::kFailedPrecondition,
@@ -161,6 +178,8 @@ fml::Status FrameTimingsRecorder::RecordVsyncImpl(fml::TimePoint vsync_start,
   state_ = State::kVsync;
   vsync_start_ = vsync_start;
   vsync_target_ = vsync_target;
+  preferred_vsync_id_ = preferred_vsync_id;
+  next_vsync_id_ = next_vsync_id;
   return fml::Status();
 }
 
@@ -247,6 +266,8 @@ std::unique_ptr<FrameTimingsRecorder> FrameTimingsRecorder::CloneUntil(
   if (state >= State::kVsync) {
     recorder->vsync_start_ = vsync_start_;
     recorder->vsync_target_ = vsync_target_;
+    recorder->preferred_vsync_id_ = preferred_vsync_id_;
+    recorder->next_vsync_id_ = next_vsync_id_;
   }
 
   if (state >= State::kBuildStart) {

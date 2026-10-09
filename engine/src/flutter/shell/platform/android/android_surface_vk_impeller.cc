@@ -108,11 +108,14 @@ bool AndroidSurfaceVKImpeller::SetNativeWindow(
       // For Route::kDirect, this is the preferred timeline vsync ID (1-vsync
       // deadline). For Route::kPlatform, this is the next timeline vsync ID
       // (2-vsync deadline) to match the next ViewRootImpl traversal where
-      // applyTransactionOnDraw is applied; note that when ViewRootImpl draws a
-      // buffer on that traversal, AOSP's
+      // applyTransactionOnDraw is applied; note that because
+      // PlatformViewsController2.onEndFrame invalidates FlutterView,
+      // ViewRootImpl draws on that traversal and AOSP's
       // SurfaceComposerClient::Transaction::mergeFrameTimelineInfo currently
-      // overwrites older vsync IDs with newer ones until that AOSP bug is
-      // fixed.
+      // overwrites older vsync IDs with newer ones (replacing our token with
+      // ViewRootImpl's equivalent-deadline token on a timely traversal, or
+      // with a later token if ViewRootImpl's traversal slips) until that AOSP
+      // comparator bug is fixed.
       const int64_t vsync_id = router->GetFrameTimelineVsyncId();
       if (vsync_id != SurfaceTransactionRouter::kInvalidVsyncId) {
         transaction.SetFrameTimeline(vsync_id);

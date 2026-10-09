@@ -74,7 +74,7 @@ class SurfaceTransactionRouter {
 
   //----------------------------------------------------------------------------
   /// @brief      Records the Choreographer frame timeline vsync IDs for the
-  ///             vsync that is starting on the UI thread:
+  ///             frame that is being rasterized on the raster thread:
   ///
   ///             - |direct_vsync_id|: the platform-preferred timeline vsync ID
   ///               (`preferredFrameTimelineIndex`, 1-vsync deadline), used when
@@ -87,31 +87,31 @@ class SurfaceTransactionRouter {
   ///               `AttachedSurfaceControl.applyTransactionOnDraw` to be
   ///               applied on the next View hierarchy traversal.
   ///
-  ///               NOTE: When ViewRootImpl draws a buffer on that traversal,
-  ///               `BLASTBufferQueue` merges the `applyTransactionOnDraw`
-  ///               transaction into its buffer transaction. Due to an AOSP bug
-  ///               in
+  ///               NOTE: `PlatformViewsController2.onEndFrame` invalidates the
+  ///               `FlutterView`, so `ViewRootImpl` draws on that next
+  ///               traversal and `BLASTBufferQueue` merges our
+  ///               `applyTransactionOnDraw` transaction into its buffer
+  ///               transaction. Because SurfaceFlinger's
+  ///               `TokenManager::generateTokenForPredictions`
+  ///               (`FrameTimeline.cpp`) assigns strictly monotonic tokens per
+  ///               vsync callback without deduplicating matching predictions,
+  ///               `ViewRootImpl`'s vsync $N+1$ token (`preferredIndex`) is
+  ///               numerically greater than our vsync $N$ `platform_vsync_id`
+  ///               (`preferredIndex + 1`) even when both share the same
+  ///               predicted `endTime` and `presentTime`. Due to an AOSP bug in
   ///               `SurfaceComposerClient::Transaction::mergeFrameTimelineInfo`
   ///               (`SurfaceComposerClient.cpp`, which checks
   ///               `other.vsyncId > t.vsyncId` instead of `<` despite its
   ///               comment stating "When merging vsync Ids we take the oldest
-  ///               valid one"), ViewRootImpl's newer vsync ID overwrites
-  ///               |platform_vsync_id| until that AOSP bug is fixed.
-  ///
-  /// @note       Thread safe.
-  ///
-  void SetVsyncTimeline(int64_t direct_vsync_id, int64_t platform_vsync_id);
-
-  //----------------------------------------------------------------------------
-  /// @brief      Snapshots the latest vsync timeline recorded by
-  ///             |SetVsyncTimeline| for the raster frame that is starting, so
-  ///             that a subsequent UI-thread vsync arriving while the raster
-  ///             thread is still rendering does not overwrite this frame's
-  ///             vsync IDs before submission.
+  ///               valid one"), `ViewRootImpl`'s token always overwrites
+  ///               |platform_vsync_id| (replacing it with an equivalent-deadline
+  ///               token on a timely traversal, or laundering a slipped
+  ///               traversal's deadline) until that AOSP comparator bug is
+  ///               fixed.
   ///
   /// @note       Raster thread only.
   ///
-  void LatchVsyncTimeline();
+  void SetVsyncTimeline(int64_t direct_vsync_id, int64_t platform_vsync_id);
 
   //----------------------------------------------------------------------------
   /// @brief      Returns the frame timeline vsync ID matching the current
@@ -151,12 +151,9 @@ class SurfaceTransactionRouter {
  private:
   // Raster thread only.
   Route frame_route_ = Route::kDirect;
-  bool vsync_timeline_latched_ = false;
-  int64_t latched_direct_vsync_id_ = kInvalidVsyncId;
-  int64_t latched_platform_vsync_id_ = kInvalidVsyncId;
+  int64_t direct_vsync_id_ = kInvalidVsyncId;
+  int64_t platform_vsync_id_ = kInvalidVsyncId;
 
-  std::atomic<int64_t> pending_direct_vsync_id_{kInvalidVsyncId};
-  std::atomic<int64_t> pending_platform_vsync_id_{kInvalidVsyncId};
   std::atomic<int32_t> uncommitted_platform_frames_{0};
 
   FML_DISALLOW_COPY_AND_ASSIGN(SurfaceTransactionRouter);

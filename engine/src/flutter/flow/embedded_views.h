@@ -464,6 +464,11 @@ class ExternalViewEmbedder {
       GrDirectContext* context,
       const fml::RefPtr<fml::RasterThreadMerger>& raster_thread_merger) = 0;
 
+  // Records the frame timeline vsync IDs associated with the frame that is
+  // beginning rasterization.
+  virtual void SetFrameTimelineVsyncIds(int64_t direct_vsync_id,
+                                        int64_t platform_vsync_id) {}
+
   virtual void PrerollCompositeEmbeddedView(
       int64_t platform_view_id,
       std::unique_ptr<EmbeddedViewParams> params) = 0;

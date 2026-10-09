@@ -11,7 +11,6 @@
 
 #include "flutter/fml/macros.h"
 #include "flutter/shell/common/vsync_waiter.h"
-#include "flutter/shell/platform/android/external_view_embedder/surface_transaction_router.h"
 
 namespace flutter {
 
@@ -21,9 +20,7 @@ class VsyncWaiterAndroid final : public VsyncWaiter {
  public:
   static bool Register(JNIEnv* env);
 
-  explicit VsyncWaiterAndroid(
-      const flutter::TaskRunners& task_runners,
-      std::shared_ptr<SurfaceTransactionRouter> transaction_router = nullptr);
+  explicit VsyncWaiterAndroid(const flutter::TaskRunners& task_runners);
 
   ~VsyncWaiterAndroid() override;
 
@@ -42,15 +39,16 @@ class VsyncWaiterAndroid final : public VsyncWaiter {
                               jlong refreshPeriodNanos,
                               jlong java_baton);
 
-  static void ConsumePendingCallback(std::weak_ptr<VsyncWaiter>* weak_this,
-                                     fml::TimePoint frame_start_time,
-                                     fml::TimePoint frame_target_time);
+  static void ConsumePendingCallback(
+      std::weak_ptr<VsyncWaiter>* weak_this,
+      fml::TimePoint frame_start_time,
+      fml::TimePoint frame_target_time,
+      int64_t preferred_vsync_id = FrameTimingsRecorder::kInvalidVsyncId,
+      int64_t next_vsync_id = FrameTimingsRecorder::kInvalidVsyncId);
 
   static void OnUpdateRefreshRate(JNIEnv* env,
                                   jclass jcaller,
                                   jfloat refresh_rate);
-
-  const std::shared_ptr<SurfaceTransactionRouter> transaction_router_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(VsyncWaiterAndroid);
 };
