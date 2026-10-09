@@ -679,6 +679,18 @@ std::shared_ptr<GPUTracerVK> ContextVK::GetGPUTracer() const {
   return gpu_tracer_;
 }
 
+int64_t ContextVK::GetLastFrameGpuTimeNs() const {
+  return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeNs() : 0;
+}
+
+int64_t ContextVK::GetLastFrameFenceWaitTimeNs() const {
+  return last_frame_fence_wait_ns_.load(std::memory_order_relaxed);
+}
+
+void ContextVK::RecordFenceWaitTimeNs(int64_t wait_ns) const {
+  last_frame_fence_wait_ns_.store(wait_ns, std::memory_order_relaxed);
+}
+
 std::shared_ptr<DescriptorPoolRecyclerVK> ContextVK::GetDescriptorPoolRecycler()
     const {
   return descriptor_pool_recycler_;

@@ -147,6 +147,14 @@ bool SurfaceContextVK::SubmitOnscreen(
   return true;
 }
 
+int64_t SurfaceContextVK::GetLastFrameGpuTimeNs() const {
+  return parent_->GetLastFrameGpuTimeNs();
+}
+
+int64_t SurfaceContextVK::GetLastFrameFenceWaitTimeNs() const {
+  return parent_->GetLastFrameFenceWaitTimeNs();
+}
+
 RuntimeStageBackend SurfaceContextVK::GetRuntimeStageBackend() const {
   return parent_->GetRuntimeStageBackend();
 }

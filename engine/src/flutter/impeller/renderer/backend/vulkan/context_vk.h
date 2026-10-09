@@ -253,6 +253,14 @@ class ContextVK final : public Context,
 
   std::shared_ptr<GPUTracerVK> GetGPUTracer() const;
 
+  // |Context|
+  int64_t GetLastFrameGpuTimeNs() const override;
+
+  // |Context|
+  int64_t GetLastFrameFenceWaitTimeNs() const override;
+
+  void RecordFenceWaitTimeNs(int64_t wait_ns) const;
+
   void RecordFrameEndTime() const;
 
   // |Context|
@@ -335,6 +343,7 @@ class ContextVK final : public Context,
   bool should_enable_surface_control_ = false;
   bool should_batch_cmd_buffers_ = false;
   std::vector<std::shared_ptr<CommandBuffer>> pending_command_buffers_;
+  mutable std::atomic<int64_t> last_frame_fence_wait_ns_{0};
 
   const uint64_t hash_;
 

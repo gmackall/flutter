@@ -39,7 +39,9 @@ struct AHBFrameSynchronizerVK {
 
   bool IsValid() const;
 
-  bool WaitForFence(const vk::Device& device);
+  bool WaitForFence(const vk::Device& device, int64_t* out_wait_ns = nullptr);
+
+  void TryCompleteFence(const vk::Device& device);
 };
 
 //------------------------------------------------------------------------------

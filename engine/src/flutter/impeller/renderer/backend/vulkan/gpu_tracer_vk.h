@@ -5,6 +5,8 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_GPU_TRACER_VK_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_GPU_TRACER_VK_H_
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <thread>
 
@@ -44,6 +46,10 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
 
   // visible for testing.
   bool IsEnabled() const;
+
+  /// @brief Returns the GPU execution time of the most recently completed
+  ///        traced frame in nanoseconds, or 0 if unavailable.
+  int64_t GetLastFrameGpuTimeNs() const;
 
   /// Initialize the set of query pools.
   void InitializeQueryPool(const ContextVK& context);
@@ -96,6 +102,7 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
   // that are not guaranteed to start/end according to frame boundaries.
   std::thread::id raster_thread_id_;
   bool enabled_ = false;
+  std::atomic<int64_t> last_frame_gpu_time_ns_{0};
 };
 
 class GPUProbe {

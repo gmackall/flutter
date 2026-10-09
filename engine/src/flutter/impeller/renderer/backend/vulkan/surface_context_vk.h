@@ -77,6 +77,12 @@ class SurfaceContextVK : public Context,
   bool SubmitOnscreen(std::shared_ptr<CommandBuffer> cmd_buffer) override;
 
   // |Context|
+  int64_t GetLastFrameGpuTimeNs() const override;
+
+  // |Context|
+  int64_t GetLastFrameFenceWaitTimeNs() const override;
+
+  // |Context|
   void Shutdown() override;
 
   [[nodiscard]] bool SetWindowSurface(vk::UniqueSurfaceKHR surface,

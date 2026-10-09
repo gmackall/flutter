@@ -116,6 +116,10 @@ bool ContextGLES::IsValid() const {
 
 void ContextGLES::Shutdown() {}
 
+int64_t ContextGLES::GetLastFrameGpuTimeNs() const {
+  return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeNs() : 0;
+}
+
 // |Context|
 std::string ContextGLES::DescribeGpuModel() const {
   return reactor_->GetProcTable().GetDescription()->GetString();

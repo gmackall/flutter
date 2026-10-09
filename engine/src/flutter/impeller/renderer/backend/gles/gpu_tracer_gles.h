@@ -5,6 +5,7 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_GPU_TRACER_GLES_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_GPU_TRACER_GLES_H_
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <thread>
@@ -44,6 +45,10 @@ class GPUTracerGLES {
   /// @brief Record the end of a frame workload.
   void MarkFrameEnd(const ProcTableGLES& gl);
 
+  /// @brief Returns the GPU execution time of the most recently completed
+  ///        traced frame in nanoseconds, or 0 if unavailable.
+  int64_t GetLastFrameGpuTimeNs() const;
+
  private:
   void ProcessQueries(const ProcTableGLES& gl);
 
@@ -52,6 +57,7 @@ class GPUTracerGLES {
   std::thread::id raster_thread_;
 
   bool enabled_ = false;
+  std::atomic<int64_t> last_frame_gpu_time_ns_{0};
 };
 
 }  // namespace impeller

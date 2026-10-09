@@ -34,10 +34,7 @@ GPUTracerVK::GPUTracerVK(std::weak_ptr<ContextVK> context,
     // The device does not support timestamp queries.
     return;
   }
-// Disable tracing in release mode.
-#ifdef IMPELLER_DEBUG
   enabled_ = true;
-#endif  // IMPELLER_DEBUG
 }
 
 void GPUTracerVK::InitializeQueryPool(const ContextVK& context) {
@@ -72,11 +69,17 @@ bool GPUTracerVK::IsEnabled() const {
   return enabled_;
 }
 
+int64_t GPUTracerVK::GetLastFrameGpuTimeNs() const {
+  return last_frame_gpu_time_ns_.load(std::memory_order_relaxed);
+}
+
 void GPUTracerVK::MarkFrameStart() {
   if (!enabled_) {
     return;
   }
-  FML_DCHECK(!in_frame_);
+  if (in_frame_) {
+    MarkFrameEnd();
+  }
   in_frame_ = true;
   raster_thread_id_ = std::this_thread::get_id();
 }
@@ -142,11 +145,11 @@ void GPUTracerVK::RecordCmdBufferStart(const vk::CommandBuffer& buffer,
 void GPUTracerVK::RecordCmdBufferEnd(const vk::CommandBuffer& buffer,
                                      GPUProbe& probe) {
   if (!enabled_ || std::this_thread::get_id() != raster_thread_id_ ||
-      !in_frame_ || !probe.index_.has_value()) {
+      !probe.index_.has_value()) {
     return;
   }
   Lock lock(trace_state_mutex_);
-  GPUTraceState& state = trace_states_[current_state_];
+  GPUTraceState& state = trace_states_[probe.index_.value()];
 
   if (state.current_index >= kPoolSize) {
     return;
@@ -177,7 +180,7 @@ void GPUTracerVK::OnFenceComplete(size_t frame_index) {
     pool = state.query_pool.get();
   }
 
-  if (pending == 0) {
+  if (pending == 0 && query_count > 0) {
     std::vector<uint64_t> bits(query_count);
     std::shared_ptr<ContextVK> context = context_.lock();
     if (!context) {
@@ -202,12 +205,17 @@ void GPUTracerVK::OnFenceComplete(size_t frame_index) {
         smallest_timestamp = std::min(smallest_timestamp, bits[i]);
         largest_timestamp = std::max(largest_timestamp, bits[i]);
       }
-      auto gpu_ms =
-          (((largest_timestamp - smallest_timestamp) * timestamp_period_) /
-           1000000);
-      FML_TRACE_COUNTER("flutter", "GPUTracer",
-                        reinterpret_cast<int64_t>(this),  // Trace Counter ID
-                        "FrameTimeMS", gpu_ms);
+      if (largest_timestamp >= smallest_timestamp) {
+        int64_t gpu_ns = static_cast<int64_t>(
+            (largest_timestamp - smallest_timestamp) * timestamp_period_);
+        if (gpu_ns > 0) {
+          last_frame_gpu_time_ns_.store(gpu_ns, std::memory_order_relaxed);
+        }
+        auto gpu_ms = gpu_ns / 1000000;
+        FML_TRACE_COUNTER("flutter", "GPUTracer",
+                          reinterpret_cast<int64_t>(this),  // Trace Counter ID
+                          "FrameTimeMS", gpu_ms);
+      }
     }
 
     // Record this query to be reset the next time a command is recorded.

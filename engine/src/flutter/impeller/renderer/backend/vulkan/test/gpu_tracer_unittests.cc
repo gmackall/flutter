@@ -13,7 +13,6 @@
 namespace impeller {
 namespace testing {
 
-#ifdef IMPELLER_DEBUG
 TEST(GPUTracerVK, CanBeDisabled) {
   auto const context =
       MockVulkanContextBuilder()
@@ -24,6 +23,7 @@ TEST(GPUTracerVK, CanBeDisabled) {
   auto tracer = context->GetGPUTracer();
 
   ASSERT_FALSE(tracer->IsEnabled());
+  EXPECT_EQ(context->GetLastFrameGpuTimeNs(), 0);
 }
 
 TEST(GPUTracerVK, DisabledFrameCycle) {
@@ -77,6 +77,8 @@ TEST(GPUTracerVK, CanTraceCmdBuffer) {
               called->end());
   ASSERT_TRUE(std::find(called->begin(), called->end(),
                         "vkGetQueryPoolResults") != called->end());
+  EXPECT_GT(tracer->GetLastFrameGpuTimeNs(), 0);
+  EXPECT_EQ(context->GetLastFrameGpuTimeNs(), tracer->GetLastFrameGpuTimeNs());
 }
 
 TEST(GPUTracerVK, DoesNotTraceOutsideOfFrameWorkload) {
@@ -110,10 +112,12 @@ TEST(GPUTracerVK, DoesNotTraceOutsideOfFrameWorkload) {
   ASSERT_NE(called, nullptr);
   ASSERT_TRUE(std::find(called->begin(), called->end(),
                         "vkGetQueryPoolResults") == called->end());
+  EXPECT_EQ(context->GetLastFrameGpuTimeNs(), 0);
 }
 
-// This cmd buffer starts when there is a frame but finishes when there is none.
-// This should result in the same recorded work.
+// This cmd buffer starts when there is a frame but finishes when there is none
+// (e.g., when MarkFrameEnd is called before the final swapchain command buffer
+// is ended and submitted). This should result in the same recorded work.
 TEST(GPUTracerVK, TracesWithPartialFrameOverlap) {
   auto const context =
       MockVulkanContextBuilder()
@@ -130,6 +134,8 @@ TEST(GPUTracerVK, TracesWithPartialFrameOverlap) {
   auto blit_pass = cmd_buffer->CreateBlitPass();
   blit_pass->EncodeCommands();
 
+  tracer->MarkFrameEnd();
+
   auto latch = std::make_shared<fml::CountDownLatch>(1u);
   if (!context->GetCommandQueue()
            ->Submit(
@@ -138,7 +144,6 @@ TEST(GPUTracerVK, TracesWithPartialFrameOverlap) {
            .ok()) {
     GTEST_FAIL() << "Failed to submit cmd buffer";
   }
-  tracer->MarkFrameEnd();
 
   latch->Wait();
 
@@ -148,9 +153,15 @@ TEST(GPUTracerVK, TracesWithPartialFrameOverlap) {
               called->end());
   ASSERT_TRUE(std::find(called->begin(), called->end(),
                         "vkGetQueryPoolResults") != called->end());
+  EXPECT_GT(context->GetLastFrameGpuTimeNs(), 0);
 }
 
-#endif  // IMPELLER_DEBUG
+TEST(GPUTracerVK, RecordsFenceWaitTimeNs) {
+  auto const context = MockVulkanContextBuilder().Build();
+  EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 0);
+  context->RecordFenceWaitTimeNs(1234567);
+  EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 1234567);
+}
 
 }  // namespace testing
 }  // namespace impeller

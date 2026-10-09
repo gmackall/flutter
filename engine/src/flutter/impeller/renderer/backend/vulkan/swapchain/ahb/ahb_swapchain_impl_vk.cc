@@ -4,8 +4,10 @@
 
 #include "impeller/renderer/backend/vulkan/swapchain/ahb/ahb_swapchain_impl_vk.h"
 
+#include "flutter/fml/time/time_point.h"
 #include "impeller/base/validation.h"
 #include "impeller/renderer/backend/vulkan/command_buffer_vk.h"
+#include "impeller/renderer/backend/vulkan/gpu_tracer_vk.h"
 #include "impeller/renderer/backend/vulkan/swapchain/ahb/ahb_formats.h"
 #include "impeller/renderer/backend/vulkan/swapchain/ahb/external_semaphore_vk.h"
 #include "impeller/renderer/backend/vulkan/swapchain/surface_vk.h"
@@ -44,10 +46,15 @@ bool AHBFrameSynchronizerVK::IsValid() const {
   return is_valid;
 }
 
-bool AHBFrameSynchronizerVK::WaitForFence(const vk::Device& device) {
+bool AHBFrameSynchronizerVK::WaitForFence(const vk::Device& device,
+                                          int64_t* out_wait_ns) {
+  if (out_wait_ns) {
+    *out_wait_ns = 0;
+  }
   if (!acquire_fence_pending) {
     return true;
   }
+  const auto wait_start = fml::TimePoint::Now();
   if (auto result = device.waitForFences(
           *acquire,                             // fence
           true,                                 // wait all
@@ -57,13 +64,28 @@ bool AHBFrameSynchronizerVK::WaitForFence(const vk::Device& device) {
     VALIDATION_LOG << "Fence wait failed: " << vk::to_string(result);
     return false;
   }
+  if (out_wait_ns) {
+    *out_wait_ns = (fml::TimePoint::Now() - wait_start).ToNanoseconds();
+  }
   acquire_fence_pending = false;
+  final_cmd_buffer.reset();
   if (auto result = device.resetFences(*acquire);
       result != vk::Result::eSuccess) {
     VALIDATION_LOG << "Could not reset fence: " << vk::to_string(result);
     return false;
   }
   return true;
+}
+
+void AHBFrameSynchronizerVK::TryCompleteFence(const vk::Device& device) {
+  if (!acquire_fence_pending) {
+    return;
+  }
+  if (device.waitForFences(*acquire, true, 0) == vk::Result::eSuccess) {
+    acquire_fence_pending = false;
+    final_cmd_buffer.reset();
+    [[maybe_unused]] auto reset_res = device.resetFences(*acquire);
+  }
 }
 
 std::shared_ptr<AHBSwapchainImplVK> AHBSwapchainImplVK::Create(
@@ -141,11 +163,21 @@ std::unique_ptr<Surface> AHBSwapchainImplVK::AcquireNextDrawable() {
     return nullptr;
   }
 
+  auto& context_vk = ContextVK::Cast(*context);
+  const auto& device = context_vk.GetDevice();
+
   frame_index_ = (frame_index_ + 1) % kMaxPendingPresents;
 
-  if (!frame_data_[frame_index_]->WaitForFence(
-          ContextVK::Cast(*context).GetDevice())) {
+  int64_t fence_wait_ns = 0;
+  if (!frame_data_[frame_index_]->WaitForFence(device, &fence_wait_ns)) {
     return nullptr;
+  }
+  context_vk.RecordFenceWaitTimeNs(fence_wait_ns);
+
+  for (size_t i = 0; i < frame_data_.size(); i++) {
+    if (i != frame_index_) {
+      frame_data_[i]->TryCompleteFence(device);
+    }
   }
 
   if (!is_valid_) {
@@ -166,12 +198,6 @@ std::unique_ptr<Surface> AHBSwapchainImplVK::AcquireNextDrawable() {
     return nullptr;
   }
 
-#if IMPELLER_DEBUG
-  if (context) {
-    ContextVK::Cast(*context).GetGPUTracer()->MarkFrameStart();
-  }
-#endif  // IMPELLER_DEBUG
-
   auto surface = SurfaceVK::WrapSwapchainImage(
       transients_, pool_entry.texture,
       [weak = weak_from_this(), texture = pool_entry.texture]() {
@@ -187,30 +213,28 @@ std::unique_ptr<Surface> AHBSwapchainImplVK::AcquireNextDrawable() {
     return nullptr;
   }
 
+  context_vk.GetGPUTracer()->MarkFrameStart();
+
   return surface;
 }
 
 bool AHBSwapchainImplVK::Present(
     const std::shared_ptr<AHBTextureSourceVK>& texture) {
+  auto context = transients_->GetContext().lock();
   auto control = surface_control_.lock();
-  if (!control || !control->IsValid()) {
+  if (!control || !control->IsValid() || !texture) {
+    if (context) {
+      ContextVK::Cast(*context).GetGPUTracer()->MarkFrameEnd();
+    }
     VALIDATION_LOG << "Surface control died before swapchain image could be "
                       "presented.";
     return false;
   }
 
-#if IMPELLER_DEBUG
-  auto context = transients_->GetContext().lock();
+  auto present_ready = SubmitSignalForPresentReady(texture);
   if (context) {
     ContextVK::Cast(*context).GetGPUTracer()->MarkFrameEnd();
   }
-#endif  // IMPELLER_DEBUG
-
-  if (!texture) {
-    return false;
-  }
-
-  auto present_ready = SubmitSignalForPresentReady(texture);
 
   if (!present_ready) {
     VALIDATION_LOG << "Could not submit completion signal.";
@@ -227,7 +251,7 @@ bool AHBSwapchainImplVK::Present(
                       "control.";
     return false;
   }
-  return transaction.Apply(
+  bool applied = transaction.Apply(
       [texture, weak = weak_from_this()](ASurfaceTransactionStats* stats) {
         auto thiz = weak.lock();
         if (!thiz) {
@@ -235,6 +259,17 @@ bool AHBSwapchainImplVK::Present(
         }
         thiz->OnTextureUpdatedOnSurfaceControl(texture, stats);
       });
+
+  if (context) {
+    const auto& device = ContextVK::Cast(*context).GetDevice();
+    for (size_t i = 0; i < frame_data_.size(); i++) {
+      if (i != frame_index_) {
+        frame_data_[i]->TryCompleteFence(device);
+      }
+    }
+  }
+
+  return applied;
 }
 
 void AHBSwapchainImplVK::AddFinalCommandBuffer(

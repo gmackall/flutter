@@ -46,6 +46,9 @@ class ContextGLES final : public Context,
 
   std::shared_ptr<GPUTracerGLES> GetGPUTracer() const { return gpu_tracer_; }
 
+  // |Context|
+  int64_t GetLastFrameGpuTimeNs() const override;
+
   // Mutable tracker for command buffer submission bookkeeping.
   const std::shared_ptr<GpuSubmissionTracker>& GetMutableSubmissionTracker()
       const;

@@ -167,6 +167,8 @@ AndroidShellHolder::AndroidShellHolder(
       has_adpf_prop && std::strcmp(adpf_mode_prop, "phase4") == 0;
   const bool is_phase4_hints_mode =
       has_adpf_prop && std::strcmp(adpf_mode_prop, "phase4_hints") == 0;
+  const bool is_cpu_only_mode =
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "cpu_only") == 0;
   const bool is_target_8_3ms_mode =
       has_adpf_prop && std::strcmp(adpf_mode_prop, "target_8.3ms") == 0;
   const bool is_target_6_25ms_mode =
@@ -176,6 +178,7 @@ AndroidShellHolder::AndroidShellHolder(
   const bool is_max_stage_mode =
       !is_phase4_mode && !is_phase4_hints_mode && !is_target_8_3ms_mode &&
       !is_target_6_25ms_mode && !is_dual_session_mode;
+  const bool is_gpu_adpf_enabled = !is_phase4_mode && !is_cpu_only_mode;
   const bool is_single_vsync_clamp = !is_phase4_mode && !is_phase4_hints_mode;
   const bool is_full_vsync_target =
       is_max_stage_mode || is_dual_session_mode || is_target_8_3ms_mode;
@@ -215,6 +218,9 @@ AndroidShellHolder::AndroidShellHolder(
         AndroidPerformanceHintManager::Create(tids, target_duration_ns);
   }
 
+  auto shared_android_context =
+      std::make_shared<std::weak_ptr<AndroidContext>>();
+
   flutter::Settings shell_settings = settings_;
   if (performance_hint_manager_) {
     FrameRasterizedCallback prev_callback =
@@ -224,8 +230,9 @@ AndroidShellHolder::AndroidShellHolder(
                                       raster_perf_hint = raster_hint_manager,
                                       nominal_interval =
                                           nominal_frame_interval_ns_,
-                                      is_phase4_mode, is_max_stage_mode,
-                                      is_dual_session_mode,
+                                      shared_android_context, is_phase4_mode,
+                                      is_max_stage_mode, is_dual_session_mode,
+                                      is_gpu_adpf_enabled,
                                       is_single_vsync_clamp, target_work_ratio,
                                       prev_callback](
                                          const FrameTiming& timing) {
@@ -271,6 +278,23 @@ AndroidShellHolder::AndroidShellHolder(
                            timing.Get(FrameTiming::kRasterStart))
                               .ToNanoseconds();
 
+      int64_t gpu_duration_ns = 0;
+      int64_t fence_wait_ns = 0;
+      if (is_gpu_adpf_enabled && shared_android_context) {
+        if (auto android_ctx = shared_android_context->lock()) {
+          if (auto impeller_ctx = android_ctx->GetImpellerContext()) {
+            gpu_duration_ns =
+                std::max<int64_t>(0, impeller_ctx->GetLastFrameGpuTimeNs());
+            fence_wait_ns = std::max<int64_t>(
+                0, impeller_ctx->GetLastFrameFenceWaitTimeNs());
+          }
+        }
+      }
+      int64_t raster_cpu_ns =
+          (fence_wait_ns > 0 && raster_ns > 0)
+              ? std::max<int64_t>(1, raster_ns - fence_wait_ns)
+              : raster_ns;
+
       if (is_dual_session_mode) {
         int64_t ui_start_ns =
             vsync_start_ns > 0 ? vsync_start_ns : build_start_ns;
@@ -284,10 +308,12 @@ AndroidShellHolder::AndroidShellHolder(
           perf_hint->ReportActualWorkDuration(ui_start_ns, ui_total_ns,
                                               build_ns, 0);
         }
-        if (raster_perf_hint && raster_start_ns > 0 && raster_ns > 0) {
+        if (raster_perf_hint && raster_start_ns > 0 &&
+            (raster_cpu_ns > 0 || gpu_duration_ns > 0)) {
           raster_perf_hint->NotifyWorkloadReset();
-          raster_perf_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
-                                                     raster_ns, 0);
+          int64_t raster_total_ns = std::max(raster_cpu_ns, gpu_duration_ns);
+          raster_perf_hint->ReportActualWorkDuration(
+              raster_start_ns, raster_total_ns, raster_cpu_ns, gpu_duration_ns);
         }
         return;
       }
@@ -304,16 +330,18 @@ AndroidShellHolder::AndroidShellHolder(
                                 .ToNanoseconds();
       }
       int64_t cpu_duration_ns = is_max_stage_mode
-                                    ? std::max(build_ns, raster_ns)
-                                    : (build_ns + raster_ns);
+                                    ? std::max(build_ns, raster_cpu_ns)
+                                    : (build_ns + raster_cpu_ns);
       if (is_max_stage_mode) {
-        total_duration_ns = cpu_duration_ns;
+        total_duration_ns = std::max(cpu_duration_ns, gpu_duration_ns);
       } else if (!is_phase4_mode) {
-        total_duration_ns = std::max(total_duration_ns, cpu_duration_ns);
+        total_duration_ns =
+            std::max({total_duration_ns, cpu_duration_ns, gpu_duration_ns});
       }
-      if (vsync_start_ns > 0 && total_duration_ns > 0 && cpu_duration_ns > 0) {
+      if (vsync_start_ns > 0 && total_duration_ns > 0 &&
+          (cpu_duration_ns > 0 || gpu_duration_ns > 0)) {
         perf_hint->ReportActualWorkDuration(vsync_start_ns, total_duration_ns,
-                                            cpu_duration_ns, 0);
+                                            cpu_duration_ns, gpu_duration_ns);
       }
     };
   }
@@ -323,8 +351,8 @@ AndroidShellHolder::AndroidShellHolder(
   std::shared_ptr<AndroidPerformanceHintManager> perf_hint_for_view =
       performance_hint_manager_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, &weak_platform_view, rendering_api,
-       perf_hint_for_view](Shell& shell) {
+      [&jni_facade, &weak_platform_view, rendering_api, perf_hint_for_view,
+       shared_android_context](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -333,6 +361,9 @@ AndroidShellHolder::AndroidShellHolder(
             rendering_api            // rendering API
         );
         platform_view_android->SetPerformanceHintManager(perf_hint_for_view);
+        if (shared_android_context) {
+          *shared_android_context = platform_view_android->GetAndroidContext();
+        }
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };

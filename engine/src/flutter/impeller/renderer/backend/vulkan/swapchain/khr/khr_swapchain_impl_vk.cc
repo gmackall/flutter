@@ -4,6 +4,7 @@
 
 #include "impeller/renderer/backend/vulkan/swapchain/khr/khr_swapchain_impl_vk.h"
 
+#include "flutter/fml/time/time_point.h"
 #include "fml/synchronization/semaphore.h"
 #include "impeller/base/validation.h"
 #include "impeller/core/formats.h"
@@ -44,10 +45,14 @@ struct KHRFrameSynchronizerVK {
 
   ~KHRFrameSynchronizerVK() = default;
 
-  bool WaitForFence(const vk::Device& device) {
+  bool WaitForFence(const vk::Device& device, int64_t* out_wait_ns = nullptr) {
+    if (out_wait_ns) {
+      *out_wait_ns = 0;
+    }
     if (!acquire_fence_pending) {
       return true;
     }
+    const auto wait_start = fml::TimePoint::Now();
     if (auto result = device.waitForFences(
             *acquire,                             // fence
             true,                                 // wait all
@@ -57,13 +62,28 @@ struct KHRFrameSynchronizerVK {
       VALIDATION_LOG << "Fence wait failed: " << vk::to_string(result);
       return false;
     }
+    if (out_wait_ns) {
+      *out_wait_ns = (fml::TimePoint::Now() - wait_start).ToNanoseconds();
+    }
     acquire_fence_pending = false;
+    final_cmd_buffer.reset();
     if (auto result = device.resetFences(*acquire);
         result != vk::Result::eSuccess) {
       VALIDATION_LOG << "Could not reset fence: " << vk::to_string(result);
       return false;
     }
     return true;
+  }
+
+  void TryCompleteFence(const vk::Device& device) {
+    if (!acquire_fence_pending) {
+      return;
+    }
+    if (device.waitForFences(*acquire, true, 0) == vk::Result::eSuccess) {
+      acquire_fence_pending = false;
+      final_cmd_buffer.reset();
+      [[maybe_unused]] auto reset_res = device.resetFences(*acquire);
+    }
   }
 };
 
@@ -363,9 +383,17 @@ KHRSwapchainImplVK::AcquireResult KHRSwapchainImplVK::AcquireNextDrawable() {
   //----------------------------------------------------------------------------
   /// Wait on the host for the synchronizer fence.
   ///
-  if (!sync->WaitForFence(context.GetDevice())) {
+  int64_t fence_wait_ns = 0;
+  if (!sync->WaitForFence(context.GetDevice(), &fence_wait_ns)) {
     VALIDATION_LOG << "Could not wait for fence.";
     return KHRSwapchainImplVK::AcquireResult{};
+  }
+  context.RecordFenceWaitTimeNs(fence_wait_ns);
+
+  for (size_t i = 0; i < synchronizers_.size(); i++) {
+    if (i != current_frame_) {
+      synchronizers_[i]->TryCompleteFence(context.GetDevice());
+    }
   }
 
   //----------------------------------------------------------------------------
@@ -442,7 +470,6 @@ bool KHRSwapchainImplVK::Present(
 
   const auto& context = ContextVK::Cast(*context_strong);
   const auto& sync = synchronizers_[current_frame_];
-  context.GetGPUTracer()->MarkFrameEnd();
 
   //----------------------------------------------------------------------------
   /// Transition the image to color-attachment-optimal.
@@ -452,11 +479,12 @@ bool KHRSwapchainImplVK::Present(
   }
   sync->has_onscreen = false;
   if (!sync->final_cmd_buffer) {
+    context.GetGPUTracer()->MarkFrameEnd();
     return false;
   }
 
-  auto vk_final_cmd_buffer =
-      CommandBufferVK::Cast(*sync->final_cmd_buffer).GetCommandBuffer();
+  auto& final_cmd_buffer_vk = CommandBufferVK::Cast(*sync->final_cmd_buffer);
+  auto vk_final_cmd_buffer = final_cmd_buffer_vk.GetCommandBuffer();
   {
     BarrierVK barrier;
     barrier.new_layout = vk::ImageLayout::ePresentSrcKHR;
@@ -467,13 +495,16 @@ bool KHRSwapchainImplVK::Present(
     barrier.dst_stage = vk::PipelineStageFlagBits::eBottomOfPipe;
 
     if (!image->SetLayout(barrier).ok()) {
+      context.GetGPUTracer()->MarkFrameEnd();
       return false;
     }
 
-    if (vk_final_cmd_buffer.end() != vk::Result::eSuccess) {
+    if (!final_cmd_buffer_vk.EndCommandBuffer()) {
+      context.GetGPUTracer()->MarkFrameEnd();
       return false;
     }
   }
+  context.GetGPUTracer()->MarkFrameEnd();
 
   //----------------------------------------------------------------------------
   /// Signal that the presentation semaphore is ready.
@@ -507,6 +538,12 @@ bool KHRSwapchainImplVK::Present(
   present_info.setWaitSemaphores(*present_semaphores_[index]);
 
   auto result = context.GetGraphicsQueue()->Present(present_info);
+
+  for (size_t i = 0; i < synchronizers_.size(); i++) {
+    if (i != current_frame_) {
+      synchronizers_[i]->TryCompleteFence(context.GetDevice());
+    }
+  }
 
   switch (result) {
     case vk::Result::eErrorOutOfDateKHR:

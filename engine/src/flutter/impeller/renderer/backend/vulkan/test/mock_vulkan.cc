@@ -876,15 +876,16 @@ VkResult vkGetQueryPoolResults(VkDevice device,
                                VkDeviceSize stride,
                                VkQueryResultFlags flags) {
   MockDevice* mock_device = MockDevice::Unwrap(device);
-  if (dataSize == sizeof(uint32_t)) {
+  if (stride == sizeof(uint32_t) && dataSize >= queryCount * sizeof(uint32_t)) {
     uint32_t* data = static_cast<uint32_t*>(pData);
-    for (auto i = firstQuery; i < queryCount; i++) {
-      data[0] = i;
+    for (uint32_t i = 0; i < queryCount; i++) {
+      data[i] = (firstQuery + i + 1) * 1000u;
     }
-  } else if (dataSize == sizeof(int64_t)) {
+  } else if (stride == sizeof(uint64_t) &&
+             dataSize >= queryCount * sizeof(uint64_t)) {
     uint64_t* data = static_cast<uint64_t*>(pData);
-    for (auto i = firstQuery; i < queryCount; i++) {
-      data[0] = i;
+    for (uint32_t i = 0; i < queryCount; i++) {
+      data[i] = (firstQuery + i + 1) * 1000u;
     }
   }
   mock_device->AddCalledFunction("vkGetQueryPoolResults");

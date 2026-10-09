@@ -24,6 +24,7 @@ namespace {
 // via APerformanceHint_sendHint in libandroid.so.
 constexpr int32_t kSessionHintCpuLoadUp = 0;
 constexpr int32_t kSessionHintCpuLoadReset = 2;
+constexpr int32_t kSessionHintGpuLoadUp = 5;
 
 // On Pixel devices (/vendor/etc/powerhint.json), ADPF session votes go stale
 // after StaleTimeFactor (15.0) * targetDuration (~6.25ms at 120Hz) = ~93.75ms
@@ -124,7 +125,9 @@ struct AndroidPerformanceHintManager::Impl {
   std::atomic<int64_t> last_activity_timestamp_ns{0};
   int64_t last_reset_hint_ns = 0;
   int64_t last_up_hint_ns = 0;
+  int64_t last_gpu_up_hint_ns = 0;
   int64_t last_cpu_duration_ns = 0;
+  int64_t last_gpu_duration_ns = 0;
 
   APerformanceHint_reportActualWorkDuration_fn report_actual_work_duration =
       nullptr;
@@ -393,6 +396,21 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
       (now_ns - impl_->last_up_hint_ns) >= kSendHintCooldownNs) {
     impl_->last_up_hint_ns = now_ns;
     impl_->send_hint(impl_->session, kSessionHintCpuLoadUp);
+  }
+
+  if (actual_gpu_duration_ns > 0) {
+    const int64_t prev_gpu_duration_ns = impl_->last_gpu_duration_ns;
+    impl_->last_gpu_duration_ns = actual_gpu_duration_ns;
+    if (ModeEnablesHints(impl_->mode) && impl_->send_hint &&
+        impl_->applied_target_duration_ns > 0 && prev_gpu_duration_ns > 0 &&
+        prev_gpu_duration_ns <= impl_->applied_target_duration_ns &&
+        actual_gpu_duration_ns >
+            static_cast<int64_t>(impl_->applied_target_duration_ns *
+                                 kWorkloadSpikeFactor) &&
+        (now_ns - impl_->last_gpu_up_hint_ns) >= kSendHintCooldownNs) {
+      impl_->last_gpu_up_hint_ns = now_ns;
+      impl_->send_hint(impl_->session, kSessionHintGpuLoadUp);
+    }
   }
 
   if (impl_->work_duration && impl_->report_actual_work_duration2) {

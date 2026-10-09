@@ -53,10 +53,26 @@ namespace {
 static constexpr int kMinAPILevelHCPP = 34;
 static constexpr int64_t kImplicitViewId = 0;
 
+bool ShouldEnableAdpfGpuTracing() {
+  if (android_get_device_api_level() < 35) {
+    return false;
+  }
+  char prop[PROP_VALUE_MAX] = {0};
+  if (__system_property_get("debug.flutter.adpf_mode", prop) > 0) {
+    if (std::strcmp(prop, "off") == 0 || std::strcmp(prop, "control") == 0 ||
+        std::strcmp(prop, "none") == 0 || std::strcmp(prop, "phase4") == 0 ||
+        std::strcmp(prop, "cpu_only") == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 AndroidContext::ContextSettings CreateContextSettings(
     const Settings& p_settings) {
   AndroidContext::ContextSettings settings;
-  settings.enable_gpu_tracing = p_settings.enable_vulkan_gpu_tracing;
+  settings.enable_gpu_tracing =
+      p_settings.enable_vulkan_gpu_tracing || ShouldEnableAdpfGpuTracing();
   settings.enable_validation = p_settings.enable_vulkan_validation;
   settings.enable_surface_control = p_settings.enable_surface_control;
   return settings;
@@ -144,7 +160,8 @@ PlatformViewAndroid::PlatformViewAndroid(
           CreateAndroidContext(
               task_runners,
               rendering_api,
-              delegate.OnPlatformViewGetSettings().enable_opengl_gpu_tracing,
+              delegate.OnPlatformViewGetSettings().enable_opengl_gpu_tracing ||
+                  ShouldEnableAdpfGpuTracing(),
               CreateContextSettings(delegate.OnPlatformViewGetSettings()),
               delegate.OnPlatformViewGetShutdownSafeIOTaskRunner())) {}
 
