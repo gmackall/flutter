@@ -37,6 +37,8 @@ class AndroidPerformanceHintManager {
 
   void UpdateTargetWorkDuration(int64_t target_duration_ns);
 
+  void NotifyWorkloadReset();
+
   int64_t GetTargetWorkDuration() const;
 
  private:

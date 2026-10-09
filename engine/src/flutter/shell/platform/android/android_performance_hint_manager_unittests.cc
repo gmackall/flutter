@@ -22,8 +22,8 @@ TEST(AndroidPerformanceHintManagerTest, RejectsInvalidArguments) {
 }
 
 TEST(AndroidPerformanceHintManagerTest, LifecycleOnSupportedDevice) {
-  if (android_get_device_api_level() < 35) {
-    GTEST_SKIP() << "ADPF PerformanceHint requires Android API level 35+";
+  if (android_get_device_api_level() < 31) {
+    GTEST_SKIP() << "ADPF PerformanceHint requires Android API level 31+";
   }
 
   constexpr int64_t target_ns = 16666666;  // ~60 Hz
@@ -34,10 +34,16 @@ TEST(AndroidPerformanceHintManagerTest, LifecycleOnSupportedDevice) {
   if (manager) {
     EXPECT_EQ(manager->GetTargetWorkDuration(), target_ns);
 
+    manager->NotifyWorkloadReset();
+
     // Test reporting actual duration with AWorkDuration parameters.
     manager->ReportActualWorkDuration(1000000000, 12000000, 8000000, 0);
 
-    // Test updating target duration (e.g. 120 Hz).
+    // Small target jitter (< 15%) should be suppressed by hysteresis.
+    manager->UpdateTargetWorkDuration(target_ns - 500000);
+    EXPECT_EQ(manager->GetTargetWorkDuration(), target_ns);
+
+    // Large target change (e.g. 60 Hz -> 120 Hz) should update target duration.
     int64_t new_target_ns = 8333333;
     manager->UpdateTargetWorkDuration(new_target_ns);
     EXPECT_EQ(manager->GetTargetWorkDuration(), new_target_ns);

@@ -122,6 +122,7 @@ class AndroidShellHolder {
   std::unique_ptr<APKAssetProvider> apk_asset_provider_;
   const AndroidRenderingAPI android_rendering_api_;
   std::shared_ptr<AndroidPerformanceHintManager> performance_hint_manager_;
+  std::shared_ptr<std::atomic<int64_t>> nominal_frame_interval_ns_;
 
   //----------------------------------------------------------------------------
   /// @brief      Constructor with its components injected.
@@ -134,13 +135,17 @@ class AndroidShellHolder {
   ///             Used when constructing the Shell from the inside out when
   ///             spawning from an existing Shell.
   ///
-  AndroidShellHolder(const flutter::Settings& settings,
-                     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-                     const std::shared_ptr<ThreadHost>& thread_host,
-                     std::unique_ptr<Shell> shell,
-                     std::unique_ptr<APKAssetProvider> apk_asset_provider,
-                     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+  AndroidShellHolder(
+      const flutter::Settings& settings,
+      const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
+      const std::shared_ptr<ThreadHost>& thread_host,
+      std::unique_ptr<Shell> shell,
+      std::unique_ptr<APKAssetProvider> apk_asset_provider,
+      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
+      AndroidRenderingAPI rendering_api,
+      const std::shared_ptr<AndroidPerformanceHintManager>&
+          performance_hint_manager,
+      const std::shared_ptr<std::atomic<int64_t>>& nominal_frame_interval_ns);
   static void ThreadDestructCallback(void* value);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,

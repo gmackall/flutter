@@ -4,6 +4,9 @@
 
 #include "flutter/impeller/toolkit/android/choreographer.h"
 
+#include <sys/system_properties.h>
+#include <cstring>
+
 #include "flutter/fml/message_loop.h"
 
 namespace impeller::android {
@@ -75,13 +78,36 @@ bool Choreographer::PostFrameCallback(FrameCallback callback) const {
   return false;
 }
 
+namespace {
+enum class AdpfChoreographerMode {
+  kImproved,
+  kPhase4PreferredIdx,
+  kLegacyPostFrameCallback,
+};
+
+AdpfChoreographerMode GetAdpfChoreographerMode() {
+  char prop[PROP_VALUE_MAX] = {0};
+  if (__system_property_get("debug.flutter.adpf_mode", prop) > 0) {
+    if (std::strcmp(prop, "off") == 0 || std::strcmp(prop, "control") == 0) {
+      return AdpfChoreographerMode::kLegacyPostFrameCallback;
+    }
+    if (std::strcmp(prop, "phase4") == 0) {
+      return AdpfChoreographerMode::kPhase4PreferredIdx;
+    }
+  }
+  return AdpfChoreographerMode::kImproved;
+}
+}  // namespace
+
 bool Choreographer::PostVsyncCallback(VsyncCallback callback) const {
   if (!callback || !IsValid()) {
     return false;
   }
 
+  const AdpfChoreographerMode mode = GetAdpfChoreographerMode();
   const ProcTable& table = GetProcTable();
-  if (table.AChoreographer_postVsyncCallback &&
+  if (mode != AdpfChoreographerMode::kLegacyPostFrameCallback &&
+      table.AChoreographer_postVsyncCallback &&
       table.AChoreographerFrameCallbackData_getFrameTimeNanos &&
       table.AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex &&
       table.AChoreographerFrameCallbackData_getFrameTimelineDeadlineNanos) {

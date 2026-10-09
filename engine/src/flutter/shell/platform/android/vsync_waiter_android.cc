@@ -12,6 +12,7 @@
 #include "flutter/fml/platform/android/jni_util.h"
 #include "flutter/fml/platform/android/scoped_java_ref.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/shell/platform/android/android_performance_hint_manager.h"
 #include "impeller/toolkit/android/choreographer.h"
 
 namespace flutter {
@@ -20,13 +21,19 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_vsync_waiter_class = nullptr;
 static jmethodID g_async_wait_for_vsync_method_ = nullptr;
 static std::atomic_uint g_refresh_rate_ = 60;
 
-VsyncWaiterAndroid::VsyncWaiterAndroid(const flutter::TaskRunners& task_runners)
-    : VsyncWaiter(task_runners) {}
+VsyncWaiterAndroid::VsyncWaiterAndroid(
+    const flutter::TaskRunners& task_runners,
+    std::shared_ptr<AndroidPerformanceHintManager> performance_hint_manager)
+    : VsyncWaiter(task_runners),
+      performance_hint_manager_(std::move(performance_hint_manager)) {}
 
 VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 
 // |VsyncWaiter|
 void VsyncWaiterAndroid::AwaitVSync() {
+  if (performance_hint_manager_) {
+    performance_hint_manager_->NotifyWorkloadReset();
+  }
   const static bool use_choreographer =
       impeller::android::Choreographer::IsAvailableOnPlatform();
   if (use_choreographer) {

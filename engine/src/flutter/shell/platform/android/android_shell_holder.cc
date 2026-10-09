@@ -6,9 +6,11 @@
 
 #include <pthread.h>
 #include <sys/resource.h>
+#include <sys/system_properties.h>
 #include <sys/time.h>
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <optional>
 
@@ -135,34 +137,41 @@ AndroidShellHolder::AndroidShellHolder(
   thread_host_ = std::make_shared<ThreadHost>(host_config);
 
   std::vector<int32_t> tids;
-  if (settings.merged_platform_ui_thread ==
-      Settings::MergedPlatformUIThread::kMergeAfterLaunch) {
-    // MergedPlatformUIThread::kMergeAfterLaunch dynamically migrates the UI
-    // task queue to the platform thread during Engine::Run. Skip ADPF session
-    // creation until dynamic thread migration can be represented.
-  } else {
-    if (ui_tid.load() > 0) {
-      tids.push_back(ui_tid.load());
-    } else if (settings.merged_platform_ui_thread ==
-               Settings::MergedPlatformUIThread::kEnabled) {
-      tids.push_back(gettid());
-    }
-    if (raster_tid.load() > 0) {
-      tids.push_back(raster_tid.load());
-    }
+  if (ui_tid.load() > 0) {
+    tids.push_back(ui_tid.load());
+  }
+  if ((settings.merged_platform_ui_thread ==
+           Settings::MergedPlatformUIThread::kEnabled ||
+       settings.merged_platform_ui_thread ==
+           Settings::MergedPlatformUIThread::kMergeAfterLaunch) &&
+      std::find(tids.begin(), tids.end(), gettid()) == tids.end()) {
+    tids.push_back(gettid());
+  }
+  if (raster_tid.load() > 0 &&
+      std::find(tids.begin(), tids.end(), raster_tid.load()) == tids.end()) {
+    tids.push_back(raster_tid.load());
   }
 
   double refresh_rate = jni_facade->GetDisplayRefreshRate();
   if (refresh_rate <= 0) {
     refresh_rate = 60.0;
   }
+  const int64_t initial_nominal_interval_ns =
+      static_cast<int64_t>(1e9 / refresh_rate);
+  nominal_frame_interval_ns_ =
+      std::make_shared<std::atomic<int64_t>>(initial_nominal_interval_ns);
   int64_t target_duration_ns =
-      static_cast<int64_t>((1e9 / refresh_rate) * kTargetFrameWorkRatio);
+      static_cast<int64_t>(initial_nominal_interval_ns * kTargetFrameWorkRatio);
 
   if (!tids.empty()) {
     performance_hint_manager_ =
         AndroidPerformanceHintManager::Create(tids, target_duration_ns);
   }
+
+  char adpf_mode_prop[PROP_VALUE_MAX] = {0};
+  const bool is_phase4_mode =
+      (__system_property_get("debug.flutter.adpf_mode", adpf_mode_prop) > 0 &&
+       std::strcmp(adpf_mode_prop, "phase4") == 0);
 
   flutter::Settings shell_settings = settings_;
   if (performance_hint_manager_) {
@@ -170,7 +179,9 @@ AndroidShellHolder::AndroidShellHolder(
         shell_settings.frame_rasterized_callback;
     shell_settings.frame_rasterized_callback = [perf_hint =
                                                     performance_hint_manager_,
-                                                prev_callback](
+                                                nominal_interval =
+                                                    nominal_frame_interval_ns_,
+                                                is_phase4_mode, prev_callback](
                                                    const FrameTiming& timing) {
       if (prev_callback) {
         prev_callback(timing);
@@ -181,6 +192,27 @@ AndroidShellHolder::AndroidShellHolder(
           timing.GetPreferredFrameDeadline().ToEpochDelta().ToNanoseconds();
       if (deadline_ns > vsync_start_ns) {
         int64_t frame_interval_ns = deadline_ns - vsync_start_ns;
+        if (!is_phase4_mode) {
+          // SurfaceFlinger's preferred frame timeline deadline represents
+          // the end-to-end pipeline latch horizon (~2 VSync periods, e.g.
+          // 16.6ms at 120Hz, or 25ms+ when buffer-stuffed). Because ADPF
+          // compares actual CPU duration (UI build + Raster) against
+          // targetWorkDuration on every frame, using the 2-frame latch
+          // horizon sets a 12.45ms target at 120Hz—causing 8.5-12ms frames
+          // (which miss 120Hz) to report negative PID error and downclock.
+          // Clamp to the single-frame VSync interval (with a 4ms sanity
+          // floor) so the ADPF target matches the true per-frame budget.
+          if (nominal_interval) {
+            const int64_t max_interval_ns =
+                nominal_interval->load(std::memory_order_relaxed);
+            if (max_interval_ns > 0) {
+              frame_interval_ns = std::min(frame_interval_ns, max_interval_ns);
+            }
+          }
+          constexpr int64_t kMinValidFrameIntervalNs = 4000000;  // 250Hz
+          frame_interval_ns =
+              std::max(frame_interval_ns, kMinValidFrameIntervalNs);
+        }
         int64_t dynamic_target_ns =
             static_cast<int64_t>(frame_interval_ns * kTargetFrameWorkRatio);
         perf_hint->UpdateTargetWorkDuration(dynamic_target_ns);
@@ -204,6 +236,9 @@ AndroidShellHolder::AndroidShellHolder(
                            timing.Get(FrameTiming::kRasterStart))
                               .ToNanoseconds();
       int64_t cpu_duration_ns = build_ns + raster_ns;
+      if (!is_phase4_mode) {
+        total_duration_ns = std::max(total_duration_ns, cpu_duration_ns);
+      }
       if (vsync_start_ns > 0 && total_duration_ns > 0 && cpu_duration_ns > 0) {
         perf_hint->ReportActualWorkDuration(vsync_start_ns, total_duration_ns,
                                             cpu_duration_ns, 0);
@@ -213,8 +248,11 @@ AndroidShellHolder::AndroidShellHolder(
 
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
+  std::shared_ptr<AndroidPerformanceHintManager> perf_hint_for_view =
+      performance_hint_manager_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, &weak_platform_view, rendering_api](Shell& shell) {
+      [&jni_facade, &weak_platform_view, rendering_api,
+       perf_hint_for_view](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -222,6 +260,7 @@ AndroidShellHolder::AndroidShellHolder(
             jni_facade,              // JNI interop
             rendering_api            // rendering API
         );
+        platform_view_android->SetPerformanceHintManager(perf_hint_for_view);
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };
@@ -289,14 +328,19 @@ AndroidShellHolder::AndroidShellHolder(
     std::unique_ptr<Shell> shell,
     std::unique_ptr<APKAssetProvider> apk_asset_provider,
     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-    AndroidRenderingAPI rendering_api)
+    AndroidRenderingAPI rendering_api,
+    const std::shared_ptr<AndroidPerformanceHintManager>&
+        performance_hint_manager,
+    const std::shared_ptr<std::atomic<int64_t>>& nominal_frame_interval_ns)
     : settings_(settings),
       jni_facade_(jni_facade),
       platform_view_(platform_view),
       thread_host_(thread_host),
       shell_(std::move(shell)),
       apk_asset_provider_(std::move(apk_asset_provider)),
-      android_rendering_api_(rendering_api) {
+      android_rendering_api_(rendering_api),
+      performance_hint_manager_(performance_hint_manager),
+      nominal_frame_interval_ns_(nominal_frame_interval_ns) {
   FML_DCHECK(jni_facade);
   FML_DCHECK(shell_);
   FML_DCHECK(shell_->IsSetup());
@@ -348,8 +392,11 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
   FML_DCHECK(android_context);
 
   // This is a synchronous call, so the captures don't have race checks.
+  std::shared_ptr<AndroidPerformanceHintManager> perf_hint_for_view =
+      performance_hint_manager_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, android_context, &weak_platform_view](Shell& shell) {
+      [&jni_facade, android_context, &weak_platform_view,
+       perf_hint_for_view](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -357,6 +404,7 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
             jni_facade,              // JNI interop
             android_context          // Android context
         );
+        platform_view_android->SetPerformanceHintManager(perf_hint_for_view);
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };
@@ -380,7 +428,8 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
   return std::unique_ptr<AndroidShellHolder>(new AndroidShellHolder(
       GetSettings(), jni_facade, thread_host_, std::move(shell),
       apk_asset_provider_->Clone(), weak_platform_view,
-      android_context->RenderingApi()));
+      android_context->RenderingApi(), performance_hint_manager_,
+      nominal_frame_interval_ns_));
 }
 
 void AndroidShellHolder::Launch(
@@ -462,12 +511,18 @@ void AndroidShellHolder::UpdateDisplayMetrics() {
   displays.push_back(std::make_unique<AndroidDisplay>(jni_facade_));
   shell_->OnDisplayUpdates(std::move(displays));
 
-  if (performance_hint_manager_ && jni_facade_) {
+  if (jni_facade_) {
     double refresh_rate = jni_facade_->GetDisplayRefreshRate();
     if (refresh_rate > 0) {
-      constexpr double kTargetFrameWorkRatio = 0.75;
-      performance_hint_manager_->UpdateTargetWorkDuration(
-          static_cast<int64_t>((1e9 / refresh_rate) * kTargetFrameWorkRatio));
+      const int64_t interval_ns = static_cast<int64_t>(1e9 / refresh_rate);
+      if (nominal_frame_interval_ns_) {
+        nominal_frame_interval_ns_->store(interval_ns,
+                                          std::memory_order_relaxed);
+      }
+      if (performance_hint_manager_) {
+        performance_hint_manager_->UpdateTargetWorkDuration(
+            static_cast<int64_t>(interval_ns * kTargetFrameWorkRatio));
+      }
     }
   }
 }

@@ -15,12 +15,15 @@
 namespace flutter {
 
 class AndroidChoreographer;
+class AndroidPerformanceHintManager;
 
 class VsyncWaiterAndroid final : public VsyncWaiter {
  public:
   static bool Register(JNIEnv* env);
 
-  explicit VsyncWaiterAndroid(const flutter::TaskRunners& task_runners);
+  explicit VsyncWaiterAndroid(const flutter::TaskRunners& task_runners,
+                              std::shared_ptr<AndroidPerformanceHintManager>
+                                  performance_hint_manager = nullptr);
 
   ~VsyncWaiterAndroid() override;
 
@@ -47,6 +50,8 @@ class VsyncWaiterAndroid final : public VsyncWaiter {
   static void OnUpdateRefreshRate(JNIEnv* env,
                                   jclass jcaller,
                                   jfloat refresh_rate);
+
+  std::shared_ptr<AndroidPerformanceHintManager> performance_hint_manager_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(VsyncWaiterAndroid);
 };
