@@ -414,11 +414,30 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
   }
 
   if (impl_->work_duration && impl_->report_actual_work_duration2) {
+    // In Android 15/16's libandroid.so
+    // (FMQWrapper::writeBuffer<HalChannelMessageContents::workDuration> in
+    // frameworks/base/native/android/performance_hint.cpp), Fast Message Queue
+    // serialization overwrites WorkDurationFixedV1.durationNanos with
+    // message.cpuDurationNanos instead of message.durationNanos.
+    // Meanwhile, Pixel PowerHAL's GpuCalculationHelpers::calculate_capacity
+    // checks observation.durationNanos < observation.gpuDurationNanos
+    // (subtotal_timings_invalid) and overrun = observation.durationNanos -
+    // target, returning 0 GPU capacity whenever cpuDurationNanos <
+    // gpuDurationNanos or cpuDurationNanos <= target.
+    // When actual_gpu_duration_ns exceeds applied_target_duration_ns, ensure
+    // the reported CPU duration is at least actual_gpu_duration_ns so PowerHAL
+    // does not discard the GPU overrun as an invalid subtotal timing.
+    int64_t reported_cpu_duration_ns = actual_cpu_duration_ns;
+    if (impl_->applied_target_duration_ns > 0 &&
+        actual_gpu_duration_ns > impl_->applied_target_duration_ns &&
+        reported_cpu_duration_ns < actual_gpu_duration_ns) {
+      reported_cpu_duration_ns = actual_gpu_duration_ns;
+    }
     impl_->set_work_period_start(impl_->work_duration, work_period_start_ns);
     impl_->set_actual_total_duration(impl_->work_duration,
                                      actual_total_duration_ns);
     impl_->set_actual_cpu_duration(impl_->work_duration,
-                                   actual_cpu_duration_ns);
+                                   reported_cpu_duration_ns);
     impl_->set_actual_gpu_duration(impl_->work_duration,
                                    actual_gpu_duration_ns);
 
