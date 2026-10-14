@@ -550,15 +550,28 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
-    parentView.setVisibility(View.VISIBLE);
-    parentView.bringToFront();
+    if (parentView.getVisibility() != View.VISIBLE) {
+      parentView.setVisibility(View.VISIBLE);
+    }
+    if (flutterView != null
+        && flutterView.indexOfChild(parentView) < flutterView.getChildCount() - 1) {
+      parentView.bringToFront();
+    }
 
-    final FrameLayout.LayoutParams layoutParams =
-        new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
     final View view = platformViews.get(viewId).getView();
     if (view != null) {
-      view.setLayoutParams(layoutParams);
-      view.bringToFront();
+      final ViewGroup.LayoutParams currentParams = view.getLayoutParams();
+      if (!(currentParams instanceof FrameLayout.LayoutParams)
+          || currentParams.width != viewWidth
+          || currentParams.height != viewHeight
+          || ((FrameLayout.LayoutParams) currentParams).gravity != (Gravity.LEFT | Gravity.TOP)) {
+        final FrameLayout.LayoutParams layoutParams =
+            new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
+        view.setLayoutParams(layoutParams);
+      }
+      if (parentView.indexOfChild(view) < parentView.getChildCount() - 1) {
+        view.bringToFront();
+      }
       if (view instanceof SurfaceView) {
         maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack, viewId);
       }

@@ -32,6 +32,7 @@
 #include "flutter/shell/platform/android/android_shell_holder.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
+#include "flutter/shell/platform/android/vsync_waiter_android.h"
 
 namespace flutter {
 
@@ -176,14 +177,15 @@ AndroidShellHolder::AndroidShellHolder(
   const bool is_dual_session_mode =
       has_adpf_prop && std::strcmp(adpf_mode_prop, "dual_session_8.3ms") == 0;
   const bool is_max_stage_mode =
-      !is_phase4_mode && !is_phase4_hints_mode && !is_target_8_3ms_mode &&
-      !is_target_6_25ms_mode && !is_dual_session_mode;
+      has_adpf_prop && std::strcmp(adpf_mode_prop, "max_stage") == 0;
   const bool is_gpu_adpf_enabled = !is_phase4_mode && !is_cpu_only_mode;
   const bool is_single_vsync_clamp = !is_phase4_mode && !is_phase4_hints_mode;
   const bool is_full_vsync_target =
-      is_max_stage_mode || is_dual_session_mode || is_target_8_3ms_mode;
+      !is_phase4_mode && !is_phase4_hints_mode && !is_target_6_25ms_mode;
   const double target_work_ratio =
       is_full_vsync_target ? 1.0 : kTargetFrameWorkRatio;
+  is_single_vsync_clamp_ = is_single_vsync_clamp;
+  target_work_ratio_ = target_work_ratio;
 
   const int64_t initial_pipeline_interval_ns =
       is_single_vsync_clamp ? initial_nominal_interval_ns
@@ -246,15 +248,21 @@ AndroidShellHolder::AndroidShellHolder(
       if (deadline_ns > vsync_start_ns) {
         int64_t frame_interval_ns = deadline_ns - vsync_start_ns;
         if (!is_phase4_mode) {
+          int64_t base_interval_ns = VsyncWaiterAndroid::GetRefreshPeriodNs();
           if (nominal_interval) {
-            const int64_t base_interval_ns =
-                nominal_interval->load(std::memory_order_relaxed);
             if (base_interval_ns > 0) {
-              const int64_t max_interval_ns = is_single_vsync_clamp
-                                                  ? base_interval_ns
-                                                  : (base_interval_ns * 2);
-              frame_interval_ns = std::min(frame_interval_ns, max_interval_ns);
+              nominal_interval->store(base_interval_ns,
+                                      std::memory_order_relaxed);
+            } else {
+              base_interval_ns =
+                  nominal_interval->load(std::memory_order_relaxed);
             }
+          }
+          if (base_interval_ns > 0) {
+            const int64_t max_interval_ns = is_single_vsync_clamp
+                                                ? base_interval_ns
+                                                : (base_interval_ns * 2);
+            frame_interval_ns = std::min(frame_interval_ns, max_interval_ns);
           }
           constexpr int64_t kMinValidFrameIntervalNs = 4000000;  // 250Hz
           frame_interval_ns =
@@ -335,8 +343,10 @@ AndroidShellHolder::AndroidShellHolder(
       if (is_max_stage_mode) {
         total_duration_ns = std::max(cpu_duration_ns, gpu_duration_ns);
       } else if (!is_phase4_mode) {
-        total_duration_ns =
-            std::max({total_duration_ns, cpu_duration_ns, gpu_duration_ns});
+        int64_t active_wall_duration_ns =
+            std::max<int64_t>(0, total_duration_ns - fence_wait_ns);
+        total_duration_ns = std::max(
+            {active_wall_duration_ns, cpu_duration_ns, gpu_duration_ns});
       }
       if (vsync_start_ns > 0 && total_duration_ns > 0 &&
           (cpu_duration_ns > 0 || gpu_duration_ns > 0)) {
@@ -623,8 +633,10 @@ void AndroidShellHolder::UpdateDisplayMetrics() {
                                           std::memory_order_relaxed);
       }
       if (performance_hint_manager_) {
+        const int64_t pipeline_interval_ns =
+            is_single_vsync_clamp_ ? interval_ns : (interval_ns * 2);
         performance_hint_manager_->UpdateTargetWorkDuration(
-            static_cast<int64_t>(interval_ns * kTargetFrameWorkRatio));
+            static_cast<int64_t>(pipeline_interval_ns * target_work_ratio_));
       }
     }
   }

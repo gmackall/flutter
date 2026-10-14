@@ -27,6 +27,8 @@ class VsyncWaiterAndroid final : public VsyncWaiter {
 
   ~VsyncWaiterAndroid() override;
 
+  static int64_t GetRefreshPeriodNs();
+
  private:
   // |VsyncWaiter|
   void AwaitVSync() override;

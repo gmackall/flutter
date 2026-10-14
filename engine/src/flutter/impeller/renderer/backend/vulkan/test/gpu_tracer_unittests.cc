@@ -156,11 +156,82 @@ TEST(GPUTracerVK, TracesWithPartialFrameOverlap) {
   EXPECT_GT(context->GetLastFrameGpuTimeNs(), 0);
 }
 
+TEST(GPUTracerVK, TracesNestedFrameWorkload) {
+  auto const context =
+      MockVulkanContextBuilder()
+          .SetSettingsCallback([](ContextVK::Settings& settings) {
+            settings.enable_gpu_tracing = true;
+          })
+          .Build();
+  auto tracer = context->GetGPUTracer();
+  ASSERT_TRUE(tracer->IsEnabled());
+
+  // Outer swapchain AcquireNextDrawable -> MarkFrameStart, then inner overlay
+  // swapchain AcquireNextDrawable -> MarkFrameStart, then inner overlay
+  // command buffer submitted and MarkFrameEnd, and only AFTER that is the
+  // outer swapchain's command buffer created and submitted.
+  tracer->MarkFrameStart();
+  tracer->MarkFrameStart();
+
+  auto overlay_cmd_buffer = context->CreateCommandBuffer();
+  auto overlay_blit_pass = overlay_cmd_buffer->CreateBlitPass();
+  overlay_blit_pass->EncodeCommands();
+  auto overlay_latch = std::make_shared<fml::CountDownLatch>(1u);
+  if (!context->GetCommandQueue()
+           ->Submit({overlay_cmd_buffer},
+                    [overlay_latch](CommandBuffer::Status status) {
+                      overlay_latch->CountDown();
+                    })
+           .ok()) {
+    GTEST_FAIL() << "Failed to submit overlay cmd buffer";
+  }
+  tracer->MarkFrameEnd();
+
+  auto cmd_buffer = context->CreateCommandBuffer();
+  auto blit_pass = cmd_buffer->CreateBlitPass();
+  blit_pass->EncodeCommands();
+
+  tracer->MarkFrameEnd();
+
+  auto latch = std::make_shared<fml::CountDownLatch>(1u);
+  if (!context->GetCommandQueue()
+           ->Submit(
+               {cmd_buffer},
+               [latch](CommandBuffer::Status status) { latch->CountDown(); })
+           .ok()) {
+    GTEST_FAIL() << "Failed to submit cmd buffer";
+  }
+
+  overlay_latch->Wait();
+  latch->Wait();
+
+  auto called = GetMockVulkanFunctions(context->GetDevice());
+  ASSERT_NE(called, nullptr);
+  ASSERT_TRUE(std::find(called->begin(), called->end(),
+                        "vkGetQueryPoolResults") != called->end());
+  // Mock query results are [1000, 2000, 3000, 4000]; summing per-cmd-buffer
+  // intervals [1000, 2000] and [3000, 4000] excludes the [2000, 3000] gap.
+  EXPECT_EQ(context->GetLastFrameGpuTimeNs(), 2000);
+}
+
 TEST(GPUTracerVK, RecordsFenceWaitTimeNs) {
   auto const context = MockVulkanContextBuilder().Build();
+  auto tracer = context->GetGPUTracer();
   EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 0);
-  context->RecordFenceWaitTimeNs(1234567);
-  EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 1234567);
+
+  // Frame 1: primary swapchain and overlay swapchain fence waits accumulate.
+  context->RecordFenceWaitTimeNs(1000000);
+  tracer->MarkFrameStart();
+  context->RecordFenceWaitTimeNs(500000);
+  tracer->MarkFrameStart();
+  EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 1500000);
+  tracer->MarkFrameEnd();
+  tracer->MarkFrameEnd();
+  EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 1500000);
+
+  // Frame 2: next frame's first fence wait replaces the previous frame's total.
+  context->RecordFenceWaitTimeNs(250000);
+  EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 250000);
 }
 
 }  // namespace testing

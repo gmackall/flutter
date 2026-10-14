@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "impeller/renderer/backend/vulkan/context_vk.h"
 #include "impeller/renderer/backend/vulkan/device_holder_vk.h"
@@ -72,11 +74,19 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
   ///        time.
   void RecordCmdBufferEnd(const vk::CommandBuffer& buffer, GPUProbe& probe);
 
+  void ReadAndResetCompletedState(
+      vk::QueryPool pool,
+      size_t query_count,
+      size_t frame_index,
+      std::vector<std::pair<size_t, size_t>> query_pairs);
+
   std::weak_ptr<ContextVK> context_;
 
   struct GPUTraceState {
     size_t current_index = 0;
     size_t pending_buffers = 0;
+    bool in_progress = false;
+    std::vector<std::pair<size_t, size_t>> query_pairs;
     vk::UniqueQueryPool query_pool;
   };
 
@@ -97,6 +107,7 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
   // actually renders a frame. Without the in_frame_ guard, the GPU frame time
   // would include this 30ms gap during which the engine was idle.
   bool in_frame_ = false;
+  size_t active_frame_depth_ = 0u;
 
   // Track the raster thread id to avoid recording mipmap/image cmd buffers
   // that are not guaranteed to start/end according to frame boundaries.
@@ -127,6 +138,7 @@ class GPUProbe {
 
   std::weak_ptr<GPUTracerVK> tracer_;
   std::optional<size_t> index_ = std::nullopt;
+  std::optional<size_t> start_query_index_ = std::nullopt;
 };
 
 }  // namespace impeller

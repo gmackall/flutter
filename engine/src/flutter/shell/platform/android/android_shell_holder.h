@@ -123,6 +123,8 @@ class AndroidShellHolder {
   const AndroidRenderingAPI android_rendering_api_;
   std::shared_ptr<AndroidPerformanceHintManager> performance_hint_manager_;
   std::shared_ptr<std::atomic<int64_t>> nominal_frame_interval_ns_;
+  bool is_single_vsync_clamp_ = true;
+  double target_work_ratio_ = 1.0;
 
   //----------------------------------------------------------------------------
   /// @brief      Constructor with its components injected.

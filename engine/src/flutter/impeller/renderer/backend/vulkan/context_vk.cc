@@ -688,7 +688,16 @@ int64_t ContextVK::GetLastFrameFenceWaitTimeNs() const {
 }
 
 void ContextVK::RecordFenceWaitTimeNs(int64_t wait_ns) const {
-  last_frame_fence_wait_ns_.store(wait_ns, std::memory_order_relaxed);
+  if (reset_fence_wait_on_next_record_.exchange(false,
+                                                std::memory_order_relaxed)) {
+    last_frame_fence_wait_ns_.store(wait_ns, std::memory_order_relaxed);
+  } else {
+    last_frame_fence_wait_ns_.fetch_add(wait_ns, std::memory_order_relaxed);
+  }
+}
+
+void ContextVK::ResetFenceWaitTimeForNextFrame() const {
+  reset_fence_wait_on_next_record_.store(true, std::memory_order_relaxed);
 }
 
 std::shared_ptr<DescriptorPoolRecyclerVK> ContextVK::GetDescriptorPoolRecycler()

@@ -94,6 +94,7 @@ class BackdropBlurCarrier {
   @Nullable private SurfaceControl overlay;
   private boolean overlayParentedToCarrier = false;
   private boolean hasBlurRegions = false;
+  @Nullable private float[] lastAppliedBlurs;
   private boolean crossWindowBlurEnabled = true;
   @Nullable private Consumer<Boolean> blurEnabledListener;
   private boolean loggedBlurUnavailable = false;
@@ -151,6 +152,7 @@ class BackdropBlurCarrier {
       carrier = null;
     }
     hasBlurRegions = false;
+    lastAppliedBlurs = null;
     flutterView = null;
   }
 
@@ -216,21 +218,24 @@ class BackdropBlurCarrier {
 
   @RequiresApi(API_LEVELS.API_37)
   private void applyBlurRegions(@NonNull float[] blurs, int count) {
-    scratchRegions.clear();
-    for (int i = 0; i < count; i++) {
-      final int base = i * BLUR_FIELDS;
-      final float[] cornerRadii = new float[8];
-      Arrays.fill(cornerRadii, blurs[base + 5]);
-      scratchRegions.add(
-          new RoundedRectBlurRegion(
-              new RectF(blurs[base], blurs[base + 1], blurs[base + 2], blurs[base + 3]),
-              cornerRadii,
-              /* alpha= */ 1.0f,
-              sigmaToBlurRadius(blurs[base + 4])));
+    if (!Arrays.equals(blurs, lastAppliedBlurs)) {
+      scratchRegions.clear();
+      for (int i = 0; i < count; i++) {
+        final int base = i * BLUR_FIELDS;
+        final float[] cornerRadii = new float[8];
+        Arrays.fill(cornerRadii, blurs[base + 5]);
+        scratchRegions.add(
+            new RoundedRectBlurRegion(
+                new RectF(blurs[base], blurs[base + 1], blurs[base + 2], blurs[base + 3]),
+                cornerRadii,
+                /* alpha= */ 1.0f,
+                sigmaToBlurRadius(blurs[base + 4])));
+      }
+      carrier.setBlurRegions(scratchRegions);
+      scratchRegions.clear();
+      lastAppliedBlurs = count > 0 ? blurs.clone() : null;
+      hasBlurRegions = count > 0;
     }
-    carrier.setBlurRegions(scratchRegions);
-    scratchRegions.clear();
-    hasBlurRegions = count > 0;
     // The overlay may have been created after the carrier's surface.
     if (!overlayParentedToCarrier) {
       reparentOverlayToCarrier();
@@ -242,6 +247,7 @@ class BackdropBlurCarrier {
     if (carrier != null && hasBlurRegions) {
       carrier.setBlurRegions(null);
       hasBlurRegions = false;
+      lastAppliedBlurs = null;
     }
   }
 
@@ -291,6 +297,7 @@ class BackdropBlurCarrier {
                 // overlay with it.
                 reparentOverlayToRoot();
                 hasBlurRegions = false;
+                lastAppliedBlurs = null;
               }
             });
     flutterView.addView(

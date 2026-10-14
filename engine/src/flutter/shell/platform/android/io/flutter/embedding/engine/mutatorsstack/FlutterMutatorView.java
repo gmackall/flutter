@@ -15,6 +15,7 @@ import android.graphics.Path;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
@@ -24,6 +25,7 @@ import androidx.annotation.VisibleForTesting;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.plugin.platform.PlatformViewGestureTracker;
 import io.flutter.util.ViewUtils;
+import java.util.Objects;
 
 /**
  * A view that applies the {@link io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack} to
@@ -101,15 +103,29 @@ public class FlutterMutatorView extends FrameLayout {
    */
   public void readyToDisplay(
       @NonNull FlutterMutatorsStack mutatorsStack, int left, int top, int width, int height) {
+    boolean mutatorsChanged = !Objects.equals(this.mutatorsStack, mutatorsStack);
+    boolean positionChanged = this.left != left || this.top != top;
     this.mutatorsStack = mutatorsStack;
     this.left = left;
     this.top = top;
-    FrameLayout.LayoutParams layoutParams =
-        new FrameLayout.LayoutParams(width, height, Gravity.LEFT | Gravity.TOP);
-    layoutParams.leftMargin = left;
-    layoutParams.topMargin = top;
-    setLayoutParams(layoutParams);
-    setWillNotDraw(false);
+    ViewGroup.LayoutParams currentParams = getLayoutParams();
+    if (!(currentParams instanceof FrameLayout.LayoutParams)
+        || currentParams.width != width
+        || currentParams.height != height
+        || ((FrameLayout.LayoutParams) currentParams).leftMargin != left
+        || ((FrameLayout.LayoutParams) currentParams).topMargin != top
+        || ((FrameLayout.LayoutParams) currentParams).gravity != (Gravity.LEFT | Gravity.TOP)) {
+      FrameLayout.LayoutParams layoutParams =
+          new FrameLayout.LayoutParams(width, height, Gravity.LEFT | Gravity.TOP);
+      layoutParams.leftMargin = left;
+      layoutParams.topMargin = top;
+      setLayoutParams(layoutParams);
+    } else if (mutatorsChanged || positionChanged) {
+      invalidate();
+    }
+    if (willNotDraw()) {
+      setWillNotDraw(false);
+    }
   }
 
   @Override

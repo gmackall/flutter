@@ -11,7 +11,9 @@ import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * The mutator stack containing a list of mutators
@@ -147,6 +149,30 @@ public class FlutterMutatorsStack {
     public float getOpacity() {
       return opacity;
     }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof FlutterMutator)) {
+        return false;
+      }
+      FlutterMutator other = (FlutterMutator) obj;
+      return this.type == other.type
+          && Float.compare(this.opacity, other.opacity) == 0
+          && Objects.equals(this.matrix, other.matrix)
+          && Objects.equals(this.rect, other.rect)
+          && Objects.equals(this.path, other.path)
+          && Arrays.equals(this.radiis, other.radiis);
+    }
+
+    @Override
+    public int hashCode() {
+      int result = Objects.hash(type, matrix, rect, path, opacity);
+      result = 31 * result + Arrays.hashCode(radiis);
+      return result;
+    }
   }
 
   private @NonNull List<FlutterMutator> mutators;
@@ -272,5 +298,27 @@ public class FlutterMutatorsStack {
    */
   public float getFinalOpacity() {
     return finalOpacity;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
+    }
+    if (!(obj instanceof FlutterMutatorsStack)) {
+      return false;
+    }
+    FlutterMutatorsStack other = (FlutterMutatorsStack) obj;
+    if (this.mutators == null || other.mutators == null) {
+      return false;
+    }
+    return Float.compare(this.finalOpacity, other.finalOpacity) == 0
+        && Objects.equals(this.finalMatrix, other.finalMatrix)
+        && Objects.equals(this.mutators, other.mutators);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(mutators, finalMatrix, finalOpacity);
   }
 }

@@ -270,6 +270,32 @@ public class FlutterMutatorViewTest {
     assertFalse(view.getFlutterWonGesture());
   }
 
+  @Test
+  public void readyToDisplay_skipsRedundantSetLayoutParamsWhenUnchanged() {
+    final FlutterMutatorView view = spy(new FlutterMutatorView(ctx));
+    final FlutterMutatorsStack stack1 = new FlutterMutatorsStack();
+    stack1.pushTransform(new float[] {1, 0, 10, 0, 1, 20, 0, 0, 1});
+
+    view.readyToDisplay(stack1, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
+    verify(view, times(1)).setLayoutParams(any());
+    reset(view);
+
+    // Identical mutators and bounds should not trigger setLayoutParams or invalidate.
+    final FlutterMutatorsStack stack2 = new FlutterMutatorsStack();
+    stack2.pushTransform(new float[] {1, 0, 10, 0, 1, 20, 0, 0, 1});
+    view.readyToDisplay(stack2, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
+    verify(view, never()).setLayoutParams(any());
+    verify(view, never()).invalidate();
+
+    // Changed mutators with identical bounds should invalidate without setLayoutParams.
+    final FlutterMutatorsStack stack3 = new FlutterMutatorsStack();
+    stack3.pushTransform(new float[] {1, 0, 10, 0, 1, 20, 0, 0, 1});
+    stack3.pushOpacity(0.5f);
+    view.readyToDisplay(stack3, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
+    verify(view, never()).setLayoutParams(any());
+    verify(view, times(1)).invalidate();
+  }
+
   @Implements(ViewGroup.class)
   public static class ShadowViewGroup extends org.robolectric.shadows.ShadowViewGroup {
     @Implementation
