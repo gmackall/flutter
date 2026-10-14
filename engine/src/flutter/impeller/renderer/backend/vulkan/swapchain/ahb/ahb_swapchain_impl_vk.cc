@@ -207,13 +207,12 @@ std::unique_ptr<Surface> AHBSwapchainImplVK::AcquireNextDrawable() {
           return false;
         }
         return thiz->Present(texture);
-      });
+      },
+      context_vk.GetGPUTracer());
 
   if (!surface) {
     return nullptr;
   }
-
-  context_vk.GetGPUTracer()->MarkFrameStart();
 
   return surface;
 }
@@ -223,18 +222,12 @@ bool AHBSwapchainImplVK::Present(
   auto context = transients_->GetContext().lock();
   auto control = surface_control_.lock();
   if (!control || !control->IsValid() || !texture) {
-    if (context) {
-      ContextVK::Cast(*context).GetGPUTracer()->MarkFrameEnd();
-    }
     VALIDATION_LOG << "Surface control died before swapchain image could be "
                       "presented.";
     return false;
   }
 
   auto present_ready = SubmitSignalForPresentReady(texture);
-  if (context) {
-    ContextVK::Cast(*context).GetGPUTracer()->MarkFrameEnd();
-  }
 
   if (!present_ready) {
     VALIDATION_LOG << "Could not submit completion signal.";

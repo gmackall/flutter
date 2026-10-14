@@ -683,12 +683,25 @@ int64_t ContextVK::GetLastFrameGpuTimeNs() const {
   return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeNs() : 0;
 }
 
+uint64_t ContextVK::GetLastFrameGpuTimeGeneration() const {
+  return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeGeneration() : 0;
+}
+
 int64_t ContextVK::GetLastFrameFenceWaitTimeNs() const {
   return last_frame_fence_wait_ns_.load(std::memory_order_relaxed);
 }
 
 void ContextVK::RecordFenceWaitTimeNs(int64_t wait_ns) const {
-  last_frame_fence_wait_ns_.store(wait_ns, std::memory_order_relaxed);
+  if (reset_fence_wait_on_next_record_.exchange(false,
+                                                std::memory_order_relaxed)) {
+    last_frame_fence_wait_ns_.store(wait_ns, std::memory_order_relaxed);
+  } else {
+    last_frame_fence_wait_ns_.fetch_add(wait_ns, std::memory_order_relaxed);
+  }
+}
+
+void ContextVK::ResetFenceWaitTimeForNextFrame() const {
+  reset_fence_wait_on_next_record_.store(true, std::memory_order_relaxed);
 }
 
 std::shared_ptr<DescriptorPoolRecyclerVK> ContextVK::GetDescriptorPoolRecycler()

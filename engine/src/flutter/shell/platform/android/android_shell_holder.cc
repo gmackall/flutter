@@ -32,6 +32,7 @@
 #include "flutter/shell/platform/android/android_shell_holder.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
+#include "flutter/shell/platform/android/vsync_waiter_android.h"
 
 namespace flutter {
 
@@ -176,14 +177,16 @@ AndroidShellHolder::AndroidShellHolder(
   const bool is_dual_session_mode =
       has_adpf_prop && std::strcmp(adpf_mode_prop, "dual_session_8.3ms") == 0;
   const bool is_max_stage_mode =
-      !is_phase4_mode && !is_phase4_hints_mode && !is_target_8_3ms_mode &&
-      !is_target_6_25ms_mode && !is_dual_session_mode;
+      has_adpf_prop && (std::strcmp(adpf_mode_prop, "max_stage") == 0 ||
+                        std::strcmp(adpf_mode_prop, "max_stage_8.3ms") == 0);
   const bool is_gpu_adpf_enabled = !is_phase4_mode && !is_cpu_only_mode;
   const bool is_single_vsync_clamp = !is_phase4_mode && !is_phase4_hints_mode;
   const bool is_full_vsync_target =
-      is_max_stage_mode || is_dual_session_mode || is_target_8_3ms_mode;
+      !is_phase4_mode && !is_phase4_hints_mode && !is_target_6_25ms_mode;
   const double target_work_ratio =
       is_full_vsync_target ? 1.0 : kTargetFrameWorkRatio;
+  is_single_vsync_clamp_ = is_single_vsync_clamp;
+  target_work_ratio_ = target_work_ratio;
 
   const int64_t initial_pipeline_interval_ns =
       is_single_vsync_clamp ? initial_nominal_interval_ns
@@ -223,6 +226,11 @@ AndroidShellHolder::AndroidShellHolder(
 
   flutter::Settings shell_settings = settings_;
   if (performance_hint_manager_) {
+    struct GpuSampleTracker {
+      uint64_t last_generation = 0;
+      int64_t last_frame_finish_ns = 0;
+    };
+    auto gpu_sample_tracker = std::make_shared<GpuSampleTracker>();
     FrameRasterizedCallback prev_callback =
         shell_settings.frame_rasterized_callback;
     shell_settings
@@ -230,7 +238,8 @@ AndroidShellHolder::AndroidShellHolder(
                                       raster_perf_hint = raster_hint_manager,
                                       nominal_interval =
                                           nominal_frame_interval_ns_,
-                                      shared_android_context, is_phase4_mode,
+                                      shared_android_context,
+                                      gpu_sample_tracker, is_phase4_mode,
                                       is_max_stage_mode, is_dual_session_mode,
                                       is_gpu_adpf_enabled,
                                       is_single_vsync_clamp, target_work_ratio,
@@ -246,15 +255,21 @@ AndroidShellHolder::AndroidShellHolder(
       if (deadline_ns > vsync_start_ns) {
         int64_t frame_interval_ns = deadline_ns - vsync_start_ns;
         if (!is_phase4_mode) {
+          int64_t base_interval_ns = VsyncWaiterAndroid::GetRefreshPeriodNs();
           if (nominal_interval) {
-            const int64_t base_interval_ns =
-                nominal_interval->load(std::memory_order_relaxed);
             if (base_interval_ns > 0) {
-              const int64_t max_interval_ns = is_single_vsync_clamp
-                                                  ? base_interval_ns
-                                                  : (base_interval_ns * 2);
-              frame_interval_ns = std::min(frame_interval_ns, max_interval_ns);
+              nominal_interval->store(base_interval_ns,
+                                      std::memory_order_relaxed);
+            } else {
+              base_interval_ns =
+                  nominal_interval->load(std::memory_order_relaxed);
             }
+          }
+          if (base_interval_ns > 0) {
+            const int64_t max_interval_ns = is_single_vsync_clamp
+                                                ? base_interval_ns
+                                                : (base_interval_ns * 2);
+            frame_interval_ns = std::min(frame_interval_ns, max_interval_ns);
           }
           constexpr int64_t kMinValidFrameIntervalNs = 4000000;  // 250Hz
           frame_interval_ns =
@@ -278,13 +293,30 @@ AndroidShellHolder::AndroidShellHolder(
                            timing.Get(FrameTiming::kRasterStart))
                               .ToNanoseconds();
 
+      int64_t raster_finish_ns =
+          timing.Get(FrameTiming::kRasterFinish).ToEpochDelta().ToNanoseconds();
+      constexpr int64_t kGpuSampleIdleResetNs = 90'000'000;  // 90 ms
+      const bool was_idle =
+          gpu_sample_tracker->last_frame_finish_ns > 0 &&
+          (raster_finish_ns - gpu_sample_tracker->last_frame_finish_ns) >=
+              kGpuSampleIdleResetNs;
+      gpu_sample_tracker->last_frame_finish_ns = raster_finish_ns;
+
       int64_t gpu_duration_ns = 0;
+      bool is_new_gpu_sample = false;
       int64_t fence_wait_ns = 0;
       if (is_gpu_adpf_enabled && shared_android_context) {
         if (auto android_ctx = shared_android_context->lock()) {
           if (auto impeller_ctx = android_ctx->GetImpellerContext()) {
-            gpu_duration_ns =
-                std::max<int64_t>(0, impeller_ctx->GetLastFrameGpuTimeNs());
+            const uint64_t gpu_gen =
+                impeller_ctx->GetLastFrameGpuTimeGeneration();
+            is_new_gpu_sample =
+                (gpu_gen != gpu_sample_tracker->last_generation);
+            gpu_sample_tracker->last_generation = gpu_gen;
+            if (is_new_gpu_sample || !was_idle) {
+              gpu_duration_ns =
+                  std::max<int64_t>(0, impeller_ctx->GetLastFrameGpuTimeNs());
+            }
             fence_wait_ns = std::max<int64_t>(
                 0, impeller_ctx->GetLastFrameFenceWaitTimeNs());
           }
@@ -306,14 +338,15 @@ AndroidShellHolder::AndroidShellHolder(
         ui_total_ns = std::max(ui_total_ns, build_ns);
         if (ui_start_ns > 0 && ui_total_ns > 0 && build_ns > 0) {
           perf_hint->ReportActualWorkDuration(ui_start_ns, ui_total_ns,
-                                              build_ns, 0);
+                                              build_ns, 0, false);
         }
         if (raster_perf_hint && raster_start_ns > 0 &&
             (raster_cpu_ns > 0 || gpu_duration_ns > 0)) {
           raster_perf_hint->NotifyWorkloadReset();
           int64_t raster_total_ns = std::max(raster_cpu_ns, gpu_duration_ns);
           raster_perf_hint->ReportActualWorkDuration(
-              raster_start_ns, raster_total_ns, raster_cpu_ns, gpu_duration_ns);
+              raster_start_ns, raster_total_ns, raster_cpu_ns, gpu_duration_ns,
+              is_new_gpu_sample);
         }
         return;
       }
@@ -335,13 +368,16 @@ AndroidShellHolder::AndroidShellHolder(
       if (is_max_stage_mode) {
         total_duration_ns = std::max(cpu_duration_ns, gpu_duration_ns);
       } else if (!is_phase4_mode) {
-        total_duration_ns =
-            std::max({total_duration_ns, cpu_duration_ns, gpu_duration_ns});
+        int64_t active_wall_duration_ns =
+            std::max<int64_t>(0, total_duration_ns - fence_wait_ns);
+        total_duration_ns = std::max(
+            {active_wall_duration_ns, cpu_duration_ns, gpu_duration_ns});
       }
       if (vsync_start_ns > 0 && total_duration_ns > 0 &&
           (cpu_duration_ns > 0 || gpu_duration_ns > 0)) {
         perf_hint->ReportActualWorkDuration(vsync_start_ns, total_duration_ns,
-                                            cpu_duration_ns, gpu_duration_ns);
+                                            cpu_duration_ns, gpu_duration_ns,
+                                            is_new_gpu_sample);
       }
     };
   }
@@ -623,8 +659,10 @@ void AndroidShellHolder::UpdateDisplayMetrics() {
                                           std::memory_order_relaxed);
       }
       if (performance_hint_manager_) {
+        const int64_t pipeline_interval_ns =
+            is_single_vsync_clamp_ ? interval_ns : (interval_ns * 2);
         performance_hint_manager_->UpdateTargetWorkDuration(
-            static_cast<int64_t>(interval_ns * kTargetFrameWorkRatio));
+            static_cast<int64_t>(pipeline_interval_ns * target_work_ratio_));
       }
     }
   }

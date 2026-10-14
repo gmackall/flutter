@@ -257,9 +257,14 @@ class ContextVK final : public Context,
   int64_t GetLastFrameGpuTimeNs() const override;
 
   // |Context|
+  uint64_t GetLastFrameGpuTimeGeneration() const override;
+
+  // |Context|
   int64_t GetLastFrameFenceWaitTimeNs() const override;
 
   void RecordFenceWaitTimeNs(int64_t wait_ns) const;
+
+  void ResetFenceWaitTimeForNextFrame() const;
 
   void RecordFrameEndTime() const;
 
@@ -344,6 +349,7 @@ class ContextVK final : public Context,
   bool should_batch_cmd_buffers_ = false;
   std::vector<std::shared_ptr<CommandBuffer>> pending_command_buffers_;
   mutable std::atomic<int64_t> last_frame_fence_wait_ns_{0};
+  mutable std::atomic<bool> reset_fence_wait_on_next_record_{true};
 
   const uint64_t hash_;
 

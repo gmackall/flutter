@@ -59,7 +59,8 @@ AdpfRuntimeMode GetAdpfRuntimeMode() {
     if (std::strcmp(prop, "phase4") == 0) {
       return AdpfRuntimeMode::kPhase4;
     }
-    if (std::strcmp(prop, "max_stage_8.3ms") == 0) {
+    if (std::strcmp(prop, "max_stage") == 0 ||
+        std::strcmp(prop, "max_stage_8.3ms") == 0) {
       return AdpfRuntimeMode::kMaxStage8_3ms;
     }
     if (std::strcmp(prop, "dual_session_8.3ms") == 0) {
@@ -355,6 +356,8 @@ void AndroidPerformanceHintManager::NotifyWorkloadReset() {
     return;
   }
   impl_->last_activity_timestamp_ns.store(now_ns, std::memory_order_relaxed);
+  impl_->last_cpu_duration_ns = 0;
+  impl_->last_gpu_duration_ns = 0;
   if ((now_ns - impl_->last_reset_hint_ns) >= kSendHintCooldownNs) {
     impl_->last_reset_hint_ns = now_ns;
     impl_->send_hint(impl_->session, kSessionHintCpuLoadReset);
@@ -365,7 +368,8 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
     int64_t work_period_start_ns,
     int64_t actual_total_duration_ns,
     int64_t actual_cpu_duration_ns,
-    int64_t actual_gpu_duration_ns) {
+    int64_t actual_gpu_duration_ns,
+    bool is_new_gpu_sample) {
   if (!impl_ || work_period_start_ns <= 0 || actual_total_duration_ns <= 0 ||
       actual_cpu_duration_ns < 0 || actual_gpu_duration_ns < 0 ||
       (actual_cpu_duration_ns == 0 && actual_gpu_duration_ns == 0)) {
@@ -398,7 +402,7 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
     impl_->send_hint(impl_->session, kSessionHintCpuLoadUp);
   }
 
-  if (actual_gpu_duration_ns > 0) {
+  if (actual_gpu_duration_ns > 0 && is_new_gpu_sample) {
     const int64_t prev_gpu_duration_ns = impl_->last_gpu_duration_ns;
     impl_->last_gpu_duration_ns = actual_gpu_duration_ns;
     if (ModeEnablesHints(impl_->mode) && impl_->send_hint &&

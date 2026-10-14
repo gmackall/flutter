@@ -20,6 +20,7 @@ namespace flutter {
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_vsync_waiter_class = nullptr;
 static jmethodID g_async_wait_for_vsync_method_ = nullptr;
 static std::atomic_uint g_refresh_rate_ = 60;
+static std::atomic<int64_t> g_refresh_period_ns_{0};
 
 VsyncWaiterAndroid::VsyncWaiterAndroid(
     const flutter::TaskRunners& task_runners,
@@ -146,11 +147,22 @@ void VsyncWaiterAndroid::ConsumePendingCallback(
 }
 
 // static
+int64_t VsyncWaiterAndroid::GetRefreshPeriodNs() {
+  return g_refresh_period_ns_.load(std::memory_order_relaxed);
+}
+
+// static
 void VsyncWaiterAndroid::OnUpdateRefreshRate(JNIEnv* env,
                                              jclass jcaller,
                                              jfloat refresh_rate) {
   FML_DCHECK(refresh_rate > 0);
+  if (refresh_rate <= 0) {
+    return;
+  }
   g_refresh_rate_ = static_cast<uint>(refresh_rate);
+  g_refresh_period_ns_.store(static_cast<int64_t>(std::llround(
+                                 1e9 / static_cast<double>(refresh_rate))),
+                             std::memory_order_relaxed);
 }
 
 // static
