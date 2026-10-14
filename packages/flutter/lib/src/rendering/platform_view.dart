@@ -848,6 +848,8 @@ mixin _PlatformViewGestureMixin on RenderBox implements MouseTrackerAnnotation {
 
   _PlatformViewGestureRecognizer? _gestureRecognizer;
 
+  PointerEvent? _lastPointerDownEvent;
+
   @override
   bool hitTest(BoxHitTestResult result, {required Offset position}) {
     if (_hitTestBehavior == PlatformViewHitTestBehavior.transparent || !size.contains(position)) {
@@ -876,15 +878,47 @@ mixin _PlatformViewGestureMixin on RenderBox implements MouseTrackerAnnotation {
   void handleEvent(PointerEvent event, HitTestEntry entry) {
     if (event is PointerDownEvent) {
       _gestureRecognizer!.addPointer(event);
+      _lastPointerDownEvent = event.original ?? event;
     }
     if (event is PointerHoverEvent) {
       _handlePointerEvent?.call(event);
     }
   }
 
+  // This is registered as a global PointerRoute while the render object is attached.
+  void _handleGlobalPointerEvent(PointerEvent event) {
+    if (!hasSize) {
+      return;
+    }
+    if (event is! PointerDownEvent) {
+      return;
+    }
+    if (!(Offset.zero & size).contains(globalToLocal(event.position))) {
+      return;
+    }
+    if ((event.original ?? event) != _lastPointerDownEvent) {
+      // The pointer event is in the bounds of this render box, but we didn't get it in handleEvent.
+      // This means that the pointer event was absorbed by a different render object.
+      // Since on the platform side the platform view wrapper is seeing all events that are
+      // within its bounds, we need to tell it to reject the current touch sequence.
+      if (event.embedderId != 0) {
+        _gestureRecognizer?.onRejectGesture?.call(event.embedderId);
+      }
+    }
+    _lastPointerDownEvent = null;
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_handleGlobalPointerEvent);
+  }
+
   @override
   void detach() {
     _gestureRecognizer!.reset();
+    _lastPointerDownEvent = null;
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_handleGlobalPointerEvent);
     super.detach();
   }
 
