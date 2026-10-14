@@ -99,7 +99,10 @@ class MockPlatformViewAndroidJNI : public PlatformViewAndroidJNI {
               (),
               (override));
   MOCK_METHOD(void, FlutterViewDestroyOverlaySurfaces, (), (override));
-  MOCK_METHOD(ASurfaceTransaction*, createTransaction, (), (override));
+  MOCK_METHOD(ASurfaceTransaction*,
+              createTransaction,
+              (std::function<void()>&),
+              (override));
   MOCK_METHOD(void, swapTransaction, (), (override));
   MOCK_METHOD(void, destroyOverlaySurface2, (), (override));
   MOCK_METHOD(std::unique_ptr<PlatformViewAndroidJNI::OverlayMetadata>,
@@ -118,6 +121,10 @@ class MockPlatformViewAndroidJNI : public PlatformViewAndroidJNI {
                MutatorsStack mutators_stack),
               (override));
   MOCK_METHOD(void, hidePlatformView2, (int32_t view_id), (override));
+  MOCK_METHOD(bool,
+              onBackdropBlurs2,
+              (const std::vector<float>& blurs),
+              (override));
   MOCK_METHOD(void, onEndFrame2, (), (override));
   MOCK_METHOD(void, showOverlaySurface2, (), (override));
   MOCK_METHOD(void, hideOverlaySurface2, (), (override));
