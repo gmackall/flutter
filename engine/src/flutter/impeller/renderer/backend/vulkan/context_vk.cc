@@ -683,6 +683,10 @@ int64_t ContextVK::GetLastFrameGpuTimeNs() const {
   return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeNs() : 0;
 }
 
+uint64_t ContextVK::GetLastFrameGpuTimeGeneration() const {
+  return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeGeneration() : 0;
+}
+
 int64_t ContextVK::GetLastFrameFenceWaitTimeNs() const {
   return last_frame_fence_wait_ns_.load(std::memory_order_relaxed);
 }

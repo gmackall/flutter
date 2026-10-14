@@ -26,15 +26,21 @@ class SurfaceVK final : public Surface {
   static std::unique_ptr<SurfaceVK> WrapSwapchainImage(
       const std::shared_ptr<SwapchainTransientsVK>& transients,
       const std::shared_ptr<TextureSourceVK>& swapchain_image,
-      SwapCallback swap_callback);
+      SwapCallback swap_callback,
+      std::shared_ptr<GPUTracerVK> gpu_tracer = nullptr);
 
   // |Surface|
   ~SurfaceVK() override;
 
  private:
   SwapCallback swap_callback_;
+  mutable std::weak_ptr<GPUTracerVK> gpu_tracer_;
 
-  SurfaceVK(const RenderTarget& target, SwapCallback swap_callback);
+  SurfaceVK(const RenderTarget& target,
+            SwapCallback swap_callback,
+            std::shared_ptr<GPUTracerVK> gpu_tracer);
+
+  void EndFrameTrace() const;
 
   // |Surface|
   bool Present() const override;

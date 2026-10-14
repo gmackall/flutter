@@ -5,6 +5,7 @@
 #include "impeller/renderer/backend/vulkan/swapchain/surface_vk.h"
 
 #include "impeller/core/formats.h"
+#include "impeller/renderer/backend/vulkan/gpu_tracer_vk.h"
 #include "impeller/renderer/backend/vulkan/texture_vk.h"
 #include "impeller/renderer/surface.h"
 
@@ -13,7 +14,8 @@ namespace impeller {
 std::unique_ptr<SurfaceVK> SurfaceVK::WrapSwapchainImage(
     const std::shared_ptr<SwapchainTransientsVK>& transients,
     const std::shared_ptr<TextureSourceVK>& swapchain_image,
-    SwapCallback swap_callback) {
+    SwapCallback swap_callback,
+    std::shared_ptr<GPUTracerVK> gpu_tracer) {
   if (!transients || !swapchain_image || !swap_callback) {
     return nullptr;
   }
@@ -71,17 +73,36 @@ std::unique_ptr<SurfaceVK> SurfaceVK::WrapSwapchainImage(
   );
 
   // The constructor is private. So make_unique may not be used.
-  return std::unique_ptr<SurfaceVK>(
-      new SurfaceVK(render_target_desc, std::move(swap_callback)));
+  return std::unique_ptr<SurfaceVK>(new SurfaceVK(
+      render_target_desc, std::move(swap_callback), std::move(gpu_tracer)));
 }
 
-SurfaceVK::SurfaceVK(const RenderTarget& target, SwapCallback swap_callback)
-    : Surface(target), swap_callback_(std::move(swap_callback)) {}
+SurfaceVK::SurfaceVK(const RenderTarget& target,
+                     SwapCallback swap_callback,
+                     std::shared_ptr<GPUTracerVK> gpu_tracer)
+    : Surface(target),
+      swap_callback_(std::move(swap_callback)),
+      gpu_tracer_(gpu_tracer) {
+  if (gpu_tracer) {
+    gpu_tracer->MarkFrameStart();
+  }
+}
 
-SurfaceVK::~SurfaceVK() = default;
+SurfaceVK::~SurfaceVK() {
+  EndFrameTrace();
+}
+
+void SurfaceVK::EndFrameTrace() const {
+  if (auto tracer = gpu_tracer_.lock()) {
+    gpu_tracer_.reset();
+    tracer->MarkFrameEnd();
+  }
+}
 
 bool SurfaceVK::Present() const {
-  return swap_callback_ ? swap_callback_() : false;
+  const bool result = swap_callback_ ? swap_callback_() : false;
+  EndFrameTrace();
+  return result;
 }
 
 }  // namespace impeller

@@ -33,7 +33,8 @@ class AndroidPerformanceHintManager {
   void ReportActualWorkDuration(int64_t work_period_start_ns,
                                 int64_t actual_total_duration_ns,
                                 int64_t actual_cpu_duration_ns,
-                                int64_t actual_gpu_duration_ns = 0);
+                                int64_t actual_gpu_duration_ns = 0,
+                                bool is_new_gpu_sample = true);
 
   void UpdateTargetWorkDuration(int64_t target_duration_ns);
 

@@ -133,7 +133,7 @@ public class BackdropBlurCarrierTest {
     final BackdropBlurCarrier carrier = new BackdropBlurCarrier();
     // Must not throw: the engine reports blurs regardless of API level.
     assertFalse(carrier.onBackdropBlurs(ONE_BLUR));
-    carrier.onBackdropBlurs(new float[0]);
+    assertEquals(BackdropBlurCarrier.isSupported(), carrier.onBackdropBlurs(new float[0]));
     carrier.setOverlaySurfaceControl(null);
     carrier.detachFromView();
     assertNull(carrier.getCarrierViewForTest());

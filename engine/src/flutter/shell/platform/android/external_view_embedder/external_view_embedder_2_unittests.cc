@@ -175,6 +175,28 @@ TEST(AndroidExternalViewEmbedder2BackdropBlur,
 }
 
 TEST(AndroidExternalViewEmbedder2BackdropBlur,
+     PreservesCornerRadiusWhenClippedToTheFrame) {
+  auto embedder = MakeEmbedder();
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+
+  // A rounded-rect BackdropFilter partially scrolled off the top of the screen:
+  // the blur rect is intersected with the frame, but the corner radius should
+  // still match the unclipped filter rect against the enclosing clip.
+  const DlRect clip_points = DlRect::MakeLTRB(50, -20, 150, 80);
+  embedder->PushClipRRectToVisitedPlatformViews(
+      DlRoundRect::MakeRectXY(clip_points, 12, 12));
+  embedder->PushFilterToVisitedPlatformViews(Blur(5), DeviceRect(clip_points));
+
+  const auto& blurs = embedder->GetBackdropBlursForTesting();
+  ASSERT_EQ(blurs.size(), 6u);
+  EXPECT_EQ(blurs[0], 100);
+  EXPECT_EQ(blurs[1], 0);
+  EXPECT_EQ(blurs[2], 300);
+  EXPECT_EQ(blurs[3], 160);
+  EXPECT_FLOAT_EQ(blurs[5], 12 * kDpr);
+}
+
+TEST(AndroidExternalViewEmbedder2BackdropBlur,
      IgnoresTheCornerRadiusWhenAnExtraTransformSeparatesClipAndFilter) {
   auto embedder = MakeEmbedder();
   AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));

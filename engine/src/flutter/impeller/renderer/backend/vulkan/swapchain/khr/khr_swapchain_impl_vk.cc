@@ -435,9 +435,6 @@ KHRSwapchainImplVK::AcquireResult KHRSwapchainImplVK::AcquireNextDrawable() {
     return KHRSwapchainImplVK::AcquireResult{};
   }
 
-  /// Record all subsequent cmd buffers as part of the current frame.
-  context.GetGPUTracer()->MarkFrameStart();
-
   auto image = images_[index % images_.size()];
   uint32_t image_index = index;
   return AcquireResult{SurfaceVK::WrapSwapchainImage(
@@ -449,7 +446,8 @@ KHRSwapchainImplVK::AcquireResult KHRSwapchainImplVK::AcquireNextDrawable() {
           return false;
         }
         return swapchain->Present(image, image_index);
-      }  // swap callback
+      },                      // swap callback
+      context.GetGPUTracer()  // gpu tracer
       )};
 }
 
@@ -479,7 +477,6 @@ bool KHRSwapchainImplVK::Present(
   }
   sync->has_onscreen = false;
   if (!sync->final_cmd_buffer) {
-    context.GetGPUTracer()->MarkFrameEnd();
     return false;
   }
 
@@ -495,16 +492,13 @@ bool KHRSwapchainImplVK::Present(
     barrier.dst_stage = vk::PipelineStageFlagBits::eBottomOfPipe;
 
     if (!image->SetLayout(barrier).ok()) {
-      context.GetGPUTracer()->MarkFrameEnd();
       return false;
     }
 
     if (!final_cmd_buffer_vk.EndCommandBuffer()) {
-      context.GetGPUTracer()->MarkFrameEnd();
       return false;
     }
   }
-  context.GetGPUTracer()->MarkFrameEnd();
 
   //----------------------------------------------------------------------------
   /// Signal that the presentation semaphore is ready.

@@ -257,6 +257,9 @@ class ContextVK final : public Context,
   int64_t GetLastFrameGpuTimeNs() const override;
 
   // |Context|
+  uint64_t GetLastFrameGpuTimeGeneration() const override;
+
+  // |Context|
   int64_t GetLastFrameFenceWaitTimeNs() const override;
 
   void RecordFenceWaitTimeNs(int64_t wait_ns) const;

@@ -104,7 +104,6 @@ public class FlutterMutatorView extends FrameLayout {
   public void readyToDisplay(
       @NonNull FlutterMutatorsStack mutatorsStack, int left, int top, int width, int height) {
     boolean mutatorsChanged = !Objects.equals(this.mutatorsStack, mutatorsStack);
-    boolean positionChanged = this.left != left || this.top != top;
     this.mutatorsStack = mutatorsStack;
     this.left = left;
     this.top = top;
@@ -120,7 +119,8 @@ public class FlutterMutatorView extends FrameLayout {
       layoutParams.leftMargin = left;
       layoutParams.topMargin = top;
       setLayoutParams(layoutParams);
-    } else if (mutatorsChanged || positionChanged) {
+    }
+    if (mutatorsChanged) {
       invalidate();
     }
     if (willNotDraw()) {

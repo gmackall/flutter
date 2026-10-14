@@ -32,6 +32,7 @@ import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorView;
+import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
@@ -566,6 +567,59 @@ public class PlatformViewsController2Test {
     // Simulate dispose call from the framework.
     disposePlatformView(jni, PlatformViewsController2, platformViewId);
     verify(platformView, times(1)).dispose();
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void onDisplayPlatformViewOnlyBringsToFrontWhenZOrderChanges() {
+    PlatformViewRegistryImpl registryImpl = new PlatformViewRegistryImpl();
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(registryImpl);
+
+    Context context = ApplicationProvider.getApplicationContext();
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView pv0 = mock(PlatformView.class);
+    PlatformView pv1 = mock(PlatformView.class);
+    when(pv0.getView()).thenReturn(new View(context));
+    when(pv1.getView()).thenReturn(new View(context));
+    when(viewFactory.create(any(), eq(0), any())).thenReturn(pv0);
+    when(viewFactory.create(any(), eq(1), any())).thenReturn(pv1);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    FlutterView flutterView = attach(jni, controller);
+    createPlatformView(jni, controller, 0, "testType");
+    createPlatformView(jni, controller, 1, "testType");
+
+    FlutterMutatorsStack stack = new FlutterMutatorsStack();
+    controller.onDisplayPlatformView(0, 0, 0, 100, 100, 100, 100, stack);
+    controller.onDisplayPlatformView(1, 0, 0, 100, 100, 100, 100, stack);
+    controller.swapTransactions();
+
+    FlutterMutatorView parent0 = controller.getPlatformViewParent(0);
+    FlutterMutatorView parent1 = controller.getPlatformViewParent(1);
+    assertTrue(flutterView.indexOfChild(parent0) < flutterView.indexOfChild(parent1));
+
+    // Add a carrier-like sibling view after both platform views; steady-state frames with the
+    // same [0, 1] order should not reorder parent0 or parent1 above that sibling.
+    View trailingSibling = new View(context);
+    flutterView.addView(trailingSibling);
+    int index0Before = flutterView.indexOfChild(parent0);
+    int index1Before = flutterView.indexOfChild(parent1);
+
+    controller.onDisplayPlatformView(0, 0, 0, 100, 100, 100, 100, stack);
+    controller.onDisplayPlatformView(1, 0, 0, 100, 100, 100, 100, stack);
+    controller.swapTransactions();
+
+    assertEquals(index0Before, flutterView.indexOfChild(parent0));
+    assertEquals(index1Before, flutterView.indexOfChild(parent1));
+
+    // Reversing the composition order to [1, 0] brings parent0 above parent1.
+    controller.onDisplayPlatformView(1, 0, 0, 100, 100, 100, 100, stack);
+    controller.onDisplayPlatformView(0, 0, 0, 100, 100, 100, 100, stack);
+    controller.swapTransactions();
+
+    assertTrue(flutterView.indexOfChild(parent1) < flutterView.indexOfChild(parent0));
   }
 
   private static class TransactionTrackingController extends PlatformViewsController2 {

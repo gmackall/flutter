@@ -885,9 +885,21 @@ mixin _PlatformViewGestureMixin on RenderBox implements MouseTrackerAnnotation {
     }
   }
 
+  bool _isPainted() {
+    RenderObject current = this;
+    while (current.parent != null) {
+      final RenderObject parent = current.parent!;
+      if (!parent.paintsChild(current)) {
+        return false;
+      }
+      current = parent;
+    }
+    return true;
+  }
+
   // This is registered as a global PointerRoute while the render object is attached.
   void _handleGlobalPointerEvent(PointerEvent event) {
-    if (!hasSize) {
+    if (!hasSize || !_isPainted()) {
       return;
     }
     if (event is! PointerDownEvent) {

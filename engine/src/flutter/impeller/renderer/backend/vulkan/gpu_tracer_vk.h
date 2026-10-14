@@ -53,6 +53,10 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
   ///        traced frame in nanoseconds, or 0 if unavailable.
   int64_t GetLastFrameGpuTimeNs() const;
 
+  /// @brief Returns a monotonically increasing generation counter that is
+  ///        incremented each time a new frame's GPU execution time is recorded.
+  uint64_t GetLastFrameGpuTimeGeneration() const;
+
   /// Initialize the set of query pools.
   void InitializeQueryPool(const ContextVK& context);
 
@@ -62,9 +66,7 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
   static const constexpr size_t kTraceStatesSize = 16u;
 
   /// @brief Signal that the cmd buffer is completed.
-  ///
-  ///        If [frame_index] is std::nullopt, this frame recording is ignored.
-  void OnFenceComplete(size_t frame);
+  void OnFenceComplete(size_t frame_index, uint64_t generation);
 
   /// @brief Record a timestamp query into the provided cmd buffer to record
   ///        start time.
@@ -84,7 +86,9 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
 
   struct GPUTraceState {
     size_t current_index = 0;
+    size_t open_buffers = 0;
     size_t pending_buffers = 0;
+    uint64_t generation = 0;
     bool in_progress = false;
     std::vector<std::pair<size_t, size_t>> query_pairs;
     vk::UniqueQueryPool query_pool;
@@ -106,14 +110,15 @@ class GPUTracerVK : public std::enable_shared_from_this<GPUTracerVK> {
   // cmd buffer to perform an image upload at timestamp 0 and then 30 ms later
   // actually renders a frame. Without the in_frame_ guard, the GPU frame time
   // would include this 30ms gap during which the engine was idle.
-  bool in_frame_ = false;
-  size_t active_frame_depth_ = 0u;
+  bool in_frame_ IPLR_GUARDED_BY(trace_state_mutex_) = false;
+  size_t active_frame_depth_ IPLR_GUARDED_BY(trace_state_mutex_) = 0u;
 
   // Track the raster thread id to avoid recording mipmap/image cmd buffers
   // that are not guaranteed to start/end according to frame boundaries.
-  std::thread::id raster_thread_id_;
+  std::thread::id raster_thread_id_ IPLR_GUARDED_BY(trace_state_mutex_);
   bool enabled_ = false;
   std::atomic<int64_t> last_frame_gpu_time_ns_{0};
+  std::atomic<uint64_t> last_frame_gpu_time_generation_{0};
 };
 
 class GPUProbe {
@@ -138,6 +143,7 @@ class GPUProbe {
 
   std::weak_ptr<GPUTracerVK> tracer_;
   std::optional<size_t> index_ = std::nullopt;
+  uint64_t generation_ = 0;
   std::optional<size_t> start_query_index_ = std::nullopt;
 };
 

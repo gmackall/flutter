@@ -43,23 +43,25 @@ void GPUTracerVK::InitializeQueryPool(const ContextVK& context) {
   if (!enabled_) {
     return;
   }
-  Lock lock(trace_state_mutex_);
   std::shared_ptr<CommandBuffer> buffer = context.CreateCommandBuffer();
   CommandBufferVK& buffer_vk = CommandBufferVK::Cast(*buffer);
 
-  for (auto i = 0u; i < kTraceStatesSize; i++) {
-    vk::QueryPoolCreateInfo info;
-    info.queryCount = kPoolSize;
-    info.queryType = vk::QueryType::eTimestamp;
+  {
+    Lock lock(trace_state_mutex_);
+    for (auto i = 0u; i < kTraceStatesSize; i++) {
+      vk::QueryPoolCreateInfo info;
+      info.queryCount = kPoolSize;
+      info.queryType = vk::QueryType::eTimestamp;
 
-    auto [status, pool] = context.GetDevice().createQueryPoolUnique(info);
-    if (status != vk::Result::eSuccess) {
-      VALIDATION_LOG << "Failed to create query pool.";
-      return;
+      auto [status, pool] = context.GetDevice().createQueryPoolUnique(info);
+      if (status != vk::Result::eSuccess) {
+        VALIDATION_LOG << "Failed to create query pool.";
+        return;
+      }
+      trace_states_[i].query_pool = std::move(pool);
+      buffer_vk.GetCommandBuffer().resetQueryPool(
+          trace_states_[i].query_pool.get(), 0, kPoolSize);
     }
-    trace_states_[i].query_pool = std::move(pool);
-    buffer_vk.GetCommandBuffer().resetQueryPool(
-        trace_states_[i].query_pool.get(), 0, kPoolSize);
   }
   if (!context.GetCommandQueue()->Submit({buffer}).ok()) {
     VALIDATION_LOG << "Failed to reset query pool for trace events.";
@@ -75,36 +77,22 @@ int64_t GPUTracerVK::GetLastFrameGpuTimeNs() const {
   return last_frame_gpu_time_ns_.load(std::memory_order_relaxed);
 }
 
+uint64_t GPUTracerVK::GetLastFrameGpuTimeGeneration() const {
+  return last_frame_gpu_time_generation_.load(std::memory_order_relaxed);
+}
+
 void GPUTracerVK::MarkFrameStart() {
+  Lock lock(trace_state_mutex_);
   active_frame_depth_ += 1;
-  if (active_frame_depth_ > 1u) {
-    return;
-  }
-  if (!enabled_) {
+  if (active_frame_depth_ > 1u || !enabled_) {
     return;
   }
   in_frame_ = true;
   raster_thread_id_ = std::this_thread::get_id();
-  Lock lock(trace_state_mutex_);
   trace_states_[current_state_].in_progress = true;
 }
 
 void GPUTracerVK::MarkFrameEnd() {
-  if (active_frame_depth_ > 0u) {
-    active_frame_depth_ -= 1;
-    if (active_frame_depth_ > 0u) {
-      return;
-    }
-  }
-  if (auto context = context_.lock()) {
-    context->ResetFenceWaitTimeForNextFrame();
-  }
-  in_frame_ = false;
-
-  if (!enabled_) {
-    return;
-  }
-
   size_t completed_frame_index = 0;
   size_t query_count = 0;
   vk::QueryPool pool;
@@ -112,6 +100,21 @@ void GPUTracerVK::MarkFrameEnd() {
   bool should_read_completed_state = false;
   {
     Lock lock(trace_state_mutex_);
+    if (active_frame_depth_ > 0u) {
+      active_frame_depth_ -= 1;
+      if (active_frame_depth_ > 0u) {
+        return;
+      }
+    }
+    if (auto context = context_.lock()) {
+      context->ResetFenceWaitTimeForNextFrame();
+    }
+    in_frame_ = false;
+
+    if (!enabled_) {
+      return;
+    }
+
     auto& completed_state = trace_states_[current_state_];
     completed_state.in_progress = false;
     if (completed_state.pending_buffers == 0u &&
@@ -127,13 +130,16 @@ void GPUTracerVK::MarkFrameEnd() {
     current_state_ = (current_state_ + 1) % kTraceStatesSize;
 
     auto& state = trace_states_[current_state_];
-    // If there are still pending buffers on the trace state we're switching to,
-    // that means that a cmd buffer we were relying on to signal this likely
-    // never finished. This shouldn't happen unless there is a bug in the
-    // encoder logic. We set it to zero anyway to prevent a validation error
-    // from becoming a memory leak.
-    FML_DCHECK(state.pending_buffers == 0u);
+    if (state.pending_buffers > 0u && state.current_index > 0u) {
+      // A command buffer from kTraceStatesSize frames ago (such as an idle
+      // overlay swapchain's retained final_cmd_buffer) has not released its
+      // GPUProbe yet. Schedule the query pool for reset and advance the
+      // generation so its late completion is ignored.
+      states_to_reset_.push_back(current_state_);
+    }
+    state.generation += 1;
     state.pending_buffers = 0;
+    state.open_buffers = 0;
     state.current_index = 0;
     state.in_progress = false;
     state.query_pairs.clear();
@@ -151,11 +157,13 @@ std::unique_ptr<GPUProbe> GPUTracerVK::CreateGPUProbe() {
 
 void GPUTracerVK::RecordCmdBufferStart(const vk::CommandBuffer& buffer,
                                        GPUProbe& probe) {
-  if (!enabled_ || std::this_thread::get_id() != raster_thread_id_ ||
-      !in_frame_) {
+  if (!enabled_) {
     return;
   }
   Lock lock(trace_state_mutex_);
+  if (!in_frame_ || std::this_thread::get_id() != raster_thread_id_) {
+    return;
+  }
   auto& state = trace_states_[current_state_];
 
   // Reset previously completed queries.
@@ -168,9 +176,9 @@ void GPUTracerVK::RecordCmdBufferStart(const vk::CommandBuffer& buffer,
   }
 
   // We size the query pool to kPoolSize, but Flutter applications can create an
-  // unbounded amount of work per frame. If we encounter this, stop recording
-  // cmds.
-  if (state.current_index >= kPoolSize) {
+  // unbounded amount of work per frame. Reserve room for all currently open
+  // command buffers' end timestamps plus this command buffer's start/end pair.
+  if (state.current_index + state.open_buffers + 2u > kPoolSize) {
     return;
   }
 
@@ -181,23 +189,31 @@ void GPUTracerVK::RecordCmdBufferStart(const vk::CommandBuffer& buffer,
   // while avoiding eBottomOfPipe pipeline drains across offscreen command
   // buffers on Tile-Based Deferred Renderers.
   buffer.writeTimestamp(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                        trace_states_[current_state_].query_pool.get(),
-                        state.current_index);
+                        state.query_pool.get(), state.current_index);
   probe.index_ = current_state_;
+  probe.generation_ = state.generation;
   probe.start_query_index_ = state.current_index;
   state.current_index += 1;
+  state.open_buffers += 1;
   state.pending_buffers += 1;
 }
 
 void GPUTracerVK::RecordCmdBufferEnd(const vk::CommandBuffer& buffer,
                                      GPUProbe& probe) {
-  if (!enabled_ || std::this_thread::get_id() != raster_thread_id_ ||
-      !probe.index_.has_value()) {
+  if (!enabled_ || !probe.index_.has_value()) {
     return;
   }
   Lock lock(trace_state_mutex_);
+  if (std::this_thread::get_id() != raster_thread_id_) {
+    return;
+  }
   GPUTraceState& state = trace_states_[probe.index_.value()];
-
+  if (state.generation != probe.generation_) {
+    return;
+  }
+  if (state.open_buffers > 0u) {
+    state.open_buffers -= 1;
+  }
   if (state.current_index >= kPoolSize) {
     return;
   }
@@ -212,7 +228,7 @@ void GPUTracerVK::RecordCmdBufferEnd(const vk::CommandBuffer& buffer,
   state.current_index += 1;
 }
 
-void GPUTracerVK::OnFenceComplete(size_t frame_index) {
+void GPUTracerVK::OnFenceComplete(size_t frame_index, uint64_t generation) {
   if (!enabled_) {
     return;
   }
@@ -225,8 +241,10 @@ void GPUTracerVK::OnFenceComplete(size_t frame_index) {
   {
     Lock lock(trace_state_mutex_);
     GPUTraceState& state = trace_states_[frame_index];
+    if (state.generation != generation || state.pending_buffers == 0u) {
+      return;
+    }
 
-    FML_DCHECK(state.pending_buffers > 0);
     state.pending_buffers -= 1;
     pending = state.pending_buffers;
     query_count = state.current_index;
@@ -306,6 +324,7 @@ void GPUTracerVK::ReadAndResetCompletedState(
       int64_t gpu_ns = static_cast<int64_t>(total_ticks * timestamp_period_);
       if (gpu_ns > 0) {
         last_frame_gpu_time_ns_.store(gpu_ns, std::memory_order_relaxed);
+        last_frame_gpu_time_generation_.fetch_add(1, std::memory_order_relaxed);
       }
       auto gpu_ms = gpu_ns / 1000000;
       FML_TRACE_COUNTER("flutter", "GPUTracer",
@@ -330,7 +349,7 @@ GPUProbe::~GPUProbe() {
   if (!tracer) {
     return;
   }
-  tracer->OnFenceComplete(index_.value());
+  tracer->OnFenceComplete(index_.value(), generation_);
 }
 
 void GPUProbe::RecordCmdBufferStart(const vk::CommandBuffer& buffer) {

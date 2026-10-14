@@ -743,16 +743,11 @@ void main() {
     );
     final opaqueOverlay = RenderPointerListener(
       behavior: HitTestBehavior.opaque,
-      child: RenderConstrainedBox(
-        additionalConstraints: const BoxConstraints.expand(),
-      ),
+      child: RenderConstrainedBox(additionalConstraints: const BoxConstraints.expand()),
     );
     final stack = RenderStack(
       textDirection: TextDirection.ltr,
-      children: <RenderBox>[
-        platformViewRenderBox,
-        opaqueOverlay,
-      ],
+      children: <RenderBox>[platformViewRenderBox, opaqueOverlay],
     );
     layout(stack);
     pumpFrame(phase: EnginePhase.flushSemantics);
@@ -786,6 +781,55 @@ void main() {
 
     expect(viewController.rejectGestureCount, 1);
     expect(viewController.lastRejectGestureId, 77);
+  });
+
+  test('rejectGesture is not invoked when PlatformViewRenderBox is offstage', () {
+    final viewController = FakePlatformViewController(0);
+    final platformViewRenderBox = PlatformViewRenderBox(
+      controller: viewController,
+      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+      gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+        Factory<VerticalDragGestureRecognizer>(() => VerticalDragGestureRecognizer()),
+      },
+    );
+    final offstage = RenderOffstage(offstage: true, child: platformViewRenderBox);
+    final opaqueOverlay = RenderPointerListener(
+      behavior: HitTestBehavior.opaque,
+      child: RenderConstrainedBox(additionalConstraints: const BoxConstraints.expand()),
+    );
+    final stack = RenderStack(
+      textDirection: TextDirection.ltr,
+      children: <RenderBox>[offstage, opaqueOverlay],
+    );
+    layout(stack);
+    pumpFrame(phase: EnginePhase.flushSemantics);
+
+    RendererBinding.instance.platformDispatcher.onPointerDataPacket!(
+      ui.PointerDataPacket(
+        data: <ui.PointerData>[
+          _pointerData(
+            ui.PointerChange.add,
+            Offset.zero,
+            pointer: 78,
+            kind: PointerDeviceKind.touch,
+          ),
+          _pointerData(
+            ui.PointerChange.down,
+            const Offset(10, 10),
+            pointer: 78,
+            kind: PointerDeviceKind.touch,
+          ),
+          _pointerData(
+            ui.PointerChange.up,
+            const Offset(10, 10),
+            pointer: 78,
+            kind: PointerDeviceKind.touch,
+          ),
+        ],
+      ),
+    );
+
+    expect(viewController.rejectGestureCount, 0);
   });
 }
 

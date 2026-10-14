@@ -234,5 +234,48 @@ TEST(GPUTracerVK, RecordsFenceWaitTimeNs) {
   EXPECT_EQ(context->GetLastFrameFenceWaitTimeNs(), 250000);
 }
 
+TEST(GPUTracerVK, SurvivesRetainedCmdBufferAcrossRingWrapAround) {
+  auto const context =
+      MockVulkanContextBuilder()
+          .SetSettingsCallback([](ContextVK::Settings& settings) {
+            settings.enable_gpu_tracing = true;
+          })
+          .Build();
+  auto tracer = context->GetGPUTracer();
+  ASSERT_TRUE(tracer->IsEnabled());
+  const uint64_t initial_gen = context->GetLastFrameGpuTimeGeneration();
+
+  // Frame 0: create a command buffer whose GPUProbe is retained (simulating an
+  // idle overlay swapchain's final_cmd_buffer) without completing its fence.
+  tracer->MarkFrameStart();
+  auto retained_cmd_buffer = context->CreateCommandBuffer();
+  tracer->MarkFrameEnd();
+
+  // Advance through 20 frames (> kTraceStatesSize = 16) so the ring buffer
+  // wraps past slot 0.
+  for (int i = 0; i < 20; ++i) {
+    tracer->MarkFrameStart();
+    auto cmd_buffer = context->CreateCommandBuffer();
+    auto blit_pass = cmd_buffer->CreateBlitPass();
+    blit_pass->EncodeCommands();
+    auto latch = std::make_shared<fml::CountDownLatch>(1u);
+    ASSERT_TRUE(context->GetCommandQueue()
+                    ->Submit({cmd_buffer},
+                             [latch](CommandBuffer::Status status) {
+                               latch->CountDown();
+                             })
+                    .ok());
+    tracer->MarkFrameEnd();
+    latch->Wait();
+  }
+
+  // Releasing the stale command buffer after the ring has wrapped must not
+  // underflow pending_buffers or assert.
+  retained_cmd_buffer.reset();
+
+  EXPECT_GT(context->GetLastFrameGpuTimeNs(), 0);
+  EXPECT_GT(context->GetLastFrameGpuTimeGeneration(), initial_gen);
+}
+
 }  // namespace testing
 }  // namespace impeller

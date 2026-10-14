@@ -189,6 +189,9 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         std::shared_ptr<OverlayLayer> layer = surface_pool_->GetLayer(
             context, android_context_, jni_facade_, surface_factory_);
         overlay_frame = layer->surface->AcquireFrame(frame_size_);
+        if (overlay_frame == nullptr) {
+          break;
+        }
         overlay_frame->Canvas()->Clear(flutter::DlColor::kTransparent());
       }
 
@@ -425,8 +428,8 @@ void AndroidExternalViewEmbedder2::PushFilterToVisitedPlatformViews(
   // per corner, so only uniform scales could be mapped anyway.
   float corner = 0;
   if (clip.has_value() && (*clip)[0] > 0 && (*clip)[1] > 0) {
-    const float scale_x = rect->GetWidth() / (*clip)[0];
-    const float scale_y = rect->GetHeight() / (*clip)[1];
+    const float scale_x = filter_rect.GetWidth() / (*clip)[0];
+    const float scale_y = filter_rect.GetHeight() / (*clip)[1];
     const float tolerance = 0.01f * dpr;
     if (std::abs(scale_x - dpr) <= tolerance &&
         std::abs(scale_y - dpr) <= tolerance) {

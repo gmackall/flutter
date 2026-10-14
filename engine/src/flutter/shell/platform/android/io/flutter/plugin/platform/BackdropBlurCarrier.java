@@ -187,7 +187,7 @@ class BackdropBlurCarrier {
   @RequiresApi(API_LEVELS.API_34)
   boolean onBackdropBlurs(@NonNull float[] blurs) {
     final int count = blurs.length / BLUR_FIELDS;
-    if (!isSupported() || carrier == null) {
+    if (!isSupported()) {
       if (count > 0 && !loggedBlurUnavailable) {
         Log.w(
             TAG,
@@ -198,6 +198,9 @@ class BackdropBlurCarrier {
         loggedBlurUnavailable = true;
       }
       return false;
+    }
+    if (carrier == null) {
+      return crossWindowBlurEnabled && count == 0;
     }
     if (!crossWindowBlurEnabled) {
       if (count > 0 && !loggedBlurUnavailable) {

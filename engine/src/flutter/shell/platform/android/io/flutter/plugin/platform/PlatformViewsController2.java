@@ -89,6 +89,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   private Surface overlayerSurface = null;
   private SurfaceControl overlaySurfaceControl = null;
+  private int lastPlatformViewChildIndex = -1;
 
   // Blurs BackdropFilters over platform views via SurfaceFlinger; see BackdropBlurCarrier.
   private final BackdropBlurCarrier backdropBlurCarrier = new BackdropBlurCarrier();
@@ -284,6 +285,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       backdropBlurCarrier.detachFromView();
     }
     flutterView = null;
+    lastPlatformViewChildIndex = -1;
 
     if (Build.VERSION.SDK_INT >= API_LEVELS.API_34) {
       dropTransactions();
@@ -553,9 +555,14 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (parentView.getVisibility() != View.VISIBLE) {
       parentView.setVisibility(View.VISIBLE);
     }
-    if (flutterView != null
-        && flutterView.indexOfChild(parentView) < flutterView.getChildCount() - 1) {
-      parentView.bringToFront();
+    if (flutterView != null) {
+      final int childIndex = flutterView.indexOfChild(parentView);
+      if (childIndex < lastPlatformViewChildIndex) {
+        parentView.bringToFront();
+        lastPlatformViewChildIndex = flutterView.getChildCount() - 1;
+      } else {
+        lastPlatformViewChildIndex = childIndex;
+      }
     }
 
     final View view = platformViews.get(viewId).getView();
@@ -707,6 +714,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   public void onEndFrame() {
+    lastPlatformViewChildIndex = -1;
     final SurfaceControl.Transaction platformTx = activePlatformTransaction;
     activePlatformTransaction = null;
 
@@ -733,11 +741,13 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
     flutterView.invalidate();
     rootSurfaceControl.applyTransactionOnDraw(tx);
+    tx.close();
   }
 
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   public void swapTransactions() {
+    lastPlatformViewChildIndex = -1;
     // Do not close discarded raster inputs; native producers may still use them.
     activeRasterTransactions.clear();
     synchronized (transactionLock) {

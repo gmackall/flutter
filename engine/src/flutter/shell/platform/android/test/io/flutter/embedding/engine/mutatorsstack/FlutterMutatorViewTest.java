@@ -294,6 +294,14 @@ public class FlutterMutatorViewTest {
     view.readyToDisplay(stack3, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
     verify(view, never()).setLayoutParams(any());
     verify(view, times(1)).invalidate();
+    reset(view);
+
+    // Changed mutators AND bounds should call both setLayoutParams and invalidate.
+    final FlutterMutatorsStack stack4 = new FlutterMutatorsStack();
+    stack4.pushTransform(new float[] {1, 0, 30, 0, 1, 40, 0, 0, 1});
+    view.readyToDisplay(stack4, /*left=*/ 30, /*top=*/ 40, /*width=*/ 100, /*height=*/ 200);
+    verify(view, times(1)).setLayoutParams(any());
+    verify(view, times(1)).invalidate();
   }
 
   @Implements(ViewGroup.class)

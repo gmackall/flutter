@@ -291,6 +291,11 @@ class Context {
   ///        completed yet.
   virtual int64_t GetLastFrameGpuTimeNs() const { return 0; }
 
+  /// @brief Returns a monotonically increasing generation counter that is
+  ///        incremented each time a new frame's GPU execution duration is
+  ///        recorded, or 0 if GPU tracing is unavailable.
+  virtual uint64_t GetLastFrameGpuTimeGeneration() const { return 0; }
+
   /// @brief Returns the host CPU duration (in nanoseconds) spent blocked on the
   ///        swapchain frame synchronizer fence during the most recent frame's
   ///        drawable acquisition, or 0 if not applicable.
