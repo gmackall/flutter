@@ -88,6 +88,8 @@ using MappingCallback = std::function<std::unique_ptr<fml::Mapping>(void)>;
 using Mappings = std::vector<std::unique_ptr<const fml::Mapping>>;
 using MappingsCallback = std::function<Mappings(void)>;
 
+using FrameBuiltCallback =
+    std::function<void(fml::TimePoint build_start, fml::TimePoint build_end)>;
 using FrameRasterizedCallback = std::function<void(const FrameTiming&)>;
 
 class DartIsolate;
@@ -341,6 +343,10 @@ struct Settings {
   fml::UniqueFD::element_type assets_dir =
       fml::UniqueFD::traits_type::InvalidValue();
   std::string assets_path;
+
+  // Callback to handle the build timings of a frame on the UI thread as soon
+  // as the frame finishes building.
+  FrameBuiltCallback frame_built_callback;
 
   // Callback to handle the timings of a rasterized frame. This is called as
   // soon as a frame is rasterized.

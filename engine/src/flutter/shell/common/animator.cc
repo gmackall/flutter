@@ -149,6 +149,9 @@ void Animator::EndFrame() {
     // The build is completed in OnAnimatorBeginFrame.
     frame_timings_recorder_->RecordBuildEnd(fml::TimePoint::Now());
 
+    delegate_.OnAnimatorFrameBuilt(frame_timings_recorder_->GetBuildStartTime(),
+                                   frame_timings_recorder_->GetBuildEndTime());
+
     delegate_.OnAnimatorUpdateLatestFrameTargetTime(
         frame_timings_recorder_->GetVsyncTargetTime());
 

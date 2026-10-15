@@ -42,6 +42,11 @@ class FakeAnimatorDelegate : public Animator::Delegate {
               (override));
 
   MOCK_METHOD(void,
+              OnAnimatorFrameBuilt,
+              (fml::TimePoint build_start, fml::TimePoint build_end),
+              (override));
+
+  MOCK_METHOD(void,
               OnAnimatorDraw,
               (std::shared_ptr<FramePipeline> pipeline),
               (override));
@@ -269,6 +274,7 @@ TEST_F(ShellTest, AnimatorDoesNotNotifyDelegateIfPipelineIsNotEmpty) {
   // It must always be called when the method 'Animator::Render' is called,
   // regardless of whether the pipeline is empty or not.
   EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(2);
+  EXPECT_CALL(delegate, OnAnimatorFrameBuilt).Times(2);
   // It will only be called once even though we call the method
   // 'Animator::Render' twice. because it will only be called when the pipeline
   // is empty.

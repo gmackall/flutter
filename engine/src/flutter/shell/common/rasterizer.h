@@ -637,6 +637,9 @@ class Rasterizer final : public SnapshotDelegate,
     // If `resubmitted_item` is not null, its `tasks` is guaranteed to be
     // non-empty.
     std::unique_ptr<FrameItem> resubmitted_item;
+
+    // The recorded frame timing when a frame was rasterized.
+    std::optional<FrameTiming> recorded_timing;
   };
 
   struct ViewRecord {

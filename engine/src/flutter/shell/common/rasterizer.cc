@@ -304,6 +304,10 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
                                       raster_thread_merger_);
   }
 
+  if (draw_result.recorded_timing.has_value()) {
+    delegate_.OnFrameRasterized(draw_result.recorded_timing.value());
+  }
+
   // Consume as many pipeline items as possible. But yield the event loop
   // between successive tries.
   switch (consume_result) {
@@ -563,7 +567,7 @@ Rasterizer::DoDrawResult Rasterizer::DoDraw(
   // TODO(liyuqian): in Fuchsia, the rasterization doesn't finish when
   // Rasterizer::DoDraw finishes. Future work is needed to adapt the timestamp
   // for Fuchsia to capture SceneUpdateContext::ExecutePaintTasks.
-  delegate_.OnFrameRasterized(frame_timings_recorder->GetRecordedTime());
+  result.recorded_timing = frame_timings_recorder->GetRecordedTime();
 
 // SceneDisplayLag events are disabled on Fuchsia.
 // see: https://github.com/flutter/flutter/issues/56598
@@ -621,6 +625,7 @@ Rasterizer::DoDrawResult Rasterizer::DoDraw(
       return DoDrawResult{
           .status = DoDrawStatus::kEnqueuePipeline,
           .resubmitted_item = std::move(result.resubmitted_item),
+          .recorded_timing = result.recorded_timing,
       };
     }
   }
