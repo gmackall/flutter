@@ -153,14 +153,18 @@ AndroidShellHolder::AndroidShellHolder(
         {raster_tid.load()}, target_duration_ns);
   }
 
+  auto shared_android_context =
+      std::make_shared<std::weak_ptr<AndroidContext>>();
+
   flutter::Settings shell_settings = settings_;
   if (ui_performance_hint_manager_ || raster_performance_hint_manager_) {
+    auto last_gpu_generation = std::make_shared<uint64_t>(0);
     FrameRasterizedCallback prev_callback =
         shell_settings.frame_rasterized_callback;
     shell_settings.frame_rasterized_callback =
         [ui_hint = ui_performance_hint_manager_,
-         raster_hint = raster_performance_hint_manager_,
-         prev_callback](const FrameTiming& timing) {
+         raster_hint = raster_performance_hint_manager_, shared_android_context,
+         last_gpu_generation, prev_callback](const FrameTiming& timing) {
           if (prev_callback) {
             prev_callback(timing);
           }
@@ -181,9 +185,25 @@ AndroidShellHolder::AndroidShellHolder(
           const int64_t raster_ns = (timing.Get(FrameTiming::kRasterFinish) -
                                      timing.Get(FrameTiming::kRasterStart))
                                         .ToNanoseconds();
-          if (raster_hint && raster_start_ns > 0 && raster_ns > 0) {
-            raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
-                                                  raster_ns);
+          int64_t gpu_ns = 0;
+          if (shared_android_context) {
+            if (auto android_ctx = shared_android_context->lock()) {
+              if (auto impeller_ctx = android_ctx->GetImpellerContext()) {
+                const uint64_t gen =
+                    impeller_ctx->GetLastFrameGpuTimeGeneration();
+                if (gen != *last_gpu_generation) {
+                  *last_gpu_generation = gen;
+                  gpu_ns = std::max<int64_t>(
+                      0, impeller_ctx->GetLastFrameGpuTimeNs());
+                }
+              }
+            }
+          }
+          if (raster_hint && raster_start_ns > 0 &&
+              (raster_ns > 0 || gpu_ns > 0)) {
+            const int64_t raster_total_ns = std::max(raster_ns, gpu_ns);
+            raster_hint->ReportActualWorkDuration(
+                raster_start_ns, raster_total_ns, raster_ns, gpu_ns);
           }
         };
   }
@@ -191,7 +211,8 @@ AndroidShellHolder::AndroidShellHolder(
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, &weak_platform_view, rendering_api](Shell& shell) {
+      [&jni_facade, &weak_platform_view, rendering_api,
+       shared_android_context](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -199,6 +220,9 @@ AndroidShellHolder::AndroidShellHolder(
             jni_facade,              // JNI interop
             rendering_api            // rendering API
         );
+        if (shared_android_context) {
+          *shared_android_context = platform_view_android->GetAndroidContext();
+        }
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };

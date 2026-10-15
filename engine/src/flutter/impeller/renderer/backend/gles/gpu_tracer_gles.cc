@@ -67,6 +67,10 @@ void GPUTracerGLES::ProcessQueries(const ProcTableGLES& gl) {
     // Return the timer resolution in nanoseconds.
     uint64_t duration = 0;
     gl.GetQueryObjectui64vEXT(query, GL_QUERY_RESULT_EXT, &duration);
+    if (duration > 0) {
+      last_frame_gpu_time_ns_.store(static_cast<int64_t>(duration),
+                                    std::memory_order_relaxed);
+    }
     auto gpu_ms = duration / 1000000.0;
 
     FML_TRACE_COUNTER("flutter", "GPUTracer",
@@ -75,6 +79,10 @@ void GPUTracerGLES::ProcessQueries(const ProcTableGLES& gl) {
     gl.DeleteQueriesEXT(1, &query);
     pending_traces_.pop_front();
   }
+}
+
+int64_t GPUTracerGLES::GetLastFrameGpuTimeNs() const {
+  return last_frame_gpu_time_ns_.load(std::memory_order_relaxed);
 }
 
 void GPUTracerGLES::MarkFrameEnd(const ProcTableGLES& gl) {

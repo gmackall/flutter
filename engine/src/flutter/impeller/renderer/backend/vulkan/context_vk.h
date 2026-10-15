@@ -253,6 +253,12 @@ class ContextVK final : public Context,
 
   std::shared_ptr<GPUTracerVK> GetGPUTracer() const;
 
+  // |Context|
+  int64_t GetLastFrameGpuTimeNs() const override;
+
+  // |Context|
+  uint64_t GetLastFrameGpuTimeGeneration() const override;
+
   void RecordFrameEndTime() const;
 
   // |Context|

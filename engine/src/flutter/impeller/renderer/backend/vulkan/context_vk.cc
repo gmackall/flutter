@@ -679,6 +679,14 @@ std::shared_ptr<GPUTracerVK> ContextVK::GetGPUTracer() const {
   return gpu_tracer_;
 }
 
+int64_t ContextVK::GetLastFrameGpuTimeNs() const {
+  return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeNs() : 0;
+}
+
+uint64_t ContextVK::GetLastFrameGpuTimeGeneration() const {
+  return gpu_tracer_ ? gpu_tracer_->GetLastFrameGpuTimeGeneration() : 0;
+}
+
 std::shared_ptr<DescriptorPoolRecyclerVK> ContextVK::GetDescriptorPoolRecycler()
     const {
   return descriptor_pool_recycler_;

@@ -286,6 +286,16 @@ class Context {
   /// @brief Submit the command buffer that renders to the onscreen surface.
   virtual bool SubmitOnscreen(std::shared_ptr<CommandBuffer> cmd_buffer);
 
+  /// @brief Returns the most recently completed frame's GPU execution duration
+  ///        in nanoseconds, or 0 if GPU tracing is unavailable or no frame has
+  ///        completed yet.
+  virtual int64_t GetLastFrameGpuTimeNs() const { return 0; }
+
+  /// @brief Returns a monotonically increasing generation counter that is
+  ///        incremented each time a new frame's GPU execution duration is
+  ///        recorded, or 0 if GPU tracing is unavailable.
+  virtual uint64_t GetLastFrameGpuTimeGeneration() const { return 0; }
+
   const Flags& GetFlags() const { return flags_; }
 
  protected:
