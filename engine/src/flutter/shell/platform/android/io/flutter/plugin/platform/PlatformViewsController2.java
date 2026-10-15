@@ -821,6 +821,11 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
    * <p>The raster thread may begin or complete the next frame before the platform thread runs the
    * task posted by {@code SubmitFlutterView}. Queuing one batch per raster frame keeps {@link
    * #swapTransactions()} from draining transactions that belong to a later frame.
+   *
+   * <p>Also schedules a Choreographer traversal on {@link #flutterView} from the raster thread as
+   * soon as the frame's transactions are sealed, so the UI thread's {@code CALLBACK_TRAVERSAL} is
+   * registered before SurfaceFlinger's next app VSync wakeup rather than waiting for the posted
+   * platform-thread task to call {@link View#invalidate()} inside {@link #onEndFrame()}.
    */
   // Called from the raster thread through FlutterJNI.
   @RequiresApi(API_LEVELS.API_34)
@@ -828,6 +833,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     synchronized (transactionLock) {
       pendingRasterFrames.addLast(new ArrayList<>(pendingRasterTransactions));
       pendingRasterTransactions.clear();
+    }
+    final FlutterView view = flutterView;
+    if (view != null) {
+      view.postInvalidateOnAnimation();
     }
   }
 

@@ -714,6 +714,7 @@ public class PlatformViewsController2Test {
     controller.onEndFrame();
 
     verify(rootSurfaceControl).applyTransactionOnDraw(argThat(tx -> tx != null && tx != rasterTx));
+    verify(flutterView).postInvalidateOnAnimation();
     verify(flutterView).invalidate();
   }
 
