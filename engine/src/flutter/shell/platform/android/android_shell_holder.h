@@ -18,6 +18,8 @@
 
 namespace flutter {
 
+class AndroidPerformanceHintManager;
+
 //----------------------------------------------------------------------------
 /// @brief      This is the Android owner of the core engine Shell.
 ///
@@ -119,6 +121,9 @@ class AndroidShellHolder {
   uint64_t next_pointer_flow_id_ = 0;
   std::unique_ptr<APKAssetProvider> apk_asset_provider_;
   const AndroidRenderingAPI android_rendering_api_;
+  std::shared_ptr<AndroidPerformanceHintManager> ui_performance_hint_manager_;
+  std::shared_ptr<AndroidPerformanceHintManager>
+      raster_performance_hint_manager_;
 
   //----------------------------------------------------------------------------
   /// @brief      Constructor with its components injected.
@@ -131,13 +136,18 @@ class AndroidShellHolder {
   ///             Used when constructing the Shell from the inside out when
   ///             spawning from an existing Shell.
   ///
-  AndroidShellHolder(const flutter::Settings& settings,
-                     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-                     const std::shared_ptr<ThreadHost>& thread_host,
-                     std::unique_ptr<Shell> shell,
-                     std::unique_ptr<APKAssetProvider> apk_asset_provider,
-                     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+  AndroidShellHolder(
+      const flutter::Settings& settings,
+      const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
+      const std::shared_ptr<ThreadHost>& thread_host,
+      std::unique_ptr<Shell> shell,
+      std::unique_ptr<APKAssetProvider> apk_asset_provider,
+      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
+      AndroidRenderingAPI rendering_api,
+      const std::shared_ptr<AndroidPerformanceHintManager>&
+          ui_performance_hint_manager,
+      const std::shared_ptr<AndroidPerformanceHintManager>&
+          raster_performance_hint_manager);
   static void ThreadDestructCallback(void* value);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,
