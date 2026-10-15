@@ -9,7 +9,10 @@ import static junit.framework.TestCase.*;
 import static org.mockito.Mockito.*;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
+import android.graphics.Path;
+import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -23,6 +26,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.robolectric.annotation.Config;
+import org.robolectric.annotation.GraphicsMode;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 
@@ -321,6 +325,42 @@ public class FlutterMutatorViewTest {
     view.readyToDisplay(stack3, /*left=*/ 10, /*top=*/ 21, /*width=*/ 100, /*height=*/ 200);
     assertEquals(2, layoutParamsCount[0]);
     assertEquals(3, invalidateCount[0]);
+  }
+
+  @Test
+  @GraphicsMode(GraphicsMode.Mode.NATIVE)
+  public void drawAndDispatchDraw_eliminateSubpixelTranslationResidualDuringScroll() {
+    final FlutterMutatorView view = new FlutterMutatorView(ctx, /*screenDensity=*/ 2.625f, null);
+
+    final float[] scrollOffsets = new float[] {100.375f, 100.625f};
+    for (float yOffset : scrollOffsets) {
+      final FlutterMutatorsStack stack = new FlutterMutatorsStack();
+      // Scale by screenDensity (2.625) and translate to fractional physical coordinates.
+      stack.pushTransform(new float[] {2.625f, 0, 45.9375f, 0, 2.625f, yOffset, 0, 0, 1});
+      // Push a local clip matching the 107x100 logical size of the platform view.
+      stack.pushClipRect(0, 0, 107.0f, 100.0f);
+
+      final int left = Math.round(45.9375f);
+      final int top = Math.round(yOffset);
+      view.readyToDisplay(stack, left, top, /*width=*/ 281, /*height=*/ 263);
+
+      final Canvas mockCanvas = mock(Canvas.class);
+      view.draw(mockCanvas);
+
+      final ArgumentCaptor<Path> pathCaptor = ArgumentCaptor.forClass(Path.class);
+      verify(mockCanvas).clipPath(pathCaptor.capture());
+      final RectF clipBounds = new RectF();
+      pathCaptor.getValue().computeBounds(clipBounds, true);
+      assertEquals(0.0f, clipBounds.left, 1e-4f);
+      assertEquals(0.0f, clipBounds.top, 1e-4f);
+      assertEquals(107.0f * 2.625f, clipBounds.right, 1e-4f);
+      assertEquals(100.0f * 2.625f, clipBounds.bottom, 1e-4f);
+
+      final ArgumentCaptor<Matrix> matrixCaptor = ArgumentCaptor.forClass(Matrix.class);
+      verify(mockCanvas).concat(matrixCaptor.capture());
+      final Matrix expectedIdentity = new Matrix();
+      assertEquals(expectedIdentity, matrixCaptor.getValue());
+    }
   }
 
   @Implements(ViewGroup.class)

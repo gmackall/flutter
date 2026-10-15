@@ -41,6 +41,7 @@ public class FlutterMutatorView extends FrameLayout {
   private final PlatformViewGestureTracker gestureTracker = new PlatformViewGestureTracker();
   private final Path pathCopy = new Path();
   private final Matrix platformViewMatrix = new Matrix();
+  private final float[] matrixValues = new float[9];
   private Paint paint;
 
   /**
@@ -135,15 +136,21 @@ public class FlutterMutatorView extends FrameLayout {
   public void draw(Canvas canvas) {
     // Apply all clippings on the parent canvas.
     canvas.save();
+    mutatorsStack.getFinalMatrix().getValues(matrixValues);
+    float tx = matrixValues[Matrix.MTRANS_X];
+    float ty = matrixValues[Matrix.MTRANS_Y];
+    float offsetX = (Math.round(tx) - left) - tx;
+    float offsetY = (Math.round(ty) - top) - ty;
     for (Path path : mutatorsStack.getFinalClippingPaths()) {
       // Reverse the current offset.
       //
-      // The frame of this view includes the final offset of the bounding rect.
-      // We need to apply all the mutators to the view, which includes the mutation that leads to
-      // the final offset. We should reverse this final offset, both as a translate mutation and to
-      // all the clipping paths
+      // The frame of this view includes the rounded integer offset (left, top) of the bounding
+      // rect, whereas the clipping path was transformed by the floating-point matrix. Snap the
+      // matrix translation (tx, ty) onto the integer pixel grid before subtracting (left, top) so
+      // that clips moving with the platform view stay locked at (0, 0) instead of shifting by the
+      // sub-pixel residual (tx - left, ty - top) on each scroll frame.
       pathCopy.set(path);
-      pathCopy.offset(-left, -top);
+      pathCopy.offset(offsetX, offsetY);
       canvas.clipPath(pathCopy);
     }
 
@@ -182,11 +189,18 @@ public class FlutterMutatorView extends FrameLayout {
 
     // Reverse the current offset.
     //
-    // The frame of this view includes the final offset of the bounding rect.
-    // We need to apply all the mutators to the view, which includes the mutation that leads to
-    // the final offset. We should reverse this final offset, both as a translate mutation and to
-    // all the clipping paths
-    platformViewMatrix.postTranslate(-left, -top);
+    // The frame of this view includes the rounded integer offset (left, top) of the bounding
+    // rect, whereas the final matrix carries the floating-point translation (tx, ty). Reversing
+    // only (-left, -top) leaves a fractional sub-pixel residual (tx - left, ty - top) in
+    // [-0.5, 0.5] on the child canvas, which shifts the child Android View's internal elements
+    // across .5 pixel rounding boundaries and clips 1px off its top/bottom edges during scroll.
+    // Snap the matrix translation onto the integer pixel grid before subtracting (left, top).
+    platformViewMatrix.getValues(matrixValues);
+    float tx = matrixValues[Matrix.MTRANS_X];
+    float ty = matrixValues[Matrix.MTRANS_Y];
+    float offsetX = (Math.round(tx) - left) - tx;
+    float offsetY = (Math.round(ty) - top) - ty;
+    platformViewMatrix.postTranslate(offsetX, offsetY);
 
     return platformViewMatrix;
   }

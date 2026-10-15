@@ -1278,7 +1278,9 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
             new FrameLayout.LayoutParams(viewWidth, viewHeight);
         view.setLayoutParams(layoutParams);
       }
-      view.bringToFront();
+      if (parentView.getChildAt(parentView.getChildCount() - 1) != view) {
+        view.bringToFront();
+      }
     }
     currentFrameUsedPlatformViewIds.add(viewId);
   }

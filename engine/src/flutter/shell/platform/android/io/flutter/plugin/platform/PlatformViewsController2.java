@@ -88,6 +88,11 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   // Platform-thread only: populated by swapTransactions(), drained by onEndFrame().
   private final ArrayList<SurfaceControl.Transaction> activeRasterTransactions;
 
+  // Platform-thread only: tracks the child index of the last platform view displayed in the
+  // current frame so onDisplayPlatformView can skip redundant bringToFront() calls when views
+  // are already in increasing Z-order.
+  private int lastRecordedChildIndex = -1;
+
   // Platform-thread only. Clips and overlay visibility share one transaction per frame.
   private SurfaceControl.Transaction pendingPlatformTransaction;
   private SurfaceControl.Transaction activePlatformTransaction;
@@ -550,7 +555,16 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
-    parentView.bringToFront();
+    if (flutterView != null) {
+      int childIndex = flutterView.indexOfChild(parentView);
+      if (childIndex <= lastRecordedChildIndex) {
+        parentView.bringToFront();
+        childIndex = flutterView.getChildCount() - 1;
+      }
+      lastRecordedChildIndex = childIndex;
+    } else {
+      parentView.bringToFront();
+    }
 
     final View view = platformViews.get(viewId).getView();
     if (view != null) {
@@ -563,7 +577,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
             new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
         view.setLayoutParams(layoutParams);
       }
-      view.bringToFront();
+      if (parentView.getChildAt(parentView.getChildCount() - 1) != view) {
+        view.bringToFront();
+      }
       if (view instanceof SurfaceView) {
         maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack, viewId);
       }
@@ -702,6 +718,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   public void onEndFrame() {
+    lastRecordedChildIndex = -1;
     final SurfaceControl.Transaction platformTx = activePlatformTransaction;
     activePlatformTransaction = null;
 
@@ -727,12 +744,14 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     }
 
     flutterView.invalidate();
+    flutterView.postInvalidateOnAnimation();
     rootSurfaceControl.applyTransactionOnDraw(tx);
   }
 
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   public void swapTransactions() {
+    lastRecordedChildIndex = -1;
     // Do not close discarded raster inputs; native producers may still use them.
     activeRasterTransactions.clear();
     synchronized (transactionLock) {
@@ -762,6 +781,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   private void dropTransactions() {
+    lastRecordedChildIndex = -1;
     activeRasterTransactions.clear();
     synchronized (transactionLock) {
       pendingRasterFrames.clear();

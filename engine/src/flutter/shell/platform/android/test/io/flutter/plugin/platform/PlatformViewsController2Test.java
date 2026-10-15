@@ -716,7 +716,7 @@ public class PlatformViewsController2Test {
     controller.onEndFrame();
 
     verify(rootSurfaceControl).applyTransactionOnDraw(argThat(tx -> tx != null && tx != rasterTx));
-    verify(flutterView).postInvalidateOnAnimation();
+    verify(flutterView, times(2)).postInvalidateOnAnimation();
     verify(flutterView).invalidate();
   }
 
@@ -1066,6 +1066,60 @@ public class PlatformViewsController2Test {
     assertEquals(1, controller.transactions.size());
     SurfaceControl.Transaction platformTx = controller.transactions.get(0);
     verify(platformTx, times(2)).setCrop(eq(surfaceControl), eq(new Rect(10, 20, 90, 80)));
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void onDisplayPlatformView_skipsRedundantBringToFrontWhenZOrderIsUnchanged() {
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), anyInt(), any()))
+        .thenAnswer(
+            invocation -> {
+              PlatformView pv = mock(PlatformView.class);
+              View embeddedView = spy(new View(ApplicationProvider.getApplicationContext()));
+              when(pv.getView()).thenReturn(embeddedView);
+              return pv;
+            });
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    attach(jni, controller);
+
+    createPlatformView(jni, controller, 1, "testType");
+    createPlatformView(jni, controller, 2, "testType");
+    assertTrue(controller.initializePlatformViewIfNeeded(1));
+    assertTrue(controller.initializePlatformViewIfNeeded(2));
+
+    View embedded1 = controller.getPlatformViewById(1);
+    View embedded2 = controller.getPlatformViewById(2);
+    clearInvocations(embedded1, embedded2);
+
+    FlutterMutatorsStack stack = new FlutterMutatorsStack();
+    // Display views 1 and 2 in their existing Z-order (child indices 0 and 1).
+    controller.onDisplayPlatformView(1, 0, 0, 50, 50, 50, 50, stack);
+    controller.onDisplayPlatformView(2, 0, 60, 50, 50, 50, 50, stack);
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // Neither embedded view needed bringToFront() inside its single-child FlutterMutatorView.
+    verify(embedded1, never()).bringToFront();
+    verify(embedded2, never()).bringToFront();
+
+    FlutterMutatorView parent1 = controller.getPlatformViewParent(1);
+    FlutterMutatorView parent2 = controller.getPlatformViewParent(2);
+    FlutterView flutterView = (FlutterView) parent1.getParent();
+    assertTrue(flutterView.indexOfChild(parent1) < flutterView.indexOfChild(parent2));
+
+    // Reversing composition order (2 then 1) must bring parent1 above parent2.
+    controller.onDisplayPlatformView(2, 0, 60, 50, 50, 50, 50, stack);
+    controller.onDisplayPlatformView(1, 0, 0, 50, 50, 50, 50, stack);
+    controller.swapTransactions();
+    controller.onEndFrame();
+    assertTrue(flutterView.indexOfChild(parent2) < flutterView.indexOfChild(parent1));
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {
