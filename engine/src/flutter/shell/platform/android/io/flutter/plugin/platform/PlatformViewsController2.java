@@ -552,11 +552,17 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
 
-    final FrameLayout.LayoutParams layoutParams =
-        new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
     final View view = platformViews.get(viewId).getView();
     if (view != null) {
-      view.setLayoutParams(layoutParams);
+      ViewGroup.LayoutParams existingParams = view.getLayoutParams();
+      if (!(existingParams instanceof FrameLayout.LayoutParams)
+          || existingParams.width != viewWidth
+          || existingParams.height != viewHeight
+          || ((FrameLayout.LayoutParams) existingParams).gravity != (Gravity.LEFT | Gravity.TOP)) {
+        final FrameLayout.LayoutParams layoutParams =
+            new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP);
+        view.setLayoutParams(layoutParams);
+      }
       view.bringToFront();
       if (view instanceof SurfaceView) {
         maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack, viewId);
@@ -575,9 +581,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       int viewId) {
     // 1. CALCULATE THE FINAL RECT (RECT, RRECT, PATH, TRANSFORM)
     // We start with the view's final on-screen bounds.
-    RectF screenRectF = new RectF(x, y, x + width, y + height);
-    Rect screenRect = new Rect();
-    screenRectF.roundOut(screenRect);
+    Rect screenRect = new Rect(x, y, x + width, y + height);
 
     List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
 
@@ -587,9 +591,14 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         // Compute the axis-aligned bounding box of the path.
         path.computeBounds(pathBounds, true);
 
-        // Round out to ensure we cover the pixels (ceil/floor logic).
-        Rect pathRectInt = new Rect();
-        pathBounds.roundOut(pathRectInt);
+        // Round origin and size separately so the rounded clip rect steps at the
+        // same .5 sub-pixel boundary as the rounded view origin (x, y) and does
+        // not oscillate by 1px during fractional scrolling.
+        int clipLeft = Math.round(pathBounds.left);
+        int clipTop = Math.round(pathBounds.top);
+        int clipWidth = Math.round(pathBounds.width());
+        int clipHeight = Math.round(pathBounds.height());
+        Rect pathRectInt = new Rect(clipLeft, clipTop, clipLeft + clipWidth, clipTop + clipHeight);
 
         // Intersect the current visible area with this clip.
         // If the path is a complex shape (star, rounded rect), this

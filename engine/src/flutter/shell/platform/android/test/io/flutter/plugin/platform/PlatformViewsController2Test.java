@@ -11,6 +11,7 @@ import static org.mockito.Mockito.*;
 import android.app.Presentation;
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.media.Image;
 import android.util.SparseArray;
@@ -32,6 +33,7 @@ import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorView;
+import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
@@ -1016,6 +1018,54 @@ public class PlatformViewsController2Test {
     // Matching gestureId sets flutterWonGesture.
     rejectGesturePlatformView(jni, platformViewsController, platformViewId, eventId.getId());
     assertTrue(parentView.getFlutterWonGesture());
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void onDisplayPlatformView_surfaceViewClipCropIsStableAcrossSubpixelScroll() {
+    TransactionTrackingController controller = new TransactionTrackingController();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    int platformViewId = 0;
+    SurfaceView surfaceView = mock(SurfaceView.class);
+    SurfaceControl surfaceControl = new SurfaceControl.Builder().setName("test").build();
+    when(surfaceView.getSurfaceControl()).thenReturn(surfaceControl);
+
+    PlatformView platformView = mock(PlatformView.class);
+    when(platformView.getView()).thenReturn(surfaceView);
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    attach(jni, controller);
+
+    createPlatformView(jni, controller, platformViewId, "testType");
+
+    // Scroll a 100x100 SurfaceView with an inset 80x60 clip across a .5 sub-pixel boundary
+    // (y = 100.4 -> 100.6). Both the view origin and the clip bounds must step at .5 so that
+    // the surface-local crop rect stays at (10, 20, 90, 80) instead of oscillating by 1px.
+    final float[] scrollOffsets = new float[] {100.4f, 100.6f};
+    for (float yOffset : scrollOffsets) {
+      FlutterMutatorsStack stack = new FlutterMutatorsStack();
+      stack.pushTransform(new float[] {1, 0, 50.0f, 0, 1, yOffset, 0, 0, 1});
+      stack.pushClipRect(10, 20, 90, 80);
+
+      controller.onDisplayPlatformView(
+          platformViewId,
+          /*x=*/ 50,
+          /*y=*/ Math.round(yOffset),
+          /*width=*/ 100,
+          /*height=*/ 100,
+          /*viewWidth=*/ 100,
+          /*viewHeight=*/ 100,
+          stack);
+    }
+
+    assertEquals(1, controller.transactions.size());
+    SurfaceControl.Transaction platformTx = controller.transactions.get(0);
+    verify(platformTx, times(2)).setCrop(eq(surfaceControl), eq(new Rect(10, 20, 90, 80)));
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {

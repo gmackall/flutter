@@ -33,6 +33,26 @@ int32_t ToPhysicalPixels(DlScalar size_points, double device_pixel_ratio) {
   return static_cast<int32_t>(std::round(size_points * device_pixel_ratio));
 }
 
+// Rounds a platform view's bounding rect onto the integer pixel grid by
+// rounding its origin and its translation-invariant size separately. Rounding
+// all four edges independently via `DlIRect::Round` causes `right - left` and
+// `bottom - top` to oscillate by 1px as a view with fractional physical size
+// translates across sub-pixel scroll offsets.
+DlIRect RoundViewRect(const DlRect& view_rect,
+                      const EmbeddedViewParams& params) {
+  const DlSize transformed_size =
+      params.transformMatrix().HasPerspective2D()
+          ? view_rect.GetSize()
+          : DlRect::MakeSize(params.sizePoints())
+                .TransformBounds(params.transformMatrix().Basis())
+                .GetSize();
+  return DlIRect::MakeXYWH(
+      static_cast<int32_t>(std::round(view_rect.GetX())),
+      static_cast<int32_t>(std::round(view_rect.GetY())),
+      static_cast<int32_t>(std::round(transformed_size.width)),
+      static_cast<int32_t>(std::round(transformed_size.height)));
+}
+
 }  // namespace
 
 AndroidExternalViewEmbedder2::AndroidExternalViewEmbedder2(
@@ -203,11 +223,11 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         }
 
         for (int64_t view_id : composition_order) {
-          // Round, rather than truncate, the bounds onto the pixel grid. See
-          // `ToPhysicalPixels` for why.
-          const DlIRect view_rect =
-              DlIRect::Round(GetViewRect(view_id, view_params));
           const EmbeddedViewParams& params = view_params.at(view_id);
+          // Round, rather than truncate, the bounds onto the pixel grid. See
+          // `ToPhysicalPixels` and `RoundViewRect` for why.
+          const DlIRect view_rect =
+              RoundViewRect(GetViewRect(view_id, view_params), params);
           jni_facade->onDisplayPlatformView2(
               view_id,                //
               view_rect.GetX(),       //

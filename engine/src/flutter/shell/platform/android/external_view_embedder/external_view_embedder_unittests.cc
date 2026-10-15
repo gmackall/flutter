@@ -317,6 +317,67 @@ TEST(AndroidExternalViewEmbedder, PlatformViewSizeIsRoundedNotTruncated) {
   embedder->EndFrame(/*should_resubmit_frame=*/false, raster_thread_merger);
 }
 
+TEST(AndroidExternalViewEmbedder,
+     PlatformViewRoundedSizeIsStableAcrossSubpixelTranslations) {
+  auto jni_mock = std::make_shared<JNIMock>();
+  auto android_context = AndroidContext(AndroidRenderingAPI::kSoftware);
+  auto embedder = std::make_unique<AndroidExternalViewEmbedder>(
+      android_context, jni_mock, nullptr, GetTaskRunnersForFixture());
+
+  auto raster_thread_merger = GetThreadMergerFromPlatformThread();
+
+  constexpr double kDevicePixelRatio = 2.625;
+  const auto frame_size = DlISize(1080, 2400);
+  // 107.0 * 2.625 = 280.875 -> rounds to 281.
+  // 100.0 * 2.625 = 262.5   -> rounds to 263.
+  // Independently rounding edges via DlIRect::Round causes width to drop to 280
+  // when frac(x_phys) is in [0.5, 0.625), and computing float32 (bottom - top)
+  // after translation causes height to drop to 262 when float32 addition
+  // rounds to even.
+  const auto size_points = DlSize(107.0f, 100.0f);
+  const DlMatrix scale =
+      DlMatrix::MakeScale({kDevicePixelRatio, kDevicePixelRatio, 1});
+
+  const std::vector<DlScalar> physical_offsets = {
+      100.0f, 100.125f, 100.25f,  100.375f, 100.5f,
+      100.6f, 100.75f,  100.875f, 512.0f,   513.0f,
+  };
+
+  for (DlScalar offset_phys : physical_offsets) {
+    EXPECT_CALL(*jni_mock, FlutterViewBeginFrame());
+    embedder->BeginFrame(nullptr, raster_thread_merger);
+    embedder->PrepareFlutterView(frame_size, kDevicePixelRatio);
+
+    const DlScalar offset_logical =
+        offset_phys / static_cast<DlScalar>(kDevicePixelRatio);
+    const DlMatrix translate =
+        DlMatrix::MakeTranslation({offset_logical, offset_logical});
+    const DlMatrix transform = scale * translate;
+    MutatorsStack stack;
+    stack.PushTransform(scale);
+    stack.PushTransform(translate);
+    embedder->PrerollCompositeEmbeddedView(
+        0, std::make_unique<EmbeddedViewParams>(transform, size_points, stack));
+
+    const int32_t expected_xy = static_cast<int32_t>(
+        std::round(offset_logical * static_cast<DlScalar>(kDevicePixelRatio)));
+    EXPECT_CALL(*jni_mock,
+                FlutterViewOnDisplayPlatformView(0, expected_xy, expected_xy,
+                                                 281, 263, 281, 263, stack));
+
+    SurfaceFrame::FramebufferInfo framebuffer_info;
+    auto surface_frame = std::make_unique<SurfaceFrame>(
+        SkSurfaces::Null(1080, 2400), framebuffer_info,
+        [](const SurfaceFrame&, DlCanvas*) { return true; },
+        [](const SurfaceFrame&) { return true; }, frame_size);
+    embedder->SubmitFlutterView(kImplicitViewId, nullptr, nullptr,
+                                std::move(surface_frame));
+
+    EXPECT_CALL(*jni_mock, FlutterViewEndFrame());
+    embedder->EndFrame(/*should_resubmit_frame=*/false, raster_thread_merger);
+  }
+}
+
 TEST(AndroidExternalViewEmbedder, SubmitFlutterView) {
   auto jni_mock = std::make_shared<JNIMock>();
   auto android_context =
@@ -1646,6 +1707,92 @@ TEST(AndroidExternalViewEmbedder2,
                         "swap",
                         "end",
                     }));
+
+  EXPECT_CALL(*jni_mock, destroyOverlaySurface2()).Times(1);
+  embedder->Teardown();
+  embedder.reset();
+}
+
+TEST(AndroidExternalViewEmbedder2,
+     PlatformViewRoundedSizeIsStableAcrossSubpixelTranslations) {
+  auto jni_mock = std::make_shared<JNIMock>();
+  auto android_context =
+      std::make_shared<AndroidContext>(AndroidRenderingAPI::kSoftware);
+  ThreadHost thread_host("io.flutter.test." + GetCurrentTestName() + ".",
+                         ThreadHost::Type::kPlatform | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi | ThreadHost::Type::kRaster);
+  TaskRunners task_runners(
+      "test",
+      thread_host.platform_thread->GetTaskRunner(),  // platform
+      thread_host.raster_thread->GetTaskRunner(),    // raster
+      thread_host.ui_thread->GetTaskRunner(),        // ui
+      thread_host.io_thread->GetTaskRunner()         // io
+  );
+  auto surface_factory = std::make_shared<TestAndroidSurfaceFactory>([]() {
+    auto android_surface = std::make_unique<AndroidSurfaceMock>();
+    EXPECT_CALL(*android_surface, IsValid()).WillRepeatedly(Return(true));
+    EXPECT_CALL(*android_surface, SetNativeWindow(_, _))
+        .WillRepeatedly(Return(true));
+    EXPECT_CALL(*android_surface, CreateGPUSurface(_))
+        .WillRepeatedly(Return(ByMove(std::make_unique<SurfaceMock>())));
+    return android_surface;
+  });
+
+  fml::RefPtr<AndroidNativeWindow> window =
+      fml::MakeRefCounted<AndroidNativeWindow>(nullptr);
+  EXPECT_CALL(*jni_mock, createOverlaySurface2())
+      .WillOnce(Return(
+          ByMove(std::make_unique<PlatformViewAndroidJNI::OverlayMetadata>(
+              0, window))));
+
+  auto embedder = std::make_unique<AndroidExternalViewEmbedder2>(
+      *android_context, jni_mock, surface_factory, task_runners);
+
+  constexpr double kDevicePixelRatio = 2.625;
+  const auto frame_size = DlISize(1080, 2400);
+  const auto size_points = DlSize(107.0f, 100.0f);
+  const DlMatrix scale =
+      DlMatrix::MakeScale({kDevicePixelRatio, kDevicePixelRatio, 1});
+
+  const std::vector<DlScalar> physical_offsets = {
+      100.0f, 100.125f, 100.25f,  100.375f, 100.5f,
+      100.6f, 100.75f,  100.875f, 512.0f,   513.0f,
+  };
+
+  for (DlScalar offset_phys : physical_offsets) {
+    const DlScalar offset_logical =
+        offset_phys / static_cast<DlScalar>(kDevicePixelRatio);
+    const DlMatrix translate =
+        DlMatrix::MakeTranslation({offset_logical, offset_logical});
+    const DlMatrix transform = scale * translate;
+    MutatorsStack stack;
+    stack.PushTransform(scale);
+    stack.PushTransform(translate);
+
+    const int32_t expected_xy = static_cast<int32_t>(
+        std::round(offset_logical * static_cast<DlScalar>(kDevicePixelRatio)));
+    EXPECT_CALL(*jni_mock, sealFrameTransactions());
+    EXPECT_CALL(*jni_mock, onDisplayPlatformView2(0, expected_xy, expected_xy,
+                                                  281, 263, 281, 263, stack));
+    EXPECT_CALL(*jni_mock, swapTransaction());
+    EXPECT_CALL(*jni_mock, onEndFrame2());
+
+    PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
+      embedder->PrepareFlutterView(frame_size, kDevicePixelRatio);
+      embedder->PrerollCompositeEmbeddedView(
+          0,
+          std::make_unique<EmbeddedViewParams>(transform, size_points, stack));
+      embedder->CompositeEmbeddedView(0);
+      SurfaceFrame::FramebufferInfo framebuffer_info;
+      auto surface_frame = std::make_unique<SurfaceFrame>(
+          SkSurfaces::Null(1080, 2400), framebuffer_info,
+          [](const SurfaceFrame&, DlCanvas*) { return true; },
+          [](const SurfaceFrame&) { return true; }, frame_size);
+      embedder->SubmitFlutterView(kImplicitViewId, nullptr, nullptr,
+                                  std::move(surface_frame));
+    });
+    PostTaskSync(task_runners.GetPlatformTaskRunner(), []() {});
+  }
 
   EXPECT_CALL(*jni_mock, destroyOverlaySurface2()).Times(1);
   embedder->Teardown();

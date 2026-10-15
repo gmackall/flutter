@@ -270,6 +270,59 @@ public class FlutterMutatorViewTest {
     assertFalse(view.getFlutterWonGesture());
   }
 
+  @Test
+  public void readyToDisplay_invalidatesOnMutatorOrPositionChangeAndSkipsWhenUnchanged() {
+    final int[] layoutParamsCount = new int[1];
+    final int[] invalidateCount = new int[1];
+    final FlutterMutatorView view =
+        new FlutterMutatorView(ctx) {
+          @Override
+          public void setLayoutParams(ViewGroup.LayoutParams params) {
+            super.setLayoutParams(params);
+            layoutParamsCount[0]++;
+          }
+
+          @Override
+          public void invalidate() {
+            super.invalidate();
+            invalidateCount[0]++;
+          }
+        };
+
+    final FlutterMutatorsStack stack1 = new FlutterMutatorsStack();
+    stack1.pushTransform(new float[] {1, 0, 10.2f, 0, 1, 20.3f, 0, 0, 1});
+    stack1.pushClipRect(10, 20, 110, 220);
+
+    view.readyToDisplay(stack1, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
+    assertEquals(1, layoutParamsCount[0]);
+    assertEquals(1, invalidateCount[0]);
+
+    // Identical bounds and equal mutator stack: neither layout nor invalidate should run.
+    final FlutterMutatorsStack stack1Copy = new FlutterMutatorsStack();
+    stack1Copy.pushTransform(new float[] {1, 0, 10.2f, 0, 1, 20.3f, 0, 0, 1});
+    stack1Copy.pushClipRect(10, 20, 110, 220);
+    view.readyToDisplay(stack1Copy, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
+    assertEquals(1, layoutParamsCount[0]);
+    assertEquals(1, invalidateCount[0]);
+
+    // Sub-pixel scroll where rounded integer bounds stay the same: only invalidate should run.
+    final FlutterMutatorsStack stack2 = new FlutterMutatorsStack();
+    stack2.pushTransform(new float[] {1, 0, 10.2f, 0, 1, 20.4f, 0, 0, 1});
+    stack2.pushClipRect(10, 20, 110, 220);
+    view.readyToDisplay(stack2, /*left=*/ 10, /*top=*/ 20, /*width=*/ 100, /*height=*/ 200);
+    assertEquals(1, layoutParamsCount[0]);
+    assertEquals(2, invalidateCount[0]);
+
+    // Scroll step where integer top changes while width/height stay constant: both must run
+    // because View.setFrame with unchanged size does not invalidate the RenderNode display list.
+    final FlutterMutatorsStack stack3 = new FlutterMutatorsStack();
+    stack3.pushTransform(new float[] {1, 0, 10.2f, 0, 1, 21.1f, 0, 0, 1});
+    stack3.pushClipRect(10, 21, 110, 221);
+    view.readyToDisplay(stack3, /*left=*/ 10, /*top=*/ 21, /*width=*/ 100, /*height=*/ 200);
+    assertEquals(2, layoutParamsCount[0]);
+    assertEquals(3, invalidateCount[0]);
+  }
+
   @Implements(ViewGroup.class)
   public static class ShadowViewGroup extends org.robolectric.shadows.ShadowViewGroup {
     @Implementation
