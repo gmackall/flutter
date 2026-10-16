@@ -112,17 +112,26 @@ public class FlutterMutatorView extends FrameLayout {
     this.left = left;
     this.top = top;
     ViewGroup.LayoutParams currentParams = getLayoutParams();
-    if (!(currentParams instanceof FrameLayout.LayoutParams)
-        || currentParams.width != width
-        || currentParams.height != height
-        || ((FrameLayout.LayoutParams) currentParams).leftMargin != left
-        || ((FrameLayout.LayoutParams) currentParams).topMargin != top
-        || ((FrameLayout.LayoutParams) currentParams).gravity != (Gravity.LEFT | Gravity.TOP)) {
+    if (!(currentParams instanceof FrameLayout.LayoutParams)) {
       FrameLayout.LayoutParams layoutParams =
           new FrameLayout.LayoutParams(width, height, Gravity.LEFT | Gravity.TOP);
       layoutParams.leftMargin = left;
       layoutParams.topMargin = top;
       setLayoutParams(layoutParams);
+    } else {
+      FrameLayout.LayoutParams layoutParams = (FrameLayout.LayoutParams) currentParams;
+      if (layoutParams.width != width
+          || layoutParams.height != height
+          || layoutParams.leftMargin != left
+          || layoutParams.topMargin != top
+          || layoutParams.gravity != (Gravity.LEFT | Gravity.TOP)) {
+        layoutParams.width = width;
+        layoutParams.height = height;
+        layoutParams.leftMargin = left;
+        layoutParams.topMargin = top;
+        layoutParams.gravity = Gravity.LEFT | Gravity.TOP;
+        setLayoutParams(layoutParams);
+      }
     }
     if (mutatorsChanged || positionChanged) {
       invalidate();
@@ -136,29 +145,26 @@ public class FlutterMutatorView extends FrameLayout {
   public void draw(Canvas canvas) {
     // Apply all clippings on the parent canvas.
     canvas.save();
-    mutatorsStack.getFinalMatrix().getValues(matrixValues);
-    float tx = matrixValues[Matrix.MTRANS_X];
-    float ty = matrixValues[Matrix.MTRANS_Y];
-    float offsetX = (Math.round(tx) - left) - tx;
-    float offsetY = (Math.round(ty) - top) - ty;
     for (Path path : mutatorsStack.getFinalClippingPaths()) {
       // Reverse the current offset.
       //
-      // The frame of this view includes the rounded integer offset (left, top) of the bounding
-      // rect, whereas the clipping path was transformed by the floating-point matrix. Snap the
-      // matrix translation (tx, ty) onto the integer pixel grid before subtracting (left, top) so
-      // that clips moving with the platform view stay locked at (0, 0) instead of shifting by the
-      // sub-pixel residual (tx - left, ty - top) on each scroll frame.
+      // Each clipping path in FlutterMutatorsStack has its active translation snapped onto the
+      // integer pixel grid at the stack depth where the clip was pushed, so subtracting (-left,
+      // -top) keeps both stationary ancestor viewport clips and moving local clips jitter-free.
       pathCopy.set(path);
-      pathCopy.offset(offsetX, offsetY);
+      pathCopy.offset(-left, -top);
       canvas.clipPath(pathCopy);
     }
 
-    int newAlpha = (int) (255 * mutatorsStack.getFinalOpacity());
+    int newAlpha = Math.round(255 * mutatorsStack.getFinalOpacity());
     boolean shouldApplyOpacity = paint.getAlpha() != newAlpha;
     if (shouldApplyOpacity) {
-      paint.setAlpha((int) (255 * mutatorsStack.getFinalOpacity()));
-      this.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+      paint.setAlpha(newAlpha);
+      if (newAlpha < 255) {
+        this.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+      } else {
+        this.setLayerType(View.LAYER_TYPE_NONE, null);
+      }
     }
 
     super.draw(canvas);

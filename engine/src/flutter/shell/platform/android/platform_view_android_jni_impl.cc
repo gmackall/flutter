@@ -2289,8 +2289,9 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
     return;
   }
 
-  jobject mutatorsStack = env->NewObject(g_mutators_stack_class->obj(),
-                                         g_mutators_stack_init_method);
+  fml::jni::ScopedJavaLocalRef<jobject> mutatorsStack(
+      env, env->NewObject(g_mutators_stack_class->obj(),
+                          g_mutators_stack_init_method));
 
   std::vector<std::shared_ptr<Mutator>>::const_iterator iter =
       mutators_stack.Begin();
@@ -2307,14 +2308,14 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
             env, env->NewFloatArray(9));
 
         env->SetFloatArrayRegion(transformMatrix.obj(), 0, 9, matrix_array);
-        env->CallVoidMethod(mutatorsStack,
+        env->CallVoidMethod(mutatorsStack.obj(),
                             g_mutators_stack_push_transform_method,
                             transformMatrix.obj());
         break;
       }
       case MutatorType::kClipRect: {
         const DlRect& rect = (*iter)->GetRect();
-        env->CallVoidMethod(mutatorsStack,
+        env->CallVoidMethod(mutatorsStack.obj(),
                             g_mutators_stack_push_cliprect_method,
                             rect.GetLeft(),   //
                             rect.GetTop(),    //
@@ -2335,7 +2336,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray(
             env, env->NewFloatArray(8));
         env->SetFloatArrayRegion(radiisArray.obj(), 0, 8, radiis);
-        env->CallVoidMethod(mutatorsStack,
+        env->CallVoidMethod(mutatorsStack.obj(),
                             g_mutators_stack_push_cliprrect_method,
                             rect.GetLeft(),    //
                             rect.GetTop(),     //
@@ -2357,7 +2358,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         fml::jni::ScopedJavaLocalRef<jfloatArray> radiisArray(
             env, env->NewFloatArray(8));
         env->SetFloatArrayRegion(radiisArray.obj(), 0, 8, radiis);
-        env->CallVoidMethod(mutatorsStack,
+        env->CallVoidMethod(mutatorsStack.obj(),
                             g_mutators_stack_push_cliprrect_method,
                             rect.GetLeft(),    //
                             rect.GetTop(),     //
@@ -2368,8 +2369,8 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
       }
       case MutatorType::kOpacity: {
         float opacity = (*iter)->GetAlphaFloat();
-        env->CallVoidMethod(mutatorsStack, g_mutators_stack_push_opacity_method,
-                            opacity);
+        env->CallVoidMethod(mutatorsStack.obj(),
+                            g_mutators_stack_push_opacity_method, opacity);
         break;
       }
       case MutatorType::kClipPath: {
@@ -2391,9 +2392,11 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         // call setFillType on the path...
         dlPath.Dispatch(receiver);
 
-        env->CallVoidMethod(mutatorsStack,
+        fml::jni::ScopedJavaLocalRef<jobject> clipPath(env,
+                                                       receiver.TakePath());
+        env->CallVoidMethod(mutatorsStack.obj(),
                             g_mutators_stack_push_clippath_method,
-                            receiver.TakePath());
+                            clipPath.obj());
         break;
       }
       // TODO(cyanglaz): Implement other mutators.
@@ -2410,7 +2413,7 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
 
   env->CallVoidMethod(java_object.obj(), g_on_display_platform_view2_method,
                       view_id, x, y, width, height, viewWidth, viewHeight,
-                      mutatorsStack);
+                      mutatorsStack.obj());
 
   FML_CHECK(fml::jni::CheckException(env));
 }

@@ -22,6 +22,8 @@ import android.widget.FrameLayout;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.android.AndroidTouchProcessor;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -361,6 +363,56 @@ public class FlutterMutatorViewTest {
       final Matrix expectedIdentity = new Matrix();
       assertEquals(expectedIdentity, matrixCaptor.getValue());
     }
+  }
+
+  @Test
+  @GraphicsMode(GraphicsMode.Mode.NATIVE)
+  public void draw_offsetsStationaryAncestorClipByViewOriginWhileKeepingLocalClipAtZero() {
+    final FlutterMutatorView view = new FlutterMutatorView(ctx, /*screenDensity=*/ 2.625f, null);
+
+    // Simulate a stationary scroll-viewport clip pushed before the scroll offset transform,
+    // followed by a card-local clip pushed after the scroll offset transform.
+    final FlutterMutatorsStack stack = new FlutterMutatorsStack();
+    // Root DPR scale + stationary header offset (y = 131.25px -> snaps to 131px).
+    stack.pushTransform(new float[] {2.625f, 0, 0, 0, 2.625f, 131.25f, 0, 0, 1});
+    stack.pushClipRect(0, 0, 400.0f, 800.0f);
+    // Scroll translation moving the card to (x = 45.9375px -> 46px, y = 131.25 + 262.5 = 393.75px
+    // -> 394px).
+    stack.pushTransform(new float[] {1, 0, 17.5f, 0, 1, 100.0f, 0, 0, 1});
+    stack.pushClipRect(0, 0, 107.0f, 100.0f);
+
+    final int left = Math.round(45.9375f);
+    final int top = Math.round(393.75f);
+    view.readyToDisplay(stack, left, top, /*width=*/ 281, /*height=*/ 263);
+
+    final List<Path> clippedPaths = new ArrayList<>();
+    final Canvas mockCanvas = mock(Canvas.class);
+    doAnswer(
+            invocation -> {
+              clippedPaths.add(new Path((Path) invocation.getArgument(0)));
+              return true;
+            })
+        .when(mockCanvas)
+        .clipPath(any(Path.class));
+    view.draw(mockCanvas);
+
+    assertEquals(2, clippedPaths.size());
+
+    // First clip: stationary ancestor viewport clip shifted into view-local space by (-left, -top).
+    final RectF viewportClipBounds = new RectF();
+    clippedPaths.get(0).computeBounds(viewportClipBounds, true);
+    assertEquals(-left, viewportClipBounds.left, 1e-4f);
+    assertEquals(131.0f - top, viewportClipBounds.top, 1e-4f);
+    assertEquals(400.0f * 2.625f - left, viewportClipBounds.right, 1e-4f);
+    assertEquals(131.0f + 800.0f * 2.625f - top, viewportClipBounds.bottom, 1e-4f);
+
+    // Second clip: moving card-local clip stays anchored at (0, 0) in view-local space.
+    final RectF localClipBounds = new RectF();
+    clippedPaths.get(1).computeBounds(localClipBounds, true);
+    assertEquals(0.0f, localClipBounds.left, 1e-4f);
+    assertEquals(0.0f, localClipBounds.top, 1e-4f);
+    assertEquals(107.0f * 2.625f, localClipBounds.right, 1e-4f);
+    assertEquals(100.0f * 2.625f, localClipBounds.bottom, 1e-4f);
   }
 
   @Implements(ViewGroup.class)

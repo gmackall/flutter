@@ -22,6 +22,7 @@ import android.view.SurfaceControl;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -68,6 +69,7 @@ import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.RealObject;
 import org.robolectric.shadows.ShadowDialog;
+import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowSurfaceView;
 
 @RunWith(AndroidJUnit4.class)
@@ -716,7 +718,7 @@ public class PlatformViewsController2Test {
     controller.onEndFrame();
 
     verify(rootSurfaceControl).applyTransactionOnDraw(argThat(tx -> tx != null && tx != rasterTx));
-    verify(flutterView, times(2)).postInvalidateOnAnimation();
+    verify(flutterView).postInvalidateOnAnimation();
     verify(flutterView).invalidate();
   }
 
@@ -1070,6 +1072,51 @@ public class PlatformViewsController2Test {
 
   @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void onDisplayPlatformView_surfaceViewWithEmptyClipIntersectionSetsZeroAlpha() {
+    TransactionTrackingController controller = new TransactionTrackingController();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    int platformViewId = 0;
+    SurfaceView surfaceView = mock(SurfaceView.class);
+    SurfaceControl surfaceControl = new SurfaceControl.Builder().setName("test").build();
+    when(surfaceView.getSurfaceControl()).thenReturn(surfaceControl);
+
+    PlatformView platformView = mock(PlatformView.class);
+    when(platformView.getView()).thenReturn(surfaceView);
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    attach(jni, controller);
+
+    createPlatformView(jni, controller, platformViewId, "testType");
+
+    // Push a viewport clip at (0, 0, 100, 100), then translate the SurfaceView completely
+    // outside the clip to y = 200. Because SurfaceFlinger treats an empty crop Rect as
+    // unbounded, alpha must be forced to 0f.
+    FlutterMutatorsStack stack = new FlutterMutatorsStack();
+    stack.pushClipRect(0, 0, 100, 100);
+    stack.pushTransform(new float[] {1, 0, 0, 0, 1, 200, 0, 0, 1});
+
+    controller.onDisplayPlatformView(
+        platformViewId,
+        /*x=*/ 0,
+        /*y=*/ 200,
+        /*width=*/ 100,
+        /*height=*/ 100,
+        /*viewWidth=*/ 100,
+        /*viewHeight=*/ 100,
+        stack);
+
+    assertEquals(1, controller.transactions.size());
+    SurfaceControl.Transaction platformTx = controller.transactions.get(0);
+    verify(platformTx).setAlpha(eq(surfaceControl), eq(0f));
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
   public void onDisplayPlatformView_skipsRedundantBringToFrontWhenZOrderIsUnchanged() {
     PlatformViewsController2 controller = new PlatformViewsController2();
     controller.setRegistry(new PlatformViewRegistryImpl());
@@ -1120,6 +1167,175 @@ public class PlatformViewsController2Test {
     controller.swapTransactions();
     controller.onEndFrame();
     assertTrue(flutterView.indexOfChild(parent2) < flutterView.indexOfChild(parent1));
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void onEndFrame_clearsWillNotDrawOnFlutterViewSoInvalidateIsNotSkipped() {
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+    FlutterView flutterView = mock(FlutterView.class);
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    when(flutterView.getRootSurfaceControl()).thenReturn(rootSurfaceControl);
+    when(flutterView.willNotDraw()).thenReturn(true);
+    controller.attachToView(flutterView);
+
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    verify(flutterView).setWillNotDraw(false);
+    verify(flutterView).invalidate();
+  }
+
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      })
+  public void onEndFrame_defersSecondFrameUntilChoreographerTraversalCompletes() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), anyInt(), any()))
+        .thenAnswer(
+            invocation -> {
+              PlatformView pv = mock(PlatformView.class);
+              when(pv.getView()).thenReturn(new View(ApplicationProvider.getApplicationContext()));
+              return pv;
+            });
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    FlutterView flutterView = spy(attach(jni, controller));
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
+    controller.attachToView(flutterView);
+
+    createPlatformView(jni, controller, 1, "testType");
+
+    // Frame 1 stages y = 10 and rasterTx1 immediately for the upcoming Choreographer traversal.
+    FlutterMutatorsStack stack1 = new FlutterMutatorsStack();
+    stack1.pushTransform(new float[] {1, 0, 0, 0, 1, 10, 0, 0, 1});
+    SurfaceControl.Transaction rasterTx1 = createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(1, 0, 10, 50, 50, 50, 50, stack1);
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    FlutterMutatorView parent = controller.getPlatformViewParent(1);
+    assertEquals(10, ((FrameLayout.LayoutParams) parent.getLayoutParams()).topMargin);
+    verify(rootSurfaceControl, times(1))
+        .applyTransactionOnDraw(any(SurfaceControl.Transaction.class));
+    assertEquals(Arrays.asList(rasterTx1), ShadowRecordingTransaction.merged);
+
+    // Frame 2 arrives on the UI thread before Choreographer.doFrame() draws Frame 1.
+    // It must be held in queuedFrame so Frame 1 is not overwritten before being drawn.
+    ShadowRecordingTransaction.reset();
+    FlutterMutatorsStack stack2 = new FlutterMutatorsStack();
+    stack2.pushTransform(new float[] {1, 0, 0, 0, 1, 30, 0, 0, 1});
+    SurfaceControl.Transaction rasterTx2 = createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(1, 0, 30, 50, 50, 50, 50, stack2);
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    assertEquals(10, ((FrameLayout.LayoutParams) parent.getLayoutParams()).topMargin);
+    verify(rootSurfaceControl, times(1))
+        .applyTransactionOnDraw(any(SurfaceControl.Transaction.class));
+    assertTrue(ShadowRecordingTransaction.merged.isEmpty());
+
+    // Once the Choreographer frame and post-traversal callback run, Frame 2 is staged for the
+    // next VSync.
+    ShadowLooper.idleMainLooper();
+
+    assertEquals(30, ((FrameLayout.LayoutParams) parent.getLayoutParams()).topMargin);
+    verify(rootSurfaceControl, times(2))
+        .applyTransactionOnDraw(any(SurfaceControl.Transaction.class));
+    assertEquals(Arrays.asList(rasterTx2), ShadowRecordingTransaction.merged);
+  }
+
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      })
+  public void onEndFrame_stagesNextFrameImmediatelyWhenNativePollRunsAfterChoreographerCallback() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), anyInt(), any()))
+        .thenAnswer(
+            invocation -> {
+              PlatformView pv = mock(PlatformView.class);
+              when(pv.getView()).thenReturn(new View(ApplicationProvider.getApplicationContext()));
+              return pv;
+            });
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    FlutterView flutterView = spy(attach(jni, controller));
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
+    controller.attachToView(flutterView);
+
+    createPlatformView(jni, controller, 1, "testType");
+
+    // Frame 1 stages y = 10 and registers traversalFrameCallback on Choreographer.
+    FlutterMutatorsStack stack1 = new FlutterMutatorsStack();
+    stack1.pushTransform(new float[] {1, 0, 0, 0, 1, 10, 0, 0, 1});
+    SurfaceControl.Transaction rasterTx1 = createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(1, 0, 10, 50, 50, 50, 50, stack1);
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // Run only the scheduled Choreographer frame callback (traversalFrameCallback) without
+    // draining the newly-posted Handler message (traversalCompleteRunnable) yet, simulating
+    // MessageLoopAndroid running inside MessageQueue.nativePollOnce() right after doFrame().
+    ShadowLooper.shadowMainLooper().runOneTask();
+
+    // Now simulate Frame 2 arriving from nativePollOnce() BEFORE traversalCompleteRunnable runs.
+    ShadowRecordingTransaction.reset();
+    FlutterMutatorsStack stack2 = new FlutterMutatorsStack();
+    stack2.pushTransform(new float[] {1, 0, 0, 0, 1, 25, 0, 0, 1});
+    SurfaceControl.Transaction rasterTx2 = createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(1, 0, 25, 50, 50, 50, 50, stack2);
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // Frame 2 must be staged immediately rather than trapped in queuedFrame.
+    FlutterMutatorView parent = controller.getPlatformViewParent(1);
+    assertEquals(25, ((FrameLayout.LayoutParams) parent.getLayoutParams()).topMargin);
+    verify(rootSurfaceControl, times(2))
+        .applyTransactionOnDraw(any(SurfaceControl.Transaction.class));
+    assertEquals(Arrays.asList(rasterTx2), ShadowRecordingTransaction.merged);
+
+    ShadowLooper.idleMainLooper();
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {

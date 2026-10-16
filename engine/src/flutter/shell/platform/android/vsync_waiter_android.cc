@@ -64,12 +64,12 @@ void VsyncWaiterAndroid::AwaitVSync() {
 void VsyncWaiterAndroid::OnVsyncFromNDK(int64_t frame_nanos, void* data) {
   auto frame_time = fml::TimePoint::FromEpochDelta(
       fml::TimeDelta::FromNanoseconds(frame_nanos));
+  auto target_time = frame_time + fml::TimeDelta::FromNanoseconds(
+                                      1000000000.0 / g_refresh_rate_);
   auto now = fml::TimePoint::Now();
   if (frame_time > now) {
     frame_time = now;
   }
-  auto target_time = frame_time + fml::TimeDelta::FromNanoseconds(
-                                      1000000000.0 / g_refresh_rate_);
 
   TRACE_EVENT2_INT("flutter", "PlatformVsync", "frame_start_time",
                    frame_time.ToEpochDelta().ToMicroseconds(),

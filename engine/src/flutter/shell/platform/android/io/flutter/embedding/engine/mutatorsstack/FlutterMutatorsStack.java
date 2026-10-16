@@ -179,6 +179,8 @@ public class FlutterMutatorsStack {
 
   private List<Path> finalClippingPaths;
   private Matrix finalMatrix;
+  private final Matrix snappedClipMatrix = new Matrix();
+  private final float[] matrixValues = new float[9];
   private float finalOpacity;
 
   /** Initialize the mutator stack. */
@@ -187,6 +189,14 @@ public class FlutterMutatorsStack {
     finalMatrix = new Matrix();
     finalClippingPaths = new ArrayList<Path>();
     finalOpacity = 1.f;
+  }
+
+  private void transformClipPath(Path path) {
+    finalMatrix.getValues(matrixValues);
+    matrixValues[Matrix.MTRANS_X] = Math.round(matrixValues[Matrix.MTRANS_X]);
+    matrixValues[Matrix.MTRANS_Y] = Math.round(matrixValues[Matrix.MTRANS_Y]);
+    snappedClipMatrix.setValues(matrixValues);
+    path.transform(snappedClipMatrix);
   }
 
   /**
@@ -217,7 +227,7 @@ public class FlutterMutatorsStack {
     mutators.add(mutator);
     Path path = new Path();
     path.addRect(rect, Path.Direction.CCW);
-    path.transform(finalMatrix);
+    transformClipPath(path);
     finalClippingPaths.add(path);
   }
 
@@ -237,7 +247,7 @@ public class FlutterMutatorsStack {
     mutators.add(mutator);
     Path path = new Path();
     path.addRoundRect(rect, radiis, Path.Direction.CCW);
-    path.transform(finalMatrix);
+    transformClipPath(path);
     finalClippingPaths.add(path);
   }
 
@@ -260,7 +270,7 @@ public class FlutterMutatorsStack {
   public void pushClipPath(Path path) {
     FlutterMutator mutator = new FlutterMutator(path);
     mutators.add(mutator);
-    path.transform(finalMatrix);
+    transformClipPath(path);
     finalClippingPaths.add(path);
   }
 

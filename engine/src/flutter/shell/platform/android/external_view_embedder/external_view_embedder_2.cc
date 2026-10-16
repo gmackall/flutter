@@ -191,8 +191,13 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       // overlays appear as if they are under the platform view, when in
       // reality there is only a single layer.
       for (size_t j = i + 1; j < composition_order_.size(); j++) {
-        DlRect view_rect = GetViewRect(composition_order_[j], view_params_);
-        overlay_canvas->ClipRect(view_rect, DlClipOp::kDifference);
+        int64_t higher_view_id = composition_order_[j];
+        DlRect view_rect = DlRect::Make(
+            RoundViewRect(GetViewRect(higher_view_id, view_params_),
+                          view_params_.at(higher_view_id)));
+        if (view_rect.IntersectsWithRect(overlay->second)) {
+          overlay_canvas->ClipRect(view_rect, DlClipOp::kDifference);
+        }
       }
 
       slices_[view_id]->render_into(overlay_canvas);
@@ -201,7 +206,6 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   }
   bool overlay_layer_has_content_this_frame_;
   if (overlay_frame != nullptr) {
-    overlay_frame->set_submit_info({.frame_boundary = false});
     overlay_frame->Submit();
     overlay_layer_has_content_this_frame_ = true;
   } else {
@@ -213,7 +217,6 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
       [&, composition_order = composition_order_, view_params = view_params_,
        jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
-       slices = std::move(slices_),
        views_visible_last_frame = views_visible_last_frame_,
        overlay_layer_has_content_this_frame_]() mutable -> void {
         if (overlay_layer_has_content_this_frame_) {
