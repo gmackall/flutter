@@ -35,18 +35,35 @@ TEST(AndroidPerformanceHintManagerTest, LifecycleOnSupportedDevice) {
   // If the OS / PowerHAL supports ADPF, verify the methods execute cleanly.
   if (manager) {
     EXPECT_EQ(manager->GetTargetWorkDuration(), target_ns);
+    EXPECT_EQ(manager->GetThreads(), std::vector<int32_t>{gettid()});
 
     // Test reporting actual duration with AWorkDuration parameters.
-    manager->ReportActualWorkDuration(1000000000, 8000000, 8000000, 0);
+    manager->ReportActualWorkDuration(1000000000, 8000000, 6000000, 0);
 
-    // Small target jitter (< 15%) should be suppressed by hysteresis.
+    // Same-vsync multi-engine report (< 0.5 * target_ns delta) should coalesce
+    // cleanly without error.
+    manager->ReportActualWorkDuration(1002000000, 3000000, 2500000, 0);
+
+    // Small target jitter (< 5%) should be suppressed by hysteresis.
     manager->UpdateTargetWorkDuration(target_ns - 500000);
     EXPECT_EQ(manager->GetTargetWorkDuration(), target_ns);
 
-    // Large target change (e.g. 60 Hz -> 120 Hz) should update target duration.
-    int64_t new_target_ns = 8333333;
+    // 90 Hz -> 80 Hz transition (11.1% change) should update target duration.
+    constexpr int64_t target_90hz_ns = 11111111;
+    constexpr int64_t target_80hz_ns = 12500000;
+    manager->UpdateTargetWorkDuration(target_90hz_ns);
+    EXPECT_EQ(manager->GetTargetWorkDuration(), target_90hz_ns);
+    manager->UpdateTargetWorkDuration(target_80hz_ns);
+    EXPECT_EQ(manager->GetTargetWorkDuration(), target_80hz_ns);
+
+    // Large target change (e.g. 80 Hz -> 120 Hz) should update target duration.
+    constexpr int64_t new_target_ns = 8333333;
     manager->UpdateTargetWorkDuration(new_target_ns);
     EXPECT_EQ(manager->GetTargetWorkDuration(), new_target_ns);
+
+    // SetThreads with the same or updated TID list.
+    EXPECT_TRUE(manager->SetThreads({gettid()}));
+    EXPECT_FALSE(manager->SetThreads({}));
   }
 }
 
