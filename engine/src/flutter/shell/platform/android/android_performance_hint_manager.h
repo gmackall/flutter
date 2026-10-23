@@ -35,9 +35,7 @@ class AndroidPerformanceHintManager {
 
   int64_t GetTargetWorkDuration() const;
 
-  bool SetThreads(const std::vector<int32_t>& tids);
-
-  std::vector<int32_t> GetThreads() const;
+  void SendLoadResetHint();
 
  private:
   struct Impl;

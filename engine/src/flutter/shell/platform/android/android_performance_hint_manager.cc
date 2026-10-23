@@ -5,7 +5,6 @@
 #include "flutter/shell/platform/android/android_performance_hint_manager.h"
 
 #include <android/api-level.h>
-#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <mutex>
@@ -33,9 +32,8 @@ using APerformanceHint_reportActualWorkDuration2_fn =
     int (*)(APerformanceHintSession*, AWorkDuration*);
 using APerformanceHint_updateTargetWorkDuration_fn =
     int (*)(APerformanceHintSession*, int64_t);
-using APerformanceHint_setThreads_fn = int (*)(APerformanceHintSession*,
-                                               const int32_t*,
-                                               size_t);
+using APerformanceHint_notifyWorkloadReset_fn =
+    int (*)(APerformanceHintSession*, bool, bool, const char*);
 using APerformanceHint_closeSession_fn = void (*)(APerformanceHintSession*);
 
 using AWorkDuration_create_fn = AWorkDuration* (*)();
@@ -66,26 +64,17 @@ bool ResolveSymbol(const fml::RefPtr<fml::NativeLibrary>& lib,
 struct AndroidPerformanceHintManager::Impl {
   mutable std::mutex mutex;
   fml::RefPtr<fml::NativeLibrary> lib_android;
-  APerformanceHintManager* manager = nullptr;
   APerformanceHintSession* session = nullptr;
   AWorkDuration* work_duration = nullptr;
   int64_t applied_target_duration_ns = 0;
-  std::vector<int32_t> current_tids;
+  int64_t last_frame_notification_ns = 0;
+  int resets_since_last_report = 0;
 
-  // State for coalescing multi-engine (FlutterEngineGroup / Spawn) or
-  // resubmitted frame reports on the same thread within a single vsync period.
-  int64_t last_work_period_start_ns = 0;
-  int64_t last_total_duration_ns = 0;
-  int64_t last_cpu_duration_ns = 0;
-  int64_t last_gpu_duration_ns = 0;
-  int64_t last_recreate_attempt_ns = 0;
-
-  APerformanceHint_createSession_fn create_session = nullptr;
   APerformanceHint_reportActualWorkDuration2_fn report_actual_work_duration2 =
       nullptr;
   APerformanceHint_updateTargetWorkDuration_fn update_target_work_duration =
       nullptr;
-  APerformanceHint_setThreads_fn set_threads = nullptr;
+  APerformanceHint_notifyWorkloadReset_fn notify_workload_reset = nullptr;
   APerformanceHint_closeSession_fn close_session = nullptr;
 
   AWorkDuration_release_fn release_work_duration = nullptr;
@@ -99,10 +88,6 @@ struct AndroidPerformanceHintManager::Impl {
   ~Impl() {
     std::lock_guard<std::mutex> lock(mutex);
     CloseSessionLocked();
-    if (work_duration && release_work_duration) {
-      release_work_duration(work_duration);
-      work_duration = nullptr;
-    }
   }
 
   void CloseSessionLocked() {
@@ -110,27 +95,10 @@ struct AndroidPerformanceHintManager::Impl {
       close_session(session);
       session = nullptr;
     }
-  }
-
-  bool EnsureSessionLocked() {
-    if (session) {
-      return true;
+    if (work_duration && release_work_duration) {
+      release_work_duration(work_duration);
+      work_duration = nullptr;
     }
-    if (!manager || !create_session || current_tids.empty() ||
-        applied_target_duration_ns <= 0) {
-      return false;
-    }
-    const int64_t now_ns =
-        fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
-    constexpr int64_t kRecreateBackoffNs = 1'000'000'000LL;  // 1 second
-    if (last_recreate_attempt_ns > 0 &&
-        now_ns - last_recreate_attempt_ns < kRecreateBackoffNs) {
-      return false;
-    }
-    last_recreate_attempt_ns = now_ns;
-    session = create_session(manager, current_tids.data(), current_tids.size(),
-                             applied_target_duration_ns);
-    return session != nullptr;
   }
 };
 
@@ -156,11 +124,12 @@ AndroidPerformanceHintManager::Create(const std::vector<int32_t>& tids,
   }
 
   APerformanceHint_getManager_fn get_manager = nullptr;
+  APerformanceHint_createSession_fn create_session = nullptr;
   AWorkDuration_create_fn create_work_duration = nullptr;
   auto impl = std::make_unique<Impl>();
   if (!ResolveSymbol(lib_android, "APerformanceHint_getManager", get_manager) ||
       !ResolveSymbol(lib_android, "APerformanceHint_createSession",
-                     impl->create_session) ||
+                     create_session) ||
       !ResolveSymbol(lib_android, "APerformanceHint_updateTargetWorkDuration",
                      impl->update_target_work_duration) ||
       !ResolveSymbol(lib_android, "APerformanceHint_closeSession",
@@ -183,15 +152,18 @@ AndroidPerformanceHintManager::Create(const std::vector<int32_t>& tids,
     return nullptr;
   }
 
-  ResolveSymbol(lib_android, "APerformanceHint_setThreads", impl->set_threads);
+  if (api_level >= 36) {
+    ResolveSymbol(lib_android, "APerformanceHint_notifyWorkloadReset",
+                  impl->notify_workload_reset);
+  }
 
-  impl->manager = get_manager();
-  if (!impl->manager) {
+  APerformanceHintManager* manager = get_manager();
+  if (!manager) {
     return nullptr;
   }
 
-  impl->session = impl->create_session(impl->manager, tids.data(), tids.size(),
-                                       target_duration_ns);
+  impl->session =
+      create_session(manager, tids.data(), tids.size(), target_duration_ns);
   if (!impl->session) {
     return nullptr;
   }
@@ -204,7 +176,6 @@ AndroidPerformanceHintManager::Create(const std::vector<int32_t>& tids,
 
   impl->lib_android = std::move(lib_android);
   impl->applied_target_duration_ns = target_duration_ns;
-  impl->current_tids = tids;
 
   return std::unique_ptr<AndroidPerformanceHintManager>(
       new AndroidPerformanceHintManager(std::move(impl)));
@@ -228,35 +199,12 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
   }
 
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (!impl_->EnsureSessionLocked() || !impl_->work_duration ||
+  if (!impl_->session || !impl_->work_duration ||
       !impl_->report_actual_work_duration2) {
     return;
   }
 
-  // If multiple spawned engines (FlutterEngineGroup) sharing this thread or a
-  // resubmitted frame report work within the same half-vsync window, accumulate
-  // their durations so the PowerHAL sees the thread's combined work for that
-  // vsync rather than under-boosting on partial per-engine slices.
-  if (impl_->last_work_period_start_ns > 0 &&
-      impl_->applied_target_duration_ns > 0 &&
-      std::abs(work_period_start_ns - impl_->last_work_period_start_ns) <
-          impl_->applied_target_duration_ns / 2) {
-    work_period_start_ns =
-        std::min(work_period_start_ns, impl_->last_work_period_start_ns);
-    actual_total_duration_ns += impl_->last_total_duration_ns;
-    actual_cpu_duration_ns = std::min(
-        actual_total_duration_ns,
-        impl_->last_cpu_duration_ns + actual_cpu_duration_ns);
-    actual_gpu_duration_ns += impl_->last_gpu_duration_ns;
-  } else if (impl_->last_work_period_start_ns > 0 &&
-             work_period_start_ns <= impl_->last_work_period_start_ns) {
-    work_period_start_ns = impl_->last_work_period_start_ns + 1;
-  }
-
-  impl_->last_work_period_start_ns = work_period_start_ns;
-  impl_->last_total_duration_ns = actual_total_duration_ns;
-  impl_->last_cpu_duration_ns = actual_cpu_duration_ns;
-  impl_->last_gpu_duration_ns = actual_gpu_duration_ns;
+  impl_->resets_since_last_report = 0;
 
   impl_->set_work_period_start(impl_->work_duration, work_period_start_ns);
   impl_->set_actual_total_duration(impl_->work_duration,
@@ -267,7 +215,10 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
   if (impl_->report_actual_work_duration2(impl_->session,
                                           impl_->work_duration) == EPIPE) {
     impl_->CloseSessionLocked();
+    return;
   }
+  impl_->last_frame_notification_ns =
+      fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
 }
 
 void AndroidPerformanceHintManager::UpdateTargetWorkDuration(
@@ -288,18 +239,15 @@ void AndroidPerformanceHintManager::UpdateTargetWorkDuration(
       return;
     }
   }
-  if (!impl_->EnsureSessionLocked()) {
-    impl_->applied_target_duration_ns = target_duration_ns;
-    return;
-  }
   if (impl_->session && impl_->update_target_work_duration) {
     const int result =
         impl_->update_target_work_duration(impl_->session, target_duration_ns);
     if (result == EPIPE) {
       impl_->CloseSessionLocked();
-      impl_->applied_target_duration_ns = target_duration_ns;
     } else if (result == 0) {
       impl_->applied_target_duration_ns = target_duration_ns;
+      impl_->last_frame_notification_ns =
+          fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
     }
   }
 }
@@ -312,38 +260,30 @@ int64_t AndroidPerformanceHintManager::GetTargetWorkDuration() const {
   return impl_->applied_target_duration_ns;
 }
 
-bool AndroidPerformanceHintManager::SetThreads(
-    const std::vector<int32_t>& tids) {
-  if (!impl_ || tids.empty()) {
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (impl_->current_tids == tids) {
-    return true;
-  }
-  if (!impl_->EnsureSessionLocked() || !impl_->set_threads) {
-    return false;
-  }
-  const int result =
-      impl_->set_threads(impl_->session, tids.data(), tids.size());
-  if (result == EPIPE) {
-    impl_->CloseSessionLocked();
-    impl_->current_tids = tids;
-    return false;
-  }
-  if (result == 0) {
-    impl_->current_tids = tids;
-    return true;
-  }
-  return false;
-}
-
-std::vector<int32_t> AndroidPerformanceHintManager::GetThreads() const {
+void AndroidPerformanceHintManager::SendLoadResetHint() {
   if (!impl_) {
-    return {};
+    return;
   }
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  return impl_->current_tids;
+  if (!impl_->session || !impl_->notify_workload_reset) {
+    return;
+  }
+  // Matches AOSP HWUI HintSessionWrapper::sendLoadResetHint(): when a frame is
+  // requested after > 100 ms since the last notification, send a workload reset
+  // (capped at kMaxResetsSinceLastReport between actual frame reports).
+  constexpr int64_t kResetHintTimeoutNs = 100'000'000;  // 100 ms
+  constexpr int kMaxResetsSinceLastReport = 2;
+  const int64_t now_ns = fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
+  if (now_ns - impl_->last_frame_notification_ns > kResetHintTimeoutNs &&
+      impl_->resets_since_last_report <= kMaxResetsSinceLastReport) {
+    ++impl_->resets_since_last_report;
+    if (impl_->notify_workload_reset(impl_->session, /*cpu=*/true,
+                                     /*gpu=*/false, "load_reset") == EPIPE) {
+      impl_->CloseSessionLocked();
+      return;
+    }
+  }
+  impl_->last_frame_notification_ns = now_ns;
 }
 
 }  // namespace flutter

@@ -35,14 +35,14 @@ TEST(AndroidPerformanceHintManagerTest, LifecycleOnSupportedDevice) {
   // If the OS / PowerHAL supports ADPF, verify the methods execute cleanly.
   if (manager) {
     EXPECT_EQ(manager->GetTargetWorkDuration(), target_ns);
-    EXPECT_EQ(manager->GetThreads(), std::vector<int32_t>{gettid()});
+
+    // First pre-frame reset hint (> 100 ms since initial 0 timestamp) and an
+    // immediate follow-up within 100 ms should execute cleanly.
+    manager->SendLoadResetHint();
+    manager->SendLoadResetHint();
 
     // Test reporting actual duration with AWorkDuration parameters.
     manager->ReportActualWorkDuration(1000000000, 8000000, 6000000, 0);
-
-    // Same-vsync multi-engine report (< 0.5 * target_ns delta) should coalesce
-    // cleanly without error.
-    manager->ReportActualWorkDuration(1002000000, 3000000, 2500000, 0);
 
     // Small target jitter (< 5%) should be suppressed by hysteresis.
     manager->UpdateTargetWorkDuration(target_ns - 500000);
@@ -60,10 +60,6 @@ TEST(AndroidPerformanceHintManagerTest, LifecycleOnSupportedDevice) {
     constexpr int64_t new_target_ns = 8333333;
     manager->UpdateTargetWorkDuration(new_target_ns);
     EXPECT_EQ(manager->GetTargetWorkDuration(), new_target_ns);
-
-    // SetThreads with the same or updated TID list.
-    EXPECT_TRUE(manager->SetThreads({gettid()}));
-    EXPECT_FALSE(manager->SetThreads({}));
   }
 }
 
