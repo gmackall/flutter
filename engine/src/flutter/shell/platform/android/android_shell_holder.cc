@@ -16,7 +16,6 @@
 #include <vector>
 
 #include "common/settings.h"
-#include "flutter/flow/frame_timings.h"
 #include "flutter/fml/cpu_affinity.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/message_loop.h"
@@ -232,12 +231,8 @@ AndroidShellHolder::AndroidShellHolder(
               build_start.ToEpochDelta().ToNanoseconds();
           const int64_t build_ns = (build_end - build_start).ToNanoseconds();
           if (build_start_ns > 0 && build_ns > 0) {
-            const int64_t raw_cpu_ns =
-                GetLastBuildThreadCpuDuration().ToNanoseconds();
-            const int64_t build_cpu_ns =
-                raw_cpu_ns > 0 ? std::min(raw_cpu_ns, build_ns) : build_ns;
             ui_hint->ReportActualWorkDuration(build_start_ns, build_ns,
-                                              build_cpu_ns);
+                                              build_ns);
           }
         };
   }
@@ -259,19 +254,12 @@ AndroidShellHolder::AndroidShellHolder(
       // OnFrameRasterized is invoked in Rasterizer::Draw after
       // external_view_embedder_->EndFrame(), so fml::TimePoint::Now()
       // captures the full raster work period on the thread including
-      // EndFrame, while GetCurrentRasterThreadCpuDuration() measures
-      // CLOCK_THREAD_CPUTIME_ID across that span (excluding GPU fence or
-      // buffer dequeue blocking sleep).
+      // EndFrame.
       const fml::TimePoint raster_finish = std::max(
           timing.Get(FrameTiming::kRasterFinish), fml::TimePoint::Now());
       const int64_t raster_ns =
           (raster_finish - timing.Get(FrameTiming::kRasterStart))
               .ToNanoseconds();
-      const int64_t raw_raster_cpu_ns =
-          GetCurrentRasterThreadCpuDuration().ToNanoseconds();
-      const int64_t raster_cpu_ns = raw_raster_cpu_ns > 0
-                                        ? std::min(raw_raster_cpu_ns, raster_ns)
-                                        : raster_ns;
 
       // When RasterThreadMerger merges the rasterizer onto the platform
       // thread (e.g. legacy Hybrid Composition PlatformViews), the
@@ -289,21 +277,12 @@ AndroidShellHolder::AndroidShellHolder(
           const int64_t build_ns = (timing.Get(FrameTiming::kBuildFinish) -
                                     timing.Get(FrameTiming::kBuildStart))
                                        .ToNanoseconds();
-          const int64_t raw_build_cpu_ns =
-              GetLastBuildThreadCpuDuration().ToNanoseconds();
-          const int64_t build_cpu_ns =
-              raw_build_cpu_ns > 0 ? std::min(raw_build_cpu_ns, build_ns)
-                                   : build_ns;
           const int64_t start_ns =
               build_start_ns > 0 ? build_start_ns : raster_start_ns;
           const int64_t merged_ns =
               (build_ns > 0 ? build_ns : 0) + (raster_ns > 0 ? raster_ns : 0);
-          const int64_t merged_cpu_ns = (build_cpu_ns > 0 ? build_cpu_ns : 0) +
-                                        (raster_cpu_ns > 0 ? raster_cpu_ns : 0);
           if (start_ns > 0 && merged_ns > 0) {
-            ui_hint->ReportActualWorkDuration(
-                start_ns, merged_ns,
-                std::clamp<int64_t>(merged_cpu_ns, 1, merged_ns));
+            ui_hint->ReportActualWorkDuration(start_ns, merged_ns, merged_ns);
           }
         }
         return;
@@ -311,7 +290,7 @@ AndroidShellHolder::AndroidShellHolder(
 
       if (raster_hint && raster_start_ns > 0 && raster_ns > 0) {
         raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
-                                              raster_cpu_ns);
+                                              raster_ns);
       }
     };
   }

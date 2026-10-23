@@ -4,7 +4,6 @@
 
 #include "flutter/flow/frame_timings.h"
 
-#include <ctime>
 #include <memory>
 #include <string>
 
@@ -15,21 +14,6 @@
 namespace flutter {
 
 namespace {
-
-thread_local int64_t g_tls_build_cpu_start_ns = 0;
-thread_local int64_t g_tls_last_build_cpu_duration_ns = 0;
-thread_local int64_t g_tls_raster_cpu_start_ns = 0;
-
-int64_t CurrentThreadCpuTimeNs() {
-#if defined(OS_ANDROID) || defined(OS_LINUX)
-  struct timespec ts {};
-  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) {
-    return static_cast<int64_t>(ts.tv_sec) * 1'000'000'000LL +
-           static_cast<int64_t>(ts.tv_nsec);
-  }
-#endif
-  return 0;
-}
 
 const char* StateToString(FrameTimingsRecorder::State state) {
 #ifndef NDEBUG
@@ -189,7 +173,6 @@ fml::Status FrameTimingsRecorder::RecordBuildStartImpl(
   }
   state_ = State::kBuildStart;
   build_start_ = build_start;
-  g_tls_build_cpu_start_ns = CurrentThreadCpuTimeNs();
   return fml::Status();
 }
 
@@ -201,11 +184,6 @@ fml::Status FrameTimingsRecorder::RecordBuildEndImpl(fml::TimePoint build_end) {
   }
   state_ = State::kBuildEnd;
   build_end_ = build_end;
-  const int64_t end_cpu_ns = CurrentThreadCpuTimeNs();
-  g_tls_last_build_cpu_duration_ns =
-      (g_tls_build_cpu_start_ns > 0 && end_cpu_ns >= g_tls_build_cpu_start_ns)
-          ? (end_cpu_ns - g_tls_build_cpu_start_ns)
-          : 0;
   return fml::Status();
 }
 
@@ -218,7 +196,6 @@ fml::Status FrameTimingsRecorder::RecordRasterStartImpl(
   }
   state_ = State::kRasterStart;
   raster_start_ = raster_start;
-  g_tls_raster_cpu_start_ns = CurrentThreadCpuTimeNs();
   return fml::Status();
 }
 
@@ -307,19 +284,6 @@ const char* FrameTimingsRecorder::GetFrameNumberTraceArg() const {
 void FrameTimingsRecorder::AssertInState(State state) const {
   FML_DCHECK(state_ == state) << "Expected state " << StateToString(state)
                               << ", actual state " << StateToString(state_);
-}
-
-fml::TimeDelta GetLastBuildThreadCpuDuration() {
-  return fml::TimeDelta::FromNanoseconds(g_tls_last_build_cpu_duration_ns);
-}
-
-fml::TimeDelta GetCurrentRasterThreadCpuDuration() {
-  const int64_t end_cpu_ns = CurrentThreadCpuTimeNs();
-  const int64_t cpu_ns =
-      (g_tls_raster_cpu_start_ns > 0 && end_cpu_ns >= g_tls_raster_cpu_start_ns)
-          ? (end_cpu_ns - g_tls_raster_cpu_start_ns)
-          : 0;
-  return fml::TimeDelta::FromNanoseconds(cpu_ns);
 }
 
 }  // namespace flutter

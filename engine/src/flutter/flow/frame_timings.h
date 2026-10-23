@@ -164,16 +164,6 @@ class FrameTimingsRecorder {
   FML_DISALLOW_COPY_ASSIGN_AND_MOVE(FrameTimingsRecorder);
 };
 
-/// Returns the thread CPU time (CLOCK_THREAD_CPUTIME_ID) consumed on the
-/// calling thread between the most recent `RecordBuildStart` and
-/// `RecordBuildEnd` calls on that thread.
-fml::TimeDelta GetLastBuildThreadCpuDuration();
-
-/// Returns the thread CPU time (CLOCK_THREAD_CPUTIME_ID) consumed on the
-/// calling thread since the most recent `RecordRasterStart` call on that
-/// thread.
-fml::TimeDelta GetCurrentRasterThreadCpuDuration();
-
 }  // namespace flutter
 
 #endif  // FLUTTER_FLOW_FRAME_TIMINGS_H_
