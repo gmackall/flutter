@@ -246,8 +246,6 @@ void AndroidPerformanceHintManager::UpdateTargetWorkDuration(
       impl_->CloseSessionLocked();
     } else if (result == 0) {
       impl_->applied_target_duration_ns = target_duration_ns;
-      impl_->last_frame_notification_ns =
-          fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
     }
   }
 }

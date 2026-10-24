@@ -11,6 +11,7 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -213,10 +214,11 @@ AndroidShellHolder::AndroidShellHolder(
   if (ui_performance_hint_manager_) {
     FrameBuiltCallback prev_built_callback =
         shell_settings.frame_built_callback;
+    std::weak_ptr<AndroidPerformanceHintManager> weak_ui_hint =
+        ui_performance_hint_manager_;
     shell_settings.frame_built_callback =
-        [ui_hint = ui_performance_hint_manager_, raster_runner,
-         prev_built_callback](fml::TimePoint build_start,
-                              fml::TimePoint build_end) {
+        [weak_ui_hint, raster_runner, prev_built_callback](
+            fml::TimePoint build_start, fml::TimePoint build_end) {
           if (prev_built_callback) {
             prev_built_callback(build_start, build_end);
           }
@@ -225,6 +227,10 @@ AndroidShellHolder::AndroidShellHolder(
           // continues through Rasterizer::Draw + EndFrame and will be reported
           // as a combined duration in frame_rasterized_callback.
           if (raster_runner && raster_runner->RunsTasksOnCurrentThread()) {
+            return;
+          }
+          auto ui_hint = weak_ui_hint.lock();
+          if (!ui_hint) {
             return;
           }
           const int64_t build_start_ns =
@@ -239,60 +245,67 @@ AndroidShellHolder::AndroidShellHolder(
   if (ui_performance_hint_manager_ || raster_performance_hint_manager_) {
     FrameRasterizedCallback prev_callback =
         shell_settings.frame_rasterized_callback;
-    shell_settings
-        .frame_rasterized_callback = [ui_hint = ui_performance_hint_manager_,
-                                      raster_hint =
-                                          raster_performance_hint_manager_,
-                                      captured_raster_tid, platform_ui_merged,
-                                      prev_callback](
-                                         const FrameTiming& timing) {
-      if (prev_callback) {
-        prev_callback(timing);
-      }
-      const int64_t raster_start_ns =
-          timing.Get(FrameTiming::kRasterStart).ToEpochDelta().ToNanoseconds();
-      // OnFrameRasterized is invoked in Rasterizer::Draw after
-      // external_view_embedder_->EndFrame(), so fml::TimePoint::Now()
-      // captures the full raster work period on the thread including
-      // EndFrame.
-      const fml::TimePoint raster_finish = std::max(
-          timing.Get(FrameTiming::kRasterFinish), fml::TimePoint::Now());
-      const int64_t raster_ns =
-          (raster_finish - timing.Get(FrameTiming::kRasterStart))
-              .ToNanoseconds();
-
-      // When RasterThreadMerger merges the rasterizer onto the platform
-      // thread (e.g. legacy Hybrid Composition PlatformViews), the
-      // dedicated raster thread sits idle. When the platform and UI threads
-      // are merged, that thread executes both build and raster sequentially
-      // and reports the combined duration to the UI session after EndFrame
-      // finishes.
-      const bool raster_merged =
-          (captured_raster_tid > 0 && gettid() != captured_raster_tid);
-      if (raster_merged) {
-        if (platform_ui_merged && ui_hint) {
-          const int64_t build_start_ns = timing.Get(FrameTiming::kBuildStart)
-                                             .ToEpochDelta()
-                                             .ToNanoseconds();
-          const int64_t build_ns = (timing.Get(FrameTiming::kBuildFinish) -
-                                    timing.Get(FrameTiming::kBuildStart))
-                                       .ToNanoseconds();
-          const int64_t start_ns =
-              build_start_ns > 0 ? build_start_ns : raster_start_ns;
-          const int64_t merged_ns =
-              (build_ns > 0 ? build_ns : 0) + (raster_ns > 0 ? raster_ns : 0);
-          if (start_ns > 0 && merged_ns > 0) {
-            ui_hint->ReportActualWorkDuration(start_ns, merged_ns, merged_ns);
+    std::weak_ptr<AndroidPerformanceHintManager> weak_ui_hint =
+        ui_performance_hint_manager_;
+    std::weak_ptr<AndroidPerformanceHintManager> weak_raster_hint =
+        raster_performance_hint_manager_;
+    shell_settings.frame_rasterized_callback =
+        [weak_ui_hint, weak_raster_hint, captured_raster_tid,
+         platform_ui_merged, prev_callback](const FrameTiming& timing) {
+          if (prev_callback) {
+            prev_callback(timing);
           }
-        }
-        return;
-      }
+          const int64_t raster_start_ns = timing.Get(FrameTiming::kRasterStart)
+                                              .ToEpochDelta()
+                                              .ToNanoseconds();
+          // OnFrameRasterized is invoked in Rasterizer::Draw after
+          // external_view_embedder_->EndFrame(), so fml::TimePoint::Now()
+          // captures the full raster work period on the thread including
+          // EndFrame.
+          const fml::TimePoint raster_finish = std::max(
+              timing.Get(FrameTiming::kRasterFinish), fml::TimePoint::Now());
+          const int64_t raster_ns =
+              (raster_finish - timing.Get(FrameTiming::kRasterStart))
+                  .ToNanoseconds();
 
-      if (raster_hint && raster_start_ns > 0 && raster_ns > 0) {
-        raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
-                                              raster_ns);
-      }
-    };
+          // When RasterThreadMerger merges the rasterizer onto the platform
+          // thread (e.g. legacy Hybrid Composition PlatformViews), the
+          // dedicated raster thread sits idle. When the platform and UI threads
+          // are merged, that thread executes both build and raster sequentially
+          // and reports the combined duration to the UI session after EndFrame
+          // finishes.
+          const bool raster_merged =
+              (captured_raster_tid > 0 && gettid() != captured_raster_tid);
+          if (raster_merged) {
+            if (platform_ui_merged) {
+              if (auto ui_hint = weak_ui_hint.lock()) {
+                const int64_t build_start_ns =
+                    timing.Get(FrameTiming::kBuildStart)
+                        .ToEpochDelta()
+                        .ToNanoseconds();
+                const int64_t build_ns = (timing.Get(FrameTiming::kBuildFinish) -
+                                          timing.Get(FrameTiming::kBuildStart))
+                                             .ToNanoseconds();
+                const int64_t start_ns =
+                    build_start_ns > 0 ? build_start_ns : raster_start_ns;
+                const int64_t merged_ns = (build_ns > 0 ? build_ns : 0) +
+                                          (raster_ns > 0 ? raster_ns : 0);
+                if (start_ns > 0 && merged_ns > 0) {
+                  ui_hint->ReportActualWorkDuration(start_ns, merged_ns,
+                                                    merged_ns);
+                }
+              }
+            }
+            return;
+          }
+
+          if (raster_start_ns > 0 && raster_ns > 0) {
+            if (auto raster_hint = weak_raster_hint.lock()) {
+              raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
+                                                    raster_ns);
+            }
+          }
+        };
   }
 
   shell_ =

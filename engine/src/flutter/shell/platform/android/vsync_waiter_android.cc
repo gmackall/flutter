@@ -35,10 +35,21 @@ VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 
 // |VsyncWaiter|
 void VsyncWaiterAndroid::AwaitVSync() {
+  const uint refresh_rate = g_refresh_rate_.load(std::memory_order_relaxed);
+  const int64_t target_duration_ns =
+      refresh_rate > 0 ? static_cast<int64_t>(1e9 / refresh_rate) : 0;
   if (ui_performance_hint_manager_) {
+    if (target_duration_ns > 0) {
+      ui_performance_hint_manager_->UpdateTargetWorkDuration(
+          target_duration_ns);
+    }
     ui_performance_hint_manager_->SendLoadResetHint();
   }
   if (raster_performance_hint_manager_) {
+    if (target_duration_ns > 0) {
+      raster_performance_hint_manager_->UpdateTargetWorkDuration(
+          target_duration_ns);
+    }
     raster_performance_hint_manager_->SendLoadResetHint();
   }
   const static bool use_choreographer =
