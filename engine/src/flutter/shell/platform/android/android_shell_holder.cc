@@ -165,12 +165,16 @@ AndroidShellHolder::AndroidShellHolder(
         {captured_raster_tid}, target_duration_ns);
   }
 
+  auto shared_android_context =
+      std::make_shared<std::weak_ptr<AndroidContext>>();
+
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
       [&jni_facade, &weak_platform_view, rendering_api,
        ui_hint = ui_performance_hint_manager_,
-       raster_hint = raster_performance_hint_manager_](Shell& shell) {
+       raster_hint = raster_performance_hint_manager_,
+       shared_android_context](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -179,6 +183,9 @@ AndroidShellHolder::AndroidShellHolder(
             rendering_api            // rendering API
         );
         platform_view_android->SetPerformanceHintManagers(ui_hint, raster_hint);
+        if (shared_android_context) {
+          *shared_android_context = platform_view_android->GetAndroidContext();
+        }
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };
@@ -249,6 +256,7 @@ AndroidShellHolder::AndroidShellHolder(
     };
   }
   if (ui_performance_hint_manager_ || raster_performance_hint_manager_) {
+    auto last_gpu_generation = std::make_shared<uint64_t>(0);
     FrameRasterizedCallback prev_callback =
         shell_settings.frame_rasterized_callback;
     std::weak_ptr<AndroidPerformanceHintManager> weak_ui_hint =
@@ -258,6 +266,8 @@ AndroidShellHolder::AndroidShellHolder(
     shell_settings.frame_rasterized_callback = [weak_ui_hint, weak_raster_hint,
                                                 captured_raster_tid,
                                                 platform_ui_merged,
+                                                shared_android_context,
+                                                last_gpu_generation,
                                                 prev_callback](
                                                    const FrameTiming& timing) {
       if (prev_callback) {
@@ -274,6 +284,20 @@ AndroidShellHolder::AndroidShellHolder(
       const int64_t raster_ns =
           (raster_finish - timing.Get(FrameTiming::kRasterStart))
               .ToNanoseconds();
+
+      int64_t gpu_ns = 0;
+      if (shared_android_context) {
+        if (auto android_ctx = shared_android_context->lock()) {
+          if (auto impeller_ctx = android_ctx->GetImpellerContext()) {
+            const uint64_t gen = impeller_ctx->GetLastFrameGpuTimeGeneration();
+            if (gen != *last_gpu_generation) {
+              *last_gpu_generation = gen;
+              gpu_ns =
+                  std::max<int64_t>(0, impeller_ctx->GetLastFrameGpuTimeNs());
+            }
+          }
+        }
+      }
 
       // When RasterThreadMerger merges the rasterizer onto the platform
       // thread (e.g. legacy Hybrid Composition PlatformViews), the
@@ -294,20 +318,23 @@ AndroidShellHolder::AndroidShellHolder(
                                          .ToNanoseconds();
             const int64_t start_ns =
                 build_start_ns > 0 ? build_start_ns : raster_start_ns;
-            const int64_t merged_ns =
+            const int64_t merged_cpu_ns =
                 (build_ns > 0 ? build_ns : 0) + (raster_ns > 0 ? raster_ns : 0);
-            if (start_ns > 0 && merged_ns > 0) {
-              ui_hint->ReportActualWorkDuration(start_ns, merged_ns, merged_ns);
+            const int64_t merged_total_ns = std::max(merged_cpu_ns, gpu_ns);
+            if (start_ns > 0 && (merged_cpu_ns > 0 || gpu_ns > 0)) {
+              ui_hint->ReportActualWorkDuration(start_ns, merged_total_ns,
+                                                merged_cpu_ns, gpu_ns);
             }
           }
         }
         return;
       }
 
-      if (raster_start_ns > 0 && raster_ns > 0) {
+      if (raster_start_ns > 0 && (raster_ns > 0 || gpu_ns > 0)) {
         if (auto raster_hint = weak_raster_hint.lock()) {
-          raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
-                                                raster_ns);
+          const int64_t raster_total_ns = std::max(raster_ns, gpu_ns);
+          raster_hint->ReportActualWorkDuration(
+              raster_start_ns, raster_total_ns, raster_ns, gpu_ns);
         }
       }
     };
