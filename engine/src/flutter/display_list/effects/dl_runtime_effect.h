@@ -26,6 +26,18 @@ class DlRuntimeEffect : public SkRefCnt {
   /// Returns the total combined size of all uniforms in bytes.
   virtual size_t uniform_size() const = 0;
 
+  /// The SkSL runtime stage that was bundled alongside |runtime_stage()|, if
+  /// any.
+  ///
+  /// impellerc emits an SkSL variant of every runtime effect for the
+  /// platforms that might fall back to Skia. When it is available, platform
+  /// view embedders may use it to replicate the effect on platform view
+  /// content that the engine does not render itself (e.g. as an AGSL
+  /// RuntimeShader on Android). The uniform reflection of this stage
+  /// describes the uniforms as they appear in the SkSL source; the uniform
+  /// data supplied to the effect is laid out according to |runtime_stage()|.
+  virtual std::shared_ptr<impeller::RuntimeStage> sksl_runtime_stage() const;
+
  protected:
   DlRuntimeEffect();
   virtual ~DlRuntimeEffect();

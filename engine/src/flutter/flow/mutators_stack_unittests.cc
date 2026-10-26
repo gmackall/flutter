@@ -160,6 +160,62 @@ TEST(MutatorsStack, PushBackdropFilter) {
   ASSERT_EQ(i, num_of_mutators);
 }
 
+TEST(MutatorsStack, PushContentImageFilter) {
+  MutatorsStack stack;
+  auto filter = DlImageFilter::MakeBlur(5, 5, DlTileMode::kClamp);
+  auto frame = std::make_shared<ContentImageFilterFrame>();
+  stack.PushContentImageFilter(filter, frame);
+  auto iter = stack.Bottom();
+  ASSERT_EQ(iter->get()->GetType(), MutatorType::kContentImageFilter);
+  const ContentImageFilterMutation& mutation =
+      iter->get()->GetContentImageFilterMutation();
+  EXPECT_EQ(mutation.GetFilter(), filter);
+  EXPECT_FALSE(mutation.GetFrame().has_value());
+  EXPECT_FALSE(iter->get()->IsClipType());
+
+  // The frame is shared with the producer and can be filled in after the
+  // mutator was captured.
+  frame->Set(DlIRect::MakeLTRB(1, 2, 3, 4));
+  EXPECT_EQ(mutation.GetFrame(), DlIRect::MakeLTRB(1, 2, 3, 4));
+}
+
+TEST(Mutator, ContentImageFilterEquality) {
+  auto filter1 = DlImageFilter::MakeBlur(5, 5, DlTileMode::kClamp);
+  auto filter2 = DlImageFilter::MakeBlur(5, 5, DlTileMode::kClamp);
+  auto filter3 = DlImageFilter::MakeBlur(6, 5, DlTileMode::kClamp);
+  auto frame1 = std::make_shared<ContentImageFilterFrame>();
+  auto frame2 = std::make_shared<ContentImageFilterFrame>();
+
+  // Equal filters, both frames not computed yet.
+  EXPECT_EQ(Mutator(ContentImageFilterMutation(filter1, frame1)),
+            Mutator(ContentImageFilterMutation(filter2, frame2)));
+
+  // A mutation with a computed frame is not equal to one without.
+  frame1->Set(DlIRect::MakeLTRB(0, 0, 100, 200));
+  EXPECT_NE(Mutator(ContentImageFilterMutation(filter1, frame1)),
+            Mutator(ContentImageFilterMutation(filter2, frame2)));
+
+  // Frames are compared by value.
+  frame2->Set(DlIRect::MakeLTRB(0, 0, 100, 200));
+  EXPECT_EQ(Mutator(ContentImageFilterMutation(filter1, frame1)),
+            Mutator(ContentImageFilterMutation(filter2, frame2)));
+  frame2->Set(DlIRect::MakeLTRB(0, 0, 100, 201));
+  EXPECT_NE(Mutator(ContentImageFilterMutation(filter1, frame1)),
+            Mutator(ContentImageFilterMutation(filter2, frame2)));
+
+  // Filters are compared by value.
+  EXPECT_NE(Mutator(ContentImageFilterMutation(filter1, frame1)),
+            Mutator(ContentImageFilterMutation(filter3, frame1)));
+
+  // Copies are equal.
+  Mutator mutator(ContentImageFilterMutation(filter1, frame1));
+  Mutator copy(mutator);
+  EXPECT_EQ(mutator, copy);
+
+  // Different mutator types are never equal.
+  EXPECT_NE(mutator, Mutator(filter1, DlRect()));
+}
+
 TEST(MutatorsStack, Pop) {
   MutatorsStack stack;
   DlMatrix matrix;

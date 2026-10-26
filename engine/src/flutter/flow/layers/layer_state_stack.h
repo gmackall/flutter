@@ -176,8 +176,15 @@ class LayerStateStack {
     // this time if the image filter cannot be batched with other
     // outstanding attributes.
     // (Currently only opacity is recorded for batching)
+    //
+    // If |platform_view_frame| is non-null, platform views that capture the
+    // mutators of this stack while the filter is applied will receive a
+    // |MutatorType::kContentImageFilter| mutator referencing the filter and
+    // the frame. See |ContentImageFilterFrame|.
     void applyImageFilter(const DlRect& bounds,
-                          const std::shared_ptr<DlImageFilter>& filter);
+                          const std::shared_ptr<DlImageFilter>& filter,
+                          const std::shared_ptr<ContentImageFilterFrame>&
+                              platform_view_frame = nullptr);
 
     // Records the color filter for application at the next call to
     // saveLayer or applyState. A saveLayer may be executed at
@@ -322,8 +329,10 @@ class LayerStateStack {
   void push_opacity(const DlRect& rect, DlScalar opacity);
   void push_color_filter(const DlRect& bounds,
                          const std::shared_ptr<const DlColorFilter>& filter);
-  void push_image_filter(const DlRect& bounds,
-                         const std::shared_ptr<DlImageFilter>& filter);
+  void push_image_filter(
+      const DlRect& bounds,
+      const std::shared_ptr<DlImageFilter>& filter,
+      const std::shared_ptr<ContentImageFilterFrame>& platform_view_frame);
   void push_backdrop(const DlRect& bounds,
                      const std::shared_ptr<DlImageFilter>& filter,
                      DlBlendMode blend_mode,

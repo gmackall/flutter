@@ -4,6 +4,9 @@
 
 #include "flutter/flow/layers/image_filter_layer.h"
 
+#include <cmath>
+
+#include "flutter/display_list/effects/dl_image_filters.h"
 #include "flutter/display_list/utils/dl_comparable.h"
 #include "flutter/flow/layers/layer.h"
 #include "flutter/flow/raster_cache_util.h"
@@ -49,6 +52,67 @@ void ImageFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
   context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
 }
 
+namespace {
+
+// Mirrors |impeller::SizeDifferenceUnderThreshold| in
+// impeller/entity/save_layer_utils.cc.
+bool SizeDifferenceUnderThreshold(DlSize a, DlSize b, DlScalar threshold) {
+  return (std::abs(a.width - b.width) / b.width) < threshold &&
+         (std::abs(a.height - b.height) / b.height) < threshold;
+}
+
+// Mirrors |kDefaultSizeThreshold| in impeller/entity/save_layer_utils.cc.
+constexpr DlScalar kSaveLayerSizeThreshold = 0.3f;
+
+bool ContainsPlatformView(const ContainerLayer& container) {
+  for (const std::shared_ptr<Layer>& layer : container.layers()) {
+    if (layer->as_platform_view_layer() != nullptr) {
+      return true;
+    }
+    const ContainerLayer* child_container = layer->as_container_layer();
+    if (child_container != nullptr && ContainsPlatformView(*child_container)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+std::optional<DlIRect> ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+    const DlRect& content_device_bounds,
+    const DlRect& device_cull_rect) {
+  if (content_device_bounds.IsEmpty() || !content_device_bounds.IsFinite()) {
+    return std::nullopt;
+  }
+  // For runtime effect filters, |GetSourceCoverage| of the coverage limit is
+  // the coverage limit itself, so the "worst case" source coverage is the
+  // device clip. See |impeller::ComputeSaveLayerCoverage|.
+  std::optional<DlRect> intersection =
+      content_device_bounds.Intersection(device_cull_rect);
+  if (!intersection.has_value() || intersection->IsEmpty()) {
+    return std::nullopt;
+  }
+  DlRect coverage = intersection.value();
+  if (SizeDifferenceUnderThreshold(content_device_bounds.GetSize(),
+                                   intersection->GetSize(),
+                                   kSaveLayerSizeThreshold)) {
+    coverage = content_device_bounds;
+  }
+  // |impeller::Canvas::SaveLayer| sizes the subpass texture with
+  // ISize(coverage.GetSize()) (i.e. truncation) when the layer has an image
+  // filter, and positions it at the (possibly fractional) coverage origin.
+  // When the texture is composited back, each device pixel picks up the texel
+  // nearest to its center, which corresponds to rounding the origin.
+  const int64_t width = static_cast<int64_t>(coverage.GetWidth());
+  const int64_t height = static_cast<int64_t>(coverage.GetHeight());
+  if (width <= 0 || height <= 0) {
+    return std::nullopt;
+  }
+  return DlIRect::MakeXYWH(std::round(coverage.GetX()),
+                           std::round(coverage.GetY()), width, height);
+}
+
 void ImageFilterLayer::Preroll(PrerollContext* context) {
   auto mutator = context->state_stack.save();
   mutator.translate(offset_);
@@ -61,9 +125,82 @@ void ImageFilterLayer::Preroll(PrerollContext* context) {
                               context->state_stack.matrix());
 #endif  //  !SLIMPELLER
 
-  DlRect child_bounds;
+  // The transform under which this layer's saveLayer (and therefore its image
+  // filter) is applied.
+  const DlMatrix filter_matrix = context->state_stack.matrix();
 
-  PrerollChildren(context, &child_bounds);
+  DlRect child_bounds;
+  {
+    // State that only applies to the children (and in particular to any
+    // platform views among them) is pushed in a nested scope so that it is
+    // gone again before |AutoCache| finalizes and before |transformed_filter_|
+    // is computed below.
+    auto child_mutator = context->state_stack.save();
+
+    std::shared_ptr<ContentImageFilterFrame> platform_view_frame;
+    DlRect device_cull_rect;
+#if !SLIMPELLER
+    std::vector<RasterCacheItem*>* raster_cached_entries =
+        context->raster_cached_entries;
+#endif  //  !SLIMPELLER
+
+    // Filters are only reported to platform views (as a transform for matrix
+    // filters, and as a kContentImageFilter mutator for runtime effect
+    // filters) if there are platform views that could observe them. For
+    // other subtrees, prerolling is unaffected by the filter.
+    //
+    // For matrix filters this matters for raster caching: the children are
+    // painted under |filter_matrix| (the matrix is applied by the saveLayer's
+    // filter) but would be prerolled under |filter_matrix| * |matrix|, so any
+    // raster cache entries that they created would be keyed on a matrix that
+    // is never used while painting. Rather than regressing raster caching for
+    // every matrix filter (e.g. the Skia overscroll stretch), the transform is
+    // only pushed when a platform view can observe it, and in that case the
+    // children's own raster cache entries are suppressed. (The layer can still
+    // cache its children as a whole, see |layer_raster_cache_item_|, which is
+    // keyed on |filter_matrix|.)
+    const DlMatrixImageFilter* matrix_filter =
+        filter_ ? filter_->asMatrix() : nullptr;
+    const bool is_runtime_effect_filter =
+        filter_ && filter_->asRuntimeEffectFilter() != nullptr;
+    if ((matrix_filter != nullptr || is_runtime_effect_filter) &&
+        context->view_embedder != nullptr && ContainsPlatformView(*this)) {
+      if (matrix_filter != nullptr) {
+        // A matrix filter renders its children exactly as a TransformLayer
+        // with the same matrix would (modulo sampling), so give platform
+        // views the same treatment they get under a TransformLayer: a
+        // kTransform mutator and a CTM that includes the matrix, which keeps
+        // EmbeddedViewParams::transformMatrix() and finalBoundingRect()
+        // consistent with the mutators.
+        const DlMatrix& matrix = matrix_filter->matrix();
+        if (matrix.IsFinite() && matrix.IsInvertible()) {
+          child_mutator.transform(matrix);
+#if !SLIMPELLER
+          context->raster_cached_entries = nullptr;
+#endif  //  !SLIMPELLER
+        }
+      } else {
+        // Runtime effect filters are reported to platform views as a
+        // kContentImageFilter mutator. Their coordinate frame depends on the
+        // bounds of all of the children, which are only known after
+        // PrerollChildren, so it is filled in below.
+        platform_view_frame = std::make_shared<ContentImageFilterFrame>();
+        device_cull_rect = context->state_stack.device_cull_rect();
+        child_mutator.applyImageFilter(DlRect(), filter_, platform_view_frame);
+      }
+    }
+
+    PrerollChildren(context, &child_bounds);
+
+#if !SLIMPELLER
+    context->raster_cached_entries = raster_cached_entries;
+#endif  //  !SLIMPELLER
+
+    if (platform_view_frame) {
+      platform_view_frame->Set(ComputeRuntimeEffectInputFrame(
+          child_bounds.TransformBounds(filter_matrix), device_cull_rect));
+    }
+  }
 
   if (!filter_) {
     child_bounds = child_bounds.Shift(offset_);
@@ -91,8 +228,7 @@ void ImageFilterLayer::Preroll(PrerollContext* context) {
   layer_raster_cache_item_->MarkNotCacheChildren();
 #endif  //  !SLIMPELLER
 
-  transformed_filter_ =
-      filter_->makeWithLocalMatrix(context->state_stack.matrix());
+  transformed_filter_ = filter_->makeWithLocalMatrix(filter_matrix);
 
 #if !SLIMPELLER
   if (transformed_filter_) {

@@ -34,6 +34,7 @@ class MockLayer;
 class ContainerLayer;
 class DisplayListLayer;
 class PerformanceOverlayLayer;
+class PlatformViewLayer;
 class TextureLayer;
 class RasterCacheItem;
 
@@ -246,6 +247,9 @@ class Layer {
     return nullptr;
   }
   virtual const TextureLayer* as_texture_layer() const { return nullptr; }
+  virtual const PlatformViewLayer* as_platform_view_layer() const {
+    return nullptr;
+  }
   virtual const PerformanceOverlayLayer* as_performance_overlay_layer() const {
     return nullptr;
   }

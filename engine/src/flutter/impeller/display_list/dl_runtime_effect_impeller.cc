@@ -12,15 +12,19 @@ namespace flutter {
 ///
 
 sk_sp<DlRuntimeEffect> DlRuntimeEffectImpeller::Make(
-    std::shared_ptr<impeller::RuntimeStage> runtime_stage) {
-  return sk_make_sp<DlRuntimeEffectImpeller>(std::move(runtime_stage));
+    std::shared_ptr<impeller::RuntimeStage> runtime_stage,
+    std::shared_ptr<impeller::RuntimeStage> sksl_runtime_stage) {
+  return sk_make_sp<DlRuntimeEffectImpeller>(std::move(runtime_stage),
+                                             std::move(sksl_runtime_stage));
 }
 
 DlRuntimeEffectImpeller::~DlRuntimeEffectImpeller() = default;
 
 DlRuntimeEffectImpeller::DlRuntimeEffectImpeller(
-    std::shared_ptr<impeller::RuntimeStage> runtime_stage)
-    : runtime_stage_(std::move(runtime_stage)) {};
+    std::shared_ptr<impeller::RuntimeStage> runtime_stage,
+    std::shared_ptr<impeller::RuntimeStage> sksl_runtime_stage)
+    : runtime_stage_(std::move(runtime_stage)),
+      sksl_runtime_stage_(std::move(sksl_runtime_stage)) {};
 
 sk_sp<SkRuntimeEffect> DlRuntimeEffectImpeller::skia_runtime_effect() const {
   return nullptr;
@@ -29,6 +33,11 @@ sk_sp<SkRuntimeEffect> DlRuntimeEffectImpeller::skia_runtime_effect() const {
 std::shared_ptr<impeller::RuntimeStage> DlRuntimeEffectImpeller::runtime_stage()
     const {
   return runtime_stage_;
+}
+
+std::shared_ptr<impeller::RuntimeStage>
+DlRuntimeEffectImpeller::sksl_runtime_stage() const {
+  return sksl_runtime_stage_;
 }
 
 size_t DlRuntimeEffectImpeller::uniform_size() const {

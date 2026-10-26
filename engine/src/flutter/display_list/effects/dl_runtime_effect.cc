@@ -13,4 +13,9 @@ namespace flutter {
 DlRuntimeEffect::DlRuntimeEffect() = default;
 DlRuntimeEffect::~DlRuntimeEffect() = default;
 
+std::shared_ptr<impeller::RuntimeStage> DlRuntimeEffect::sksl_runtime_stage()
+    const {
+  return nullptr;
+}
+
 }  // namespace flutter

@@ -118,6 +118,14 @@ void MutatorsStack::PushPlatformViewClipPath(const DlPath& path) {
   vector_.push_back(element);
 }
 
+void MutatorsStack::PushContentImageFilter(
+    const std::shared_ptr<DlImageFilter>& filter,
+    const std::shared_ptr<ContentImageFilterFrame>& frame) {
+  std::shared_ptr<Mutator> element =
+      std::make_shared<Mutator>(ContentImageFilterMutation(filter, frame));
+  vector_.push_back(element);
+}
+
 void MutatorsStack::Pop() {
   vector_.pop_back();
 }

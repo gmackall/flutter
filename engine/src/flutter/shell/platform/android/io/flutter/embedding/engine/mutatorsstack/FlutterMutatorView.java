@@ -5,6 +5,7 @@
 package io.flutter.embedding.engine.mutatorsstack;
 
 import static android.view.View.OnFocusChangeListener;
+import static io.flutter.Build.API_LEVELS;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
@@ -12,28 +13,57 @@ import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RenderEffect;
+import android.graphics.RuntimeShader;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
+import io.flutter.Log;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.plugin.platform.PlatformViewGestureTracker;
 import io.flutter.util.ViewUtils;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A view that applies the {@link io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack} to
  * its children.
  */
 public class FlutterMutatorView extends FrameLayout {
+  private static final String TAG = "FlutterMutatorView";
+
   private FlutterMutatorsStack mutatorsStack;
   private float screenDensity;
-  private int left;
-  private int top;
+
+  // The position of this view in its parent. This is the position of the platform view's bounding
+  // rect unless a runtime shader filter is applied, in which case the view is laid out with the
+  // filter's frame as its bounds.
+  private int viewOriginLeft;
+  private int viewOriginTop;
+
+  // SurfaceView content is composited by SurfaceFlinger in a separate layer, so it can't be
+  // filtered by a RenderEffect.
+  private static final Class[] VIEW_TYPES_THAT_PREVENT_RENDER_EFFECTS = {SurfaceView.class};
+  @Nullable private Boolean cachedHasChildSurfaceView = null;
+
+  // The ids of programs whose AGSL failed to compile or whose uniforms couldn't be set.
+  private static final Set<Long> failedRuntimeShaderPrograms = ConcurrentHashMap.newKeySet();
+
+  // Each view owns its own RuntimeShader so that the uniforms of views that are filtered in the
+  // same frame don't interfere with each other.
+  @Nullable private Object runtimeShader; // RuntimeShader, which requires API 33.
+  private long runtimeShaderProgramId = -1;
+  @Nullable private FlutterMutatorsStack.RuntimeShaderFilter appliedRuntimeShaderFilter;
 
   private final AndroidTouchProcessor androidTouchProcessor;
   private final PlatformViewGestureTracker gestureTracker = new PlatformViewGestureTracker();
@@ -102,14 +132,134 @@ public class FlutterMutatorView extends FrameLayout {
   public void readyToDisplay(
       @NonNull FlutterMutatorsStack mutatorsStack, int left, int top, int width, int height) {
     this.mutatorsStack = mutatorsStack;
-    this.left = left;
-    this.top = top;
+
+    int layoutLeft = left;
+    int layoutTop = top;
+    int layoutWidth = width;
+    int layoutHeight = height;
+
+    FlutterMutatorsStack.RuntimeShaderFilter filter = mutatorsStack.getFinalRuntimeShaderFilter();
+    boolean appliedFilter = false;
+    if (filter != null && !filter.isEmpty() && Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
+      if (!hasChildSurfaceView()) {
+        appliedFilter = applyRuntimeShaderFilter(filter);
+      }
+    }
+    if (appliedFilter) {
+      // The shader's coordinates are relative to the filter's frame, so lay the view out with the
+      // frame as its bounds. This also gives the filter room to move content outside of the
+      // platform view's own bounds (e.g. when stretching).
+      layoutLeft = filter.left;
+      layoutTop = filter.top;
+      layoutWidth = filter.getWidth();
+      layoutHeight = filter.getHeight();
+    } else {
+      if (appliedRuntimeShaderFilter != null && Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
+        clearRuntimeShaderFilter();
+      }
+      if (filter == null) {
+        // Re-check for SurfaceViews the next time a filter is applied.
+        cachedHasChildSurfaceView = null;
+      }
+    }
+
+    this.viewOriginLeft = layoutLeft;
+    this.viewOriginTop = layoutTop;
     FrameLayout.LayoutParams layoutParams =
-        new FrameLayout.LayoutParams(width, height, Gravity.LEFT | Gravity.TOP);
-    layoutParams.leftMargin = left;
-    layoutParams.topMargin = top;
+        new FrameLayout.LayoutParams(layoutWidth, layoutHeight, Gravity.LEFT | Gravity.TOP);
+    layoutParams.leftMargin = layoutLeft;
+    layoutParams.topMargin = layoutTop;
     setLayoutParams(layoutParams);
     setWillNotDraw(false);
+  }
+
+  private boolean hasChildSurfaceView() {
+    if (cachedHasChildSurfaceView == null) {
+      cachedHasChildSurfaceView =
+          ViewUtils.hasChildViewOfType(this, VIEW_TYPES_THAT_PREVENT_RENDER_EFFECTS);
+    }
+    return cachedHasChildSurfaceView;
+  }
+
+  @Override
+  public void onViewAdded(View child) {
+    super.onViewAdded(child);
+    cachedHasChildSurfaceView = null;
+  }
+
+  @Override
+  public void onViewRemoved(View child) {
+    super.onViewRemoved(child);
+    cachedHasChildSurfaceView = null;
+  }
+
+  /**
+   * Applies {@code filter} as a RenderEffect.
+   *
+   * @return whether the filter is applied. If it isn't, the platform view is drawn without it.
+   */
+  @RequiresApi(API_LEVELS.API_33)
+  private boolean applyRuntimeShaderFilter(
+      @NonNull FlutterMutatorsStack.RuntimeShaderFilter filter) {
+    if (filter.equals(appliedRuntimeShaderFilter)) {
+      return true;
+    }
+    final long programId = filter.programId;
+    if (failedRuntimeShaderPrograms.contains(programId)) {
+      return false;
+    }
+    final FlutterMutatorsStack.RuntimeShaderProgram program =
+        FlutterMutatorsStack.getRuntimeShaderProgram(programId);
+    if (program == null) {
+      return false;
+    }
+    try {
+      if (runtimeShader == null || runtimeShaderProgramId != programId) {
+        runtimeShader = new RuntimeShader(program.agslSource);
+        runtimeShaderProgramId = programId;
+      }
+      final RuntimeShader shader = (RuntimeShader) runtimeShader;
+      int offset = 0;
+      for (int i = 0; i < program.uniformNames.length; i++) {
+        final int size = program.uniformSizes[i];
+        if (offset + size > filter.uniformValues.length) {
+          throw new IllegalArgumentException("Not enough uniform values");
+        }
+        shader.setFloatUniform(
+            program.uniformNames[i],
+            Arrays.copyOfRange(filter.uniformValues, offset, offset + size));
+        offset += size;
+      }
+      setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, program.inputShaderName));
+    } catch (IllegalArgumentException e) {
+      // Thrown if the AGSL doesn't compile on this device (e.g. because of differences between the
+      // device's and the engine's version of Skia) or if a uniform can't be set.
+      if (failedRuntimeShaderPrograms.add(programId)) {
+        Log.e(
+            TAG,
+            "ImageFilter.shader can't be applied to platform views; drawing them without it.",
+            e);
+      }
+      runtimeShader = null;
+      runtimeShaderProgramId = -1;
+      if (appliedRuntimeShaderFilter != null) {
+        clearRuntimeShaderFilter();
+      }
+      return false;
+    }
+    appliedRuntimeShaderFilter = filter;
+    return true;
+  }
+
+  @RequiresApi(API_LEVELS.API_33)
+  private void clearRuntimeShaderFilter() {
+    setRenderEffect(null);
+    appliedRuntimeShaderFilter = null;
+  }
+
+  @VisibleForTesting
+  boolean hasRuntimeShaderFilter() {
+    return appliedRuntimeShaderFilter != null;
   }
 
   @Override
@@ -123,8 +273,12 @@ public class FlutterMutatorView extends FrameLayout {
       // We need to apply all the mutators to the view, which includes the mutation that leads to
       // the final offset. We should reverse this final offset, both as a translate mutation and to
       // all the clipping paths
+      //
+      // Note that the RenderEffect of a runtime shader filter (if any) is applied to the output of
+      // this view, i.e. after these clips. That matches Flutter's rendering only for clips that
+      // are applied inside of the filter (or that are left unchanged by it).
       Path pathCopy = new Path(path);
-      pathCopy.offset(-left, -top);
+      pathCopy.offset(-viewOriginLeft, -viewOriginTop);
       canvas.clipPath(pathCopy);
     }
 
@@ -149,7 +303,8 @@ public class FlutterMutatorView extends FrameLayout {
     canvas.restore();
   }
 
-  private Matrix getPlatformViewMatrix() {
+  @VisibleForTesting
+  Matrix getPlatformViewMatrix() {
     Matrix finalMatrix = new Matrix(mutatorsStack.getFinalMatrix());
 
     // Reverse scale based on screen scale.
@@ -167,7 +322,7 @@ public class FlutterMutatorView extends FrameLayout {
     // We need to apply all the mutators to the view, which includes the mutation that leads to
     // the final offset. We should reverse this final offset, both as a translate mutation and to
     // all the clipping paths
-    finalMatrix.postTranslate(-left, -top);
+    finalMatrix.postTranslate(-viewOriginLeft, -viewOriginTop);
 
     return finalMatrix;
   }

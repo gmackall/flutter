@@ -37,6 +37,7 @@ void MockViewEmbedder::PrerollCompositeEmbeddedView(
     int64_t view_id,
     std::unique_ptr<EmbeddedViewParams> params) {
   prerolled_views_.emplace_back(view_id);
+  prerolled_params_.emplace_back(*params);
 }
 
 // |ExternalViewEmbedder|

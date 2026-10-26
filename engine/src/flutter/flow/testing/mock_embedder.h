@@ -58,12 +58,17 @@ class MockViewEmbedder : public ExternalViewEmbedder {
   std::vector<int64_t> prerolled_views() const { return prerolled_views_; }
   std::vector<int64_t> painted_views() const { return painted_views_; }
   std::vector<Mutator> pushed_clips() const { return pushed_clips_; }
+  // The params of every PrerollCompositeEmbeddedView call, in order.
+  const std::vector<EmbeddedViewParams>& prerolled_params() const {
+    return prerolled_params_;
+  }
 
  private:
   std::deque<DlCanvas*> contexts_;
   std::vector<int64_t> prerolled_views_;
   std::vector<int64_t> painted_views_;
   std::vector<Mutator> pushed_clips_;
+  std::vector<EmbeddedViewParams> prerolled_params_;
 };
 
 }  // namespace testing

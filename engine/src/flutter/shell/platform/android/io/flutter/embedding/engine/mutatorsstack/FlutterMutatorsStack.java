@@ -10,8 +10,12 @@ import android.graphics.RectF;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The mutator stack containing a list of mutators
@@ -30,7 +34,142 @@ public class FlutterMutatorsStack {
     CLIP_RRECT,
     CLIP_PATH,
     TRANSFORM,
-    OPACITY
+    OPACITY,
+    RUNTIME_SHADER_FILTER
+  }
+
+  /**
+   * A runtime effect ({@code ui.ImageFilter.shader}) image filter, translated by the engine into an
+   * AGSL program that can be applied to a platform view as a {@link android.graphics.RenderEffect}.
+   *
+   * <p>Programs are registered once by the engine (see {@link #registerRuntimeShaderProgram}) and
+   * then referenced by their id from {@link RuntimeShaderFilter}s.
+   */
+  public static final class RuntimeShaderProgram {
+    public final long id;
+    @NonNull public final String agslSource;
+    @NonNull public final String inputShaderName;
+    @NonNull public final String[] uniformNames;
+    @NonNull public final int[] uniformSizes;
+
+    public RuntimeShaderProgram(
+        long id,
+        @NonNull String agslSource,
+        @NonNull String inputShaderName,
+        @NonNull String[] uniformNames,
+        @NonNull int[] uniformSizes) {
+      this.id = id;
+      this.agslSource = agslSource;
+      this.inputShaderName = inputShaderName;
+      this.uniformNames = uniformNames;
+      this.uniformSizes = uniformSizes;
+    }
+  }
+
+  /**
+   * A runtime shader filter that applies to a platform view.
+   *
+   * <p>{@code uniformValues} contains the values of all of the program's uniforms, concatenated in
+   * the order of {@link RuntimeShaderProgram#uniformNames}.
+   *
+   * <p>The frame ({@code left}, {@code top}, {@code right}, {@code bottom}) is the rect of the
+   * filter input in physical pixels, in the coordinate space of the Flutter view. The shader's
+   * coordinates are relative to the top left corner of the frame, so the platform view has to be
+   * laid out with the frame as its bounds for the filter to line up with the Flutter content that
+   * the same filter is applied to.
+   */
+  public static final class RuntimeShaderFilter {
+    public final long programId;
+    @NonNull public final float[] uniformValues;
+    public final int left;
+    public final int top;
+    public final int right;
+    public final int bottom;
+
+    public RuntimeShaderFilter(
+        long programId, @NonNull float[] uniformValues, int left, int top, int right, int bottom) {
+      this.programId = programId;
+      this.uniformValues = uniformValues;
+      this.left = left;
+      this.top = top;
+      this.right = right;
+      this.bottom = bottom;
+    }
+
+    public int getWidth() {
+      return right - left;
+    }
+
+    public int getHeight() {
+      return bottom - top;
+    }
+
+    public boolean isEmpty() {
+      return right <= left || bottom <= top;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (this == other) {
+        return true;
+      }
+      if (!(other instanceof RuntimeShaderFilter)) {
+        return false;
+      }
+      RuntimeShaderFilter filter = (RuntimeShaderFilter) other;
+      return programId == filter.programId
+          && left == filter.left
+          && top == filter.top
+          && right == filter.right
+          && bottom == filter.bottom
+          && Arrays.equals(uniformValues, filter.uniformValues);
+    }
+
+    @Override
+    public int hashCode() {
+      int result = Long.hashCode(programId);
+      result = 31 * result + left;
+      result = 31 * result + top;
+      result = 31 * result + right;
+      result = 31 * result + bottom;
+      result = 31 * result + Arrays.hashCode(uniformValues);
+      return result;
+    }
+  }
+
+  private static final Map<Long, RuntimeShaderProgram> runtimeShaderPrograms =
+      new ConcurrentHashMap<>();
+
+  /**
+   * Registers an AGSL program that {@link #pushRuntimeShaderFilter} can refer to by {@code id}.
+   *
+   * <p>Called by the engine the first time a program is used.
+   *
+   * @param id the process-wide unique id of the program.
+   * @param agslSource the AGSL source of the program.
+   * @param inputShaderName the name of the {@code uniform shader} that receives the filter input.
+   * @param uniformNames the names of the float uniforms that are set for every frame.
+   * @param uniformSizes the number of floats of each of the uniforms in {@code uniformNames}.
+   */
+  public static void registerRuntimeShaderProgram(
+      long id,
+      @NonNull String agslSource,
+      @NonNull String inputShaderName,
+      @NonNull String[] uniformNames,
+      @NonNull int[] uniformSizes) {
+    runtimeShaderPrograms.put(
+        id, new RuntimeShaderProgram(id, agslSource, inputShaderName, uniformNames, uniformSizes));
+  }
+
+  /** Returns the program registered with {@code id}, or null if there is none. */
+  @Nullable
+  public static RuntimeShaderProgram getRuntimeShaderProgram(long id) {
+    return runtimeShaderPrograms.get(id);
+  }
+
+  @VisibleForTesting
+  static void clearRuntimeShaderProgramsForTesting() {
+    runtimeShaderPrograms.clear();
   }
 
   /**
@@ -47,6 +186,7 @@ public class FlutterMutatorsStack {
     @Nullable private Path path;
     @Nullable private float[] radiis;
     private float opacity = 1.f;
+    @Nullable private RuntimeShaderFilter runtimeShaderFilter;
 
     private FlutterMutatorType type;
 
@@ -104,6 +244,16 @@ public class FlutterMutatorsStack {
     }
 
     /**
+     * Initialize a runtime shader filter mutator.
+     *
+     * @param filter the filter to apply.
+     */
+    public FlutterMutator(@NonNull RuntimeShaderFilter filter) {
+      this.type = FlutterMutatorType.RUNTIME_SHADER_FILTER;
+      this.runtimeShaderFilter = filter;
+    }
+
+    /**
      * Get the mutator type.
      *
      * @return The type of the mutator.
@@ -147,6 +297,18 @@ public class FlutterMutatorsStack {
     public float getOpacity() {
       return opacity;
     }
+
+    /**
+     * Get the runtime shader filter of the mutator if the {@link #getType()} returns {@link
+     * FlutterMutatorType#RUNTIME_SHADER_FILTER}.
+     *
+     * @return the filter if the type is {@link FlutterMutatorType#RUNTIME_SHADER_FILTER}; otherwise
+     *     null.
+     */
+    @Nullable
+    public RuntimeShaderFilter getRuntimeShaderFilter() {
+      return runtimeShaderFilter;
+    }
   }
 
   private @NonNull List<FlutterMutator> mutators;
@@ -154,6 +316,7 @@ public class FlutterMutatorsStack {
   private List<Path> finalClippingPaths;
   private Matrix finalMatrix;
   private float finalOpacity;
+  @Nullable private RuntimeShaderFilter finalRuntimeShaderFilter;
 
   /** Initialize the mutator stack. */
   public FlutterMutatorsStack() {
@@ -239,6 +402,28 @@ public class FlutterMutatorsStack {
   }
 
   /**
+   * Push a runtime shader filter {@link FlutterMutatorsStack.FlutterMutator} to the stack.
+   *
+   * @param programId the id of a program registered with {@link #registerRuntimeShaderProgram}.
+   * @param uniformValues the values of all of the program's uniforms, concatenated.
+   * @param left the left edge of the filter input in physical pixels.
+   * @param top the top edge of the filter input in physical pixels.
+   * @param right the right edge of the filter input in physical pixels.
+   * @param bottom the bottom edge of the filter input in physical pixels.
+   */
+  public void pushRuntimeShaderFilter(
+      long programId, @NonNull float[] uniformValues, int left, int top, int right, int bottom) {
+    RuntimeShaderFilter filter =
+        new RuntimeShaderFilter(programId, uniformValues, left, top, right, bottom);
+    mutators.add(new FlutterMutator(filter));
+    // Only a single RenderEffect can be applied to a platform view, so only the outermost filter
+    // is applied.
+    if (finalRuntimeShaderFilter == null) {
+      finalRuntimeShaderFilter = filter;
+    }
+  }
+
+  /**
    * Get a list of all the raw mutators. The 0 index of the returned list is the top of the stack.
    */
   public List<FlutterMutator> getMutators() {
@@ -272,5 +457,15 @@ public class FlutterMutatorsStack {
    */
   public float getFinalOpacity() {
     return finalOpacity;
+  }
+
+  /**
+   * Returns the runtime shader filter to apply to the view, or null if there is none.
+   *
+   * <p>If the stack contains more than one runtime shader filter, this is the outermost one.
+   */
+  @Nullable
+  public RuntimeShaderFilter getFinalRuntimeShaderFilter() {
+    return finalRuntimeShaderFilter;
   }
 }

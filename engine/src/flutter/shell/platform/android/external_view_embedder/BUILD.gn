@@ -13,6 +13,8 @@ source_set("external_view_embedder") {
     "external_view_embedder_2.h",
     "external_view_embedder_wrapper.cc",
     "external_view_embedder_wrapper.h",
+    "platform_view_runtime_shader.cc",
+    "platform_view_runtime_shader.h",
     "surface_pool.cc",
     "surface_pool.h",
   ]
@@ -24,6 +26,7 @@ source_set("external_view_embedder") {
     "//flutter/flow",
     "//flutter/fml",
     "//flutter/impeller/renderer/backend/vulkan",
+    "//flutter/impeller/runtime_stage",
     "//flutter/shell/platform/android/context",
     "//flutter/shell/platform/android/jni",
     "//flutter/shell/platform/android/surface",
@@ -34,7 +37,14 @@ source_set("external_view_embedder") {
 }
 
 test_fixtures("external_view_embedder_fixtures") {
-  fixtures = []
+  # Runtime stages compiled by impellerc with --sksl and all Impeller backends.
+  impeller_fixtures_dir = "$root_gen_dir/flutter/impeller/fixtures"
+  fixtures = [
+    "$impeller_fixtures_dir/ink_sparkle.frag.iplr",
+    "$impeller_fixtures_dir/runtime_stage_filter_example.frag.iplr",
+    "$impeller_fixtures_dir/uniforms_and_sampler_2.frag.iplr",
+  ]
+  deps = [ "//flutter/impeller/fixtures:runtime_stages" ]
 }
 
 executable("android_external_view_embedder_unittests") {
@@ -42,6 +52,7 @@ executable("android_external_view_embedder_unittests") {
 
   sources = [
     "external_view_embedder_unittests.cc",
+    "platform_view_runtime_shader_unittests.cc",
     "surface_pool_unittests.cc",
   ]
 
@@ -49,6 +60,7 @@ executable("android_external_view_embedder_unittests") {
     ":external_view_embedder",
     ":external_view_embedder_fixtures",
     "//flutter/flow",
+    "//flutter/impeller/runtime_stage",
     "//flutter/shell/gpu:gpu_surface_gl",
     "//flutter/shell/platform/android/jni:jni_mock",
     "//flutter/shell/platform/android/surface",

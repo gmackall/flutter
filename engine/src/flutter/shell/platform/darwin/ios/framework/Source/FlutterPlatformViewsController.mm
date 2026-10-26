@@ -669,6 +669,10 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
         // TODO(https://github.com/flutter/flutter/issues/179127)
         break;
       }
+      case flutter::MutatorType::kContentImageFilter: {
+        // Content image filters are not applied to platform views on iOS.
+        break;
+      }
     }
     ++iter;
   }

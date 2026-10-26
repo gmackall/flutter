@@ -215,7 +215,19 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
           snapshot_controller->CacheRuntimeStage(runtime_stage);
         });
 #if IMPELLER_SUPPORTS_RENDERING
-    runtime_effect_ = DlRuntimeEffectImpeller::Make(std::move(runtime_stage));
+    // Keep the SkSL stage (if the asset has one) around as well, so that
+    // platform view embedders can replicate the effect on platform views.
+    // See |DlRuntimeEffect::sksl_runtime_stage|.
+    std::shared_ptr<impeller::RuntimeStage> sksl_runtime_stage;
+    if (backend != impeller::RuntimeStageBackend::kSkSL) {
+      auto sksl_stage_it =
+          runtime_stages->find(impeller::RuntimeStageBackend::kSkSL);
+      if (sksl_stage_it != runtime_stages->end()) {
+        sksl_runtime_stage = sksl_stage_it->second;
+      }
+    }
+    runtime_effect_ = DlRuntimeEffectImpeller::Make(
+        std::move(runtime_stage), std::move(sksl_runtime_stage));
 #endif
   } else {
     const auto& code_mapping = runtime_stage->GetCodeMapping();

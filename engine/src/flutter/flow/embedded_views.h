@@ -6,6 +6,7 @@
 #define FLUTTER_FLOW_EMBEDDED_VIEWS_H_
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/display_list/geometry/dl_geometry_conversions.h"
 #include "flutter/flow/surface_frame.h"
+#include "flutter/fml/macros.h"
 #include "flutter/fml/memory/ref_counted.h"
 #include "flutter/fml/raster_thread_merger.h"
 
@@ -44,6 +46,7 @@ enum class MutatorType {
   kBackdropClipRRect,
   kBackdropClipRSuperellipse,
   kBackdropClipPath,
+  kContentImageFilter,
 };
 
 // Represents an image filter mutation.
@@ -103,6 +106,77 @@ struct BackdropClipPath {
   }
 };
 
+// The device-space coordinate frame of a content (i.e. non-backdrop) image
+// filter that is applied to a subtree containing platform views.
+//
+// For filters whose output depends on the size and position of their input
+// (such as runtime effect filters, whose |FlutterFragCoord| is relative to the
+// input texture and whose first vec2 uniform is overwritten with the input
+// texture size), an embedder that wants to replicate the filter on platform
+// view content needs to know the device-space rect of the filter's input. That
+// rect is only known after the |ImageFilterLayer| has prerolled its children,
+// but |PlatformViewLayer|s capture their mutators while being prerolled. A
+// single |ContentImageFilterFrame| is therefore shared by the
+// |ImageFilterLayer| (which fills it in once its children have been prerolled)
+// and every |ContentImageFilterMutation| captured underneath it.
+//
+// A new instance is created for every preroll of the layer, so that values
+// captured in a previous frame's |EmbeddedViewParams| are never modified.
+// Embedders must only read the frame after preroll has completed (e.g. while
+// submitting the frame).
+class ContentImageFilterFrame {
+ public:
+  ContentImageFilterFrame() = default;
+
+  // Sets the device-space frame, in physical pixels. An empty or absent
+  // frame means that the filter does not render anything.
+  void Set(std::optional<DlIRect> frame) { frame_ = frame; }
+
+  // Returns the device-space frame, or std::nullopt if it hasn't been
+  // computed yet or if the filter does not render anything.
+  const std::optional<DlIRect>& Get() const { return frame_; }
+
+ private:
+  std::optional<DlIRect> frame_;
+
+  FML_DISALLOW_COPY_AND_ASSIGN(ContentImageFilterFrame);
+};
+
+// Represents a content image filter (as opposed to a backdrop filter) that
+// applies to a platform view, e.g. an |ImageFilterLayer| with a runtime effect
+// (|ui.ImageFilter.shader|) filter.
+class ContentImageFilterMutation {
+ public:
+  ContentImageFilterMutation(std::shared_ptr<DlImageFilter> filter,
+                             std::shared_ptr<ContentImageFilterFrame> frame)
+      : filter_(std::move(filter)), frame_(std::move(frame)) {}
+
+  const std::shared_ptr<DlImageFilter>& GetFilter() const { return filter_; }
+
+  // The device-space rect of the filter input, see |ContentImageFilterFrame|.
+  std::optional<DlIRect> GetFrame() const {
+    return frame_ ? frame_->Get() : std::nullopt;
+  }
+
+  // Two mutations are equal if their filters are equal and their frames
+  // currently hold the same value. Note that a mutation whose frame has not
+  // been filled in yet (i.e. while its |ImageFilterLayer| is still prerolling
+  // its children) is never equal to a mutation with a computed frame.
+  bool operator==(const ContentImageFilterMutation& other) const {
+    if (GetFrame() != other.GetFrame()) {
+      return false;
+    }
+    if (filter_ == other.filter_) {
+      return true;
+    }
+    return filter_ && other.filter_ && *filter_ == *other.filter_;
+  }
+
+ private:
+  std::shared_ptr<DlImageFilter> filter_;
+  std::shared_ptr<ContentImageFilterFrame> frame_;
+};
+
 // Stores mutation information like clipping or kTransform.
 //
 // The `type` indicates the type of the mutation: kClipRect, kTransform and etc.
@@ -131,6 +205,8 @@ class Mutator {
       : data_(backdrop_rse) {}
   explicit Mutator(const BackdropClipPath& backdrop_path)
       : data_(backdrop_path) {}
+  explicit Mutator(const ContentImageFilterMutation& content_filter)
+      : data_(content_filter) {}
 
   MutatorType GetType() const {
     return static_cast<MutatorType>(data_.index());
@@ -161,6 +237,9 @@ class Mutator {
   const BackdropClipPath& GetBackdropClipPath() const {
     return std::get<BackdropClipPath>(data_);
   }
+  const ContentImageFilterMutation& GetContentImageFilterMutation() const {
+    return std::get<ContentImageFilterMutation>(data_);
+  }
   const uint8_t& GetAlpha() const { return std::get<uint8_t>(data_); }
   float GetAlphaFloat() const { return DlColor::toOpacity(GetAlpha()); }
 
@@ -180,11 +259,13 @@ class Mutator {
       case MutatorType::kOpacity:
       case MutatorType::kTransform:
       case MutatorType::kBackdropFilter:
+      case MutatorType::kContentImageFilter:
         return false;
     }
   }
 
  private:
+  // The order of the alternatives must match the order of |MutatorType|.
   std::variant<DlRect,
                DlRoundRect,
                DlRoundSuperellipse,
@@ -195,7 +276,8 @@ class Mutator {
                BackdropClipRect,
                BackdropClipRRect,
                BackdropClipRSuperellipse,
-               BackdropClipPath>
+               BackdropClipPath,
+               ContentImageFilterMutation>
       data_;
 };  // Mutator
 
@@ -225,6 +307,11 @@ class MutatorsStack {
   void PushPlatformViewClipRRect(const DlRoundRect& rrect);
   void PushPlatformViewClipRSuperellipse(const DlRoundSuperellipse& rse);
   void PushPlatformViewClipPath(const DlPath& path);
+  // Pushes a content (non-backdrop) image filter that applies to the platform
+  // view. See |ContentImageFilterFrame| for the meaning of `frame`.
+  void PushContentImageFilter(
+      const std::shared_ptr<DlImageFilter>& filter,
+      const std::shared_ptr<ContentImageFilterFrame>& frame);
 
   // Removes the `Mutator` on the top of the stack
   // and destroys it.

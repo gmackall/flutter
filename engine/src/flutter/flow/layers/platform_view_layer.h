@@ -17,6 +17,10 @@ class PlatformViewLayer : public Layer {
   void Preroll(PrerollContext* context) override;
   void Paint(PaintContext& context) const override;
 
+  const PlatformViewLayer* as_platform_view_layer() const override {
+    return this;
+  }
+
  private:
   DlPoint offset_;
   DlSize size_;

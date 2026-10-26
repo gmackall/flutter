@@ -6,10 +6,14 @@
 
 #include "flutter/display_list/dl_tile_mode.h"
 #include "flutter/display_list/effects/dl_image_filter.h"
+#include "flutter/display_list/effects/dl_image_filters.h"
+#include "flutter/flow/layers/clip_rect_layer.h"
 #include "flutter/flow/layers/layer_tree.h"
+#include "flutter/flow/layers/platform_view_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/flow/testing/diff_context_test.h"
 #include "flutter/flow/testing/layer_test.h"
+#include "flutter/flow/testing/mock_embedder.h"
 #include "flutter/flow/testing/mock_layer.h"
 #include "flutter/fml/macros.h"
 #include "gtest/gtest.h"
@@ -725,6 +729,243 @@ TEST_F(ImageFilterLayerTest, EmptyFilterWithOffset) {
 
   layer->Preroll(preroll_context());
   EXPECT_EQ(layer->paint_bounds(), child_bounds.Shift(offset));
+}
+
+TEST_F(ImageFilterLayerTest, MatrixFilterIsAppliedAsTransformToPlatformViews) {
+  const DlMatrix initial_transform = DlMatrix::MakeScale({2.0f, 2.0f, 1.0f});
+  const DlPoint offset = DlPoint(5.0f, 10.0f);
+  const DlMatrix filter_matrix = DlMatrix::MakeTranslation({0.0f, -12.0f}) *
+                                 DlMatrix::MakeScale({1.0f, 1.3f, 1.0f});
+  auto filter =
+      DlImageFilter::MakeMatrix(filter_matrix, DlImageSampling::kLinear);
+  const DlPath child_path = DlPath::MakeRect(DlRect::MakeWH(300.0f, 500.0f));
+  auto mock_layer = std::make_shared<MockLayer>(child_path);
+  auto platform_view = std::make_shared<PlatformViewLayer>(
+      DlPoint(), DlSize(100.0f, 50.0f), /*view_id=*/1);
+  auto pv_transform = std::make_shared<TransformLayer>(
+      DlMatrix::MakeTranslation({20.0f, 40.0f}));
+  pv_transform->Add(platform_view);
+  auto layer = std::make_shared<ImageFilterLayer>(filter, offset);
+  layer->Add(mock_layer);
+  layer->Add(pv_transform);
+
+  MockViewEmbedder embedder;
+  preroll_context()->view_embedder = &embedder;
+  preroll_context()->state_stack.set_preroll_delegate(initial_transform);
+  layer->Preroll(preroll_context());
+  preroll_context()->view_embedder = nullptr;
+
+  // The children (and the platform view in particular) are prerolled exactly
+  // as if they were children of a TransformLayer with the filter matrix.
+  const DlMatrix filter_ctm =
+      initial_transform * DlMatrix::MakeTranslation(offset);
+  EXPECT_EQ(mock_layer->parent_matrix(), filter_ctm * filter_matrix);
+
+  ASSERT_EQ(embedder.prerolled_params().size(), 1u);
+  const EmbeddedViewParams& params = embedder.prerolled_params()[0];
+  const DlMatrix pv_ctm =
+      filter_ctm * filter_matrix * DlMatrix::MakeTranslation({20.0f, 40.0f});
+  EXPECT_EQ(params.transformMatrix(), pv_ctm);
+  EXPECT_EQ(params.finalBoundingRect(),
+            DlRect::MakeWH(100.0f, 50.0f).TransformAndClipBounds(pv_ctm));
+
+  MutatorsStack expected_mutators;
+  expected_mutators.PushTransform(DlMatrix::MakeTranslation(offset));
+  expected_mutators.PushTransform(filter_matrix);
+  expected_mutators.PushTransform(DlMatrix::MakeTranslation({20.0f, 40.0f}));
+  EXPECT_EQ(params.mutatorsStack(), expected_mutators);
+
+  // The filter itself is still applied with the layer's own CTM and the
+  // paint bounds are unaffected.
+  EXPECT_EQ(layer->paint_bounds(), DlRect::MakeWH(300.0f, 500.0f)
+                                       .TransformAndClipBounds(filter_matrix)
+                                       .Shift(offset));
+}
+
+TEST_F(ImageFilterLayerTest, MatrixFilterWithoutPlatformViewKeepsChildMatrix) {
+  const DlMatrix initial_transform = DlMatrix::MakeScale({2.0f, 2.0f, 1.0f});
+  const DlPoint offset = DlPoint(5.0f, 10.0f);
+  auto filter = DlImageFilter::MakeMatrix(
+      DlMatrix::MakeScale({1.0f, 1.3f, 1.0f}), DlImageSampling::kLinear);
+  const DlPath child_path = DlPath::MakeRect(DlRect::MakeWH(300.0f, 500.0f));
+  auto mock_layer = std::make_shared<MockLayer>(child_path);
+  auto layer = std::make_shared<ImageFilterLayer>(filter, offset);
+  layer->Add(mock_layer);
+
+  MockViewEmbedder embedder;
+  preroll_context()->view_embedder = &embedder;
+  preroll_context()->state_stack.set_preroll_delegate(initial_transform);
+  layer->Preroll(preroll_context());
+  preroll_context()->view_embedder = nullptr;
+
+  EXPECT_EQ(mock_layer->parent_matrix(),
+            initial_transform * DlMatrix::MakeTranslation(offset));
+  MutatorsStack expected_mutators;
+  expected_mutators.PushTransform(DlMatrix::MakeTranslation(offset));
+  EXPECT_EQ(mock_layer->parent_mutators(), expected_mutators);
+}
+
+TEST_F(ImageFilterLayerTest,
+       MatrixFilterOverPlatformViewSuppressesChildRasterCacheEntries) {
+  auto filter = DlImageFilter::MakeMatrix(
+      DlMatrix::MakeScale({1.0f, 1.3f, 1.0f}), DlImageSampling::kLinear);
+  const DlPath child_path = DlPath::MakeRect(DlRect::MakeWH(30.0f, 50.0f));
+
+  auto make_tree = [&](bool with_platform_view) {
+    auto layer = std::make_shared<ImageFilterLayer>(filter);
+    layer->Add(std::make_shared<MockCacheableLayer>(child_path));
+    if (with_platform_view) {
+      layer->Add(std::make_shared<PlatformViewLayer>(
+          DlPoint(), DlSize(10.0f, 10.0f), /*view_id=*/1));
+    }
+    return layer;
+  };
+
+  use_mock_raster_cache();
+  MockViewEmbedder embedder;
+  preroll_context()->view_embedder = &embedder;
+
+  // Without a platform view, both the layer and its cacheable child register
+  // raster cache entries.
+  make_tree(false)->Preroll(preroll_context());
+  EXPECT_EQ(cacheable_items().size(), 2u);
+
+  // With a platform view, the child is prerolled under a matrix that differs
+  // from the one it is painted with, so only the layer itself (whose cache
+  // entry is keyed on the matrix it is painted with) registers an entry.
+  cacheable_items().clear();
+  preroll_context()->has_platform_view = false;
+  make_tree(true)->Preroll(preroll_context());
+  EXPECT_EQ(cacheable_items().size(), 1u);
+
+  preroll_context()->view_embedder = nullptr;
+}
+
+TEST_F(ImageFilterLayerTest,
+       RuntimeEffectFilterPushesContentImageFilterMutatorWithFrame) {
+  const DlMatrix initial_transform = DlMatrix::MakeTranslation({10.0f, 20.0f}) *
+                                     DlMatrix::MakeScale({2.0f, 2.0f, 1.0f});
+  const DlPoint offset = DlPoint(5.0f, 5.0f);
+  auto filter = DlImageFilter::MakeRuntimeEffect(
+      nullptr, {nullptr},
+      std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>(8, 0)));
+  ASSERT_TRUE(filter->asRuntimeEffectFilter());
+
+  const DlPath child_path = DlPath::MakeRect(DlRect::MakeWH(300.0f, 500.0f));
+  auto mock_layer = std::make_shared<MockLayer>(child_path);
+  auto platform_view = std::make_shared<PlatformViewLayer>(
+      DlPoint(), DlSize(100.0f, 50.0f), /*view_id=*/1);
+  const DlMatrix child_matrix = DlMatrix::MakeTranslation({20.0f, 40.0f});
+  auto pv_transform = std::make_shared<TransformLayer>(child_matrix);
+  pv_transform->Add(platform_view);
+  auto layer = std::make_shared<ImageFilterLayer>(filter, offset);
+  layer->Add(mock_layer);
+  layer->Add(pv_transform);
+
+  MockViewEmbedder embedder;
+  preroll_context()->view_embedder = &embedder;
+  preroll_context()->state_stack.set_preroll_delegate(initial_transform);
+  layer->Preroll(preroll_context());
+  preroll_context()->view_embedder = nullptr;
+
+  ASSERT_EQ(embedder.prerolled_params().size(), 1u);
+  const EmbeddedViewParams& params = embedder.prerolled_params()[0];
+  const DlMatrix filter_ctm =
+      initial_transform * DlMatrix::MakeTranslation(offset);
+  // The filter does not change the platform view's transform.
+  EXPECT_EQ(params.transformMatrix(), filter_ctm * child_matrix);
+
+  const MutatorsStack& mutators = params.mutatorsStack();
+  ASSERT_EQ(mutators.stack_count(), 3u);
+  auto iter = mutators.Begin();
+  EXPECT_EQ((*iter)->GetType(), MutatorType::kTransform);
+  EXPECT_EQ((*iter)->GetMatrix(), DlMatrix::MakeTranslation(offset));
+  ++iter;
+  ASSERT_EQ((*iter)->GetType(), MutatorType::kContentImageFilter);
+  const ContentImageFilterMutation& mutation =
+      (*iter)->GetContentImageFilterMutation();
+  EXPECT_EQ(*mutation.GetFilter(), *filter);
+  // The children bounds (0, 0, 300, 500) in device space: the whole input
+  // texture that Impeller would allocate for the saveLayer.
+  ASSERT_TRUE(mutation.GetFrame().has_value());
+  EXPECT_EQ(mutation.GetFrame().value(), DlIRect::MakeLTRB(20, 30, 620, 1030));
+  ++iter;
+  EXPECT_EQ((*iter)->GetType(), MutatorType::kTransform);
+  EXPECT_EQ((*iter)->GetMatrix(), child_matrix);
+
+  // Siblings see the same mutator, and the filter does not leak out of the
+  // layer.
+  EXPECT_EQ(mock_layer->parent_matrix(), filter_ctm);
+  EXPECT_EQ(mock_layer->parent_mutators().stack_count(), 2u);
+  EXPECT_EQ(preroll_context()->state_stack.outstanding_image_filter(), nullptr);
+}
+
+TEST_F(ImageFilterLayerTest, RuntimeEffectFilterFrameUsesClipHeuristic) {
+  auto filter = DlImageFilter::MakeRuntimeEffect(
+      nullptr, {nullptr},
+      std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>(8, 0)));
+  const DlPath child_path = DlPath::MakeRect(DlRect::MakeWH(400.0f, 1000.0f));
+  auto make_layer = [&]() {
+    auto layer = std::make_shared<ImageFilterLayer>(filter);
+    layer->Add(std::make_shared<MockLayer>(child_path));
+    layer->Add(std::make_shared<PlatformViewLayer>(
+        DlPoint(), DlSize(100.0f, 50.0f), /*view_id=*/1));
+    return layer;
+  };
+  auto get_frame = [](const MockViewEmbedder& embedder) {
+    const MutatorsStack& mutators =
+        embedder.prerolled_params().back().mutatorsStack();
+    return (*mutators.Begin())->GetContentImageFilterMutation().GetFrame();
+  };
+
+  // A clip that cuts off less than 30% of the content: Impeller renders the
+  // full content into the filter input.
+  {
+    MockViewEmbedder embedder;
+    preroll_context()->view_embedder = &embedder;
+    preroll_context()->state_stack.set_preroll_delegate(
+        DlRect::MakeLTRB(0.0f, 100.0f, 400.0f, 1000.0f));
+    make_layer()->Preroll(preroll_context());
+    EXPECT_EQ(get_frame(embedder), DlIRect::MakeLTRB(0, 0, 400, 1000));
+  }
+  // A clip that cuts off more than 30% of the content: Impeller renders only
+  // the clipped content into the filter input.
+  {
+    MockViewEmbedder embedder;
+    preroll_context()->view_embedder = &embedder;
+    preroll_context()->has_platform_view = false;
+    preroll_context()->state_stack.set_preroll_delegate(
+        DlRect::MakeLTRB(0.0f, 500.0f, 400.0f, 900.0f));
+    make_layer()->Preroll(preroll_context());
+    EXPECT_EQ(get_frame(embedder), DlIRect::MakeLTRB(0, 500, 400, 900));
+  }
+  preroll_context()->view_embedder = nullptr;
+}
+
+TEST(ImageFilterLayerFrameTest, ComputeRuntimeEffectInputFrame) {
+  const DlRect cull = DlRect::MakeLTRB(0.0f, 0.0f, 1000.0f, 2000.0f);
+  // Fully visible: the texture is placed at the rounded origin and has the
+  // truncated size of the content.
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeXYWH(10.4f, 20.6f, 100.7f, 50.2f), cull),
+            DlIRect::MakeXYWH(10, 21, 100, 50));
+  // Partially clipped by less than 30% in each dimension: full content.
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeLTRB(-100.0f, 0.0f, 900.0f, 1000.0f), cull),
+            DlIRect::MakeLTRB(-100, 0, 900, 1000));
+  // Clipped by more than 30% in one dimension: the clipped content.
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeLTRB(0.0f, 1500.0f, 1000.0f, 2500.0f), cull),
+            DlIRect::MakeLTRB(0, 1500, 1000, 2000));
+  // Entirely clipped or empty.
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeLTRB(0.0f, 2100.0f, 1000.0f, 2500.0f), cull),
+            std::nullopt);
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(DlRect(), cull),
+            std::nullopt);
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeXYWH(5.0f, 5.0f, 0.5f, 100.0f), cull),
+            std::nullopt);
 }
 
 }  // namespace testing

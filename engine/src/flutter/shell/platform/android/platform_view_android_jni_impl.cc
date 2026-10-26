@@ -14,6 +14,7 @@
 #include "unicode/uchar.h"
 
 #include "flutter/common/constants.h"
+#include "flutter/display_list/effects/dl_image_filters.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/native_library.h"
@@ -24,6 +25,7 @@
 #include "flutter/lib/ui/plugins/callback_cache.h"
 #include "flutter/shell/platform/android/android_shell_holder.h"
 #include "flutter/shell/platform/android/apk_asset_provider.h"
+#include "flutter/shell/platform/android/external_view_embedder/platform_view_runtime_shader.h"
 #include "flutter/shell/platform/android/flutter_main.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
@@ -167,6 +169,9 @@ static jmethodID g_mutators_stack_push_cliprect_method = nullptr;
 static jmethodID g_mutators_stack_push_cliprrect_method = nullptr;
 static jmethodID g_mutators_stack_push_opacity_method = nullptr;
 static jmethodID g_mutators_stack_push_clippath_method = nullptr;
+static jmethodID g_mutators_stack_register_runtime_shader_program_method =
+    nullptr;
+static jmethodID g_mutators_stack_push_runtime_shader_filter_method = nullptr;
 
 // android.graphics.Path class, methods, and nested classes.
 static fml::jni::ScopedJavaGlobalRef<jclass>* path_class = nullptr;
@@ -1134,6 +1139,26 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
+  g_mutators_stack_register_runtime_shader_program_method =
+      env->GetStaticMethodID(
+          g_mutators_stack_class->obj(), "registerRuntimeShaderProgram",
+          "(JLjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[I)V");
+  if (g_mutators_stack_register_runtime_shader_program_method == nullptr) {
+    FML_LOG(ERROR)
+        << "Could not locate "
+           "FlutterMutatorsStack.registerRuntimeShaderProgram method";
+    return false;
+  }
+
+  g_mutators_stack_push_runtime_shader_filter_method = env->GetMethodID(
+      g_mutators_stack_class->obj(), "pushRuntimeShaderFilter", "(J[FIIII)V");
+  if (g_mutators_stack_push_runtime_shader_filter_method == nullptr) {
+    FML_LOG(ERROR)
+        << "Could not locate FlutterMutatorsStack.pushRuntimeShaderFilter "
+           "method";
+    return false;
+  }
+
   g_java_weak_reference_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
       env, env->FindClass("java/lang/ref/WeakReference"));
   if (g_java_weak_reference_class->is_null()) {
@@ -1747,6 +1772,93 @@ void PlatformViewAndroidJNIImpl::HardwareBufferClose(
   FML_CHECK(fml::jni::CheckException(env));
 }
 
+namespace {
+
+PlatformViewRuntimeShaderProgramCache& GetRuntimeShaderProgramCache() {
+  static PlatformViewRuntimeShaderProgramCache* cache =
+      new PlatformViewRuntimeShaderProgramCache();
+  return *cache;
+}
+
+// Pushes a runtime effect (|ui.ImageFilter.shader|) image filter that applies
+// to a platform view onto the Java mutators stack, where it is applied as a
+// RuntimeShader RenderEffect.
+//
+// Filters that can't be represented that way are dropped, i.e. the platform
+// view is drawn without the filter.
+void PushContentImageFilterMutator(JNIEnv* env,
+                                   jobject mutators_stack,
+                                   const ContentImageFilterMutation& mutation) {
+  const std::shared_ptr<DlImageFilter>& filter = mutation.GetFilter();
+  const DlRuntimeEffectImageFilter* runtime_filter =
+      filter ? filter->asRuntimeEffectFilter() : nullptr;
+  if (!runtime_filter || !runtime_filter->runtime_effect() ||
+      !runtime_filter->uniform_data()) {
+    return;
+  }
+  std::optional<DlIRect> frame = mutation.GetFrame();
+  if (!frame.has_value() || frame->IsEmpty()) {
+    return;
+  }
+
+  PlatformViewRuntimeShaderProgramCache::Result result =
+      GetRuntimeShaderProgramCache().GetProgram(
+          *runtime_filter->runtime_effect());
+  const std::shared_ptr<PlatformViewRuntimeShaderProgram>& program =
+      result.program;
+  if (!program) {
+    return;
+  }
+
+  if (result.is_new) {
+    // Send the source and uniform layout to Java once per program. The Java
+    // side keeps a process-wide registry keyed by the program id.
+    std::vector<std::string> uniform_names;
+    std::vector<jint> uniform_sizes;
+    for (const PlatformViewRuntimeShaderProgram::Uniform& uniform :
+         program->uniforms()) {
+      uniform_names.push_back(uniform.name);
+      uniform_sizes.push_back(static_cast<jint>(uniform.float_count));
+    }
+    fml::jni::ScopedJavaLocalRef<jstring> source =
+        fml::jni::StringToJavaString(env, program->agsl_source());
+    fml::jni::ScopedJavaLocalRef<jstring> input_name =
+        fml::jni::StringToJavaString(env, program->input_shader_name());
+    fml::jni::ScopedJavaLocalRef<jobjectArray> names =
+        fml::jni::VectorToStringArray(env, uniform_names);
+    fml::jni::ScopedJavaLocalRef<jintArray> sizes(
+        env, env->NewIntArray(uniform_sizes.size()));
+    env->SetIntArrayRegion(sizes.obj(), 0, uniform_sizes.size(),
+                           uniform_sizes.data());
+    env->CallStaticVoidMethod(
+        g_mutators_stack_class->obj(),
+        g_mutators_stack_register_runtime_shader_program_method,
+        static_cast<jlong>(program->id()), source.obj(), input_name.obj(),
+        names.obj(), sizes.obj());
+    if (!fml::jni::CheckException(env)) {
+      return;
+    }
+  }
+
+  std::optional<std::vector<float>> values = program->ComputeUniformValues(
+      *runtime_filter->uniform_data(), frame->GetSize());
+  if (!values.has_value()) {
+    return;
+  }
+  fml::jni::ScopedJavaLocalRef<jfloatArray> values_array(
+      env, env->NewFloatArray(values->size()));
+  env->SetFloatArrayRegion(values_array.obj(), 0, values->size(),
+                           values->data());
+  env->CallVoidMethod(
+      mutators_stack, g_mutators_stack_push_runtime_shader_filter_method,
+      static_cast<jlong>(program->id()), values_array.obj(),
+      static_cast<jint>(frame->GetLeft()), static_cast<jint>(frame->GetTop()),
+      static_cast<jint>(frame->GetRight()),
+      static_cast<jint>(frame->GetBottom()));
+}
+
+}  // namespace
+
 void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
     int view_id,
     int x,
@@ -1837,6 +1949,11 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnDisplayPlatformView(
                             rect.GetRight(),   //
                             rect.GetBottom(),  //
                             radiisArray.obj());
+        break;
+      }
+      case MutatorType::kContentImageFilter: {
+        PushContentImageFilterMutator(env, mutatorsStack,
+                                      (*iter)->GetContentImageFilterMutation());
         break;
       }
       // TODO(cyanglaz): Implement other mutators.
@@ -2394,6 +2511,11 @@ void PlatformViewAndroidJNIImpl::onDisplayPlatformView2(
         env->CallVoidMethod(mutatorsStack,
                             g_mutators_stack_push_clippath_method,
                             receiver.TakePath());
+        break;
+      }
+      case MutatorType::kContentImageFilter: {
+        PushContentImageFilterMutator(env, mutatorsStack,
+                                      (*iter)->GetContentImageFilterMutation());
         break;
       }
       // TODO(cyanglaz): Implement other mutators.

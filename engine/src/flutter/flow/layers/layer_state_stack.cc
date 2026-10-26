@@ -276,11 +276,14 @@ class OpacityEntry : public LayerStateStack::StateEntry {
 
 class ImageFilterEntry : public LayerStateStack::StateEntry {
  public:
-  ImageFilterEntry(const DlRect& bounds,
-                   const std::shared_ptr<DlImageFilter>& filter,
-                   const LayerStateStack::RenderingAttributes& prev)
+  ImageFilterEntry(
+      const DlRect& bounds,
+      const std::shared_ptr<DlImageFilter>& filter,
+      const std::shared_ptr<ContentImageFilterFrame>& platform_view_frame,
+      const LayerStateStack::RenderingAttributes& prev)
       : bounds_(bounds),
         filter_(filter),
+        platform_view_frame_(platform_view_frame),
         old_filter_(prev.image_filter),
         old_bounds_(prev.save_layer_bounds) {}
   ~ImageFilterEntry() override = default;
@@ -294,12 +297,20 @@ class ImageFilterEntry : public LayerStateStack::StateEntry {
     stack->outstanding_.image_filter = old_filter_;
   }
 
-  // There is no ImageFilter mutator currently
-  // void update_mutators(MutatorsStack* mutators_stack) const override;
+  void update_mutators(MutatorsStack* mutators_stack) const override {
+    // Only filters that were explicitly given a platform view frame are
+    // reported to platform views. Filters that can be represented by other
+    // mutators (e.g. matrix filters, which the ImageFilterLayer turns into a
+    // transform during preroll) are not.
+    if (filter_ && platform_view_frame_) {
+      mutators_stack->PushContentImageFilter(filter_, platform_view_frame_);
+    }
+  }
 
  private:
   const DlRect bounds_;
   const std::shared_ptr<DlImageFilter> filter_;
+  const std::shared_ptr<ContentImageFilterFrame> platform_view_frame_;
   const std::shared_ptr<DlImageFilter> old_filter_;
   const DlRect old_bounds_;
 
@@ -545,9 +556,10 @@ void MutatorContext::applyOpacity(const DlRect& bounds, DlScalar opacity) {
 
 void MutatorContext::applyImageFilter(
     const DlRect& bounds,
-    const std::shared_ptr<DlImageFilter>& filter) {
+    const std::shared_ptr<DlImageFilter>& filter,
+    const std::shared_ptr<ContentImageFilterFrame>& platform_view_frame) {
   if (filter) {
-    layer_state_stack_->push_image_filter(bounds, filter);
+    layer_state_stack_->push_image_filter(bounds, filter, platform_view_frame);
   }
 }
 
@@ -698,10 +710,11 @@ void LayerStateStack::push_color_filter(
 
 void LayerStateStack::push_image_filter(
     const DlRect& bounds,
-    const std::shared_ptr<DlImageFilter>& filter) {
+    const std::shared_ptr<DlImageFilter>& filter,
+    const std::shared_ptr<ContentImageFilterFrame>& platform_view_frame) {
   maybe_save_layer(filter);
-  state_stack_.emplace_back(
-      std::make_unique<ImageFilterEntry>(bounds, filter, outstanding_));
+  state_stack_.emplace_back(std::make_unique<ImageFilterEntry>(
+      bounds, filter, platform_view_frame, outstanding_));
   apply_last_entry();
 }
 
