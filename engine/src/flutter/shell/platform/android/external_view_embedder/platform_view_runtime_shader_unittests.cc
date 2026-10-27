@@ -214,9 +214,10 @@ TEST(PlatformViewRuntimeShaderTest, MatchesUniformsByNameInAnyOrder) {
   };
   std::string error;
   auto program = PlatformViewRuntimeShaderProgram::Make(
-      "uniform shader u_input;", sksl_uniforms, data_uniforms, &error);
+      "uniform shader u_input; // u_input_size in a comment", sksl_uniforms,
+      data_uniforms, &error);
   ASSERT_TRUE(program) << error;
-  // There is no "u_input_size" in the source, so it's not set.
+  // There is no "uniform float2 u_input_size;" declaration, so it's not set.
   ASSERT_EQ(program->uniforms().size(), 3u);
   EXPECT_EQ(program->uniforms()[1].name, "u_matrix");
   EXPECT_EQ(program->uniforms()[1].data_offset, 5u);
@@ -352,8 +353,13 @@ TEST(PlatformViewRuntimeShaderTest, CacheReturnsSameProgramPerEffect) {
   auto effect =
       sk_make_sp<FakeRuntimeEffect>(stages[RuntimeStageBackend::kOpenGLES],
                                     stages[RuntimeStageBackend::kSkSL]);
+  // Peeking with mark_registered=false caches the program without consuming
+  // is_new.
+  auto peeked = cache.GetProgram(*effect, /*mark_registered=*/false);
+  ASSERT_TRUE(peeked.program);
+  EXPECT_TRUE(peeked.is_new);
   auto first = cache.GetProgram(*effect);
-  ASSERT_TRUE(first.program);
+  EXPECT_EQ(first.program, peeked.program);
   EXPECT_TRUE(first.is_new);
   auto second = cache.GetProgram(*effect);
   EXPECT_EQ(second.program, first.program);

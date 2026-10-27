@@ -27,7 +27,7 @@ namespace impeller {
 /// @param flood_output_coverage Whether the coverage should be flooded to clip
 /// coverage regardless of input coverage. This should be set to true when the
 /// restore Paint has a destructive blend mode.
-/// @param flood_input_coverage  Whther the content coverage should be flooded.
+/// @param flood_input_coverage  Whether the content coverage should be flooded.
 /// This should be set to true if the paint has a backdrop filter or if there is
 /// a transparent black effecting color filter.
 /// @param max_subpass_size      Optional maximum render pass attachment size.

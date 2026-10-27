@@ -4,10 +4,16 @@
 
 #include "flutter/shell/platform/android/external_view_embedder/platform_view_runtime_shader.h"
 
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#endif
+
 #include <atomic>
 #include <cstring>
 #include <sstream>
 
+#include "flutter/display_list/effects/dl_image_filters.h"
+#include "flutter/flow/embedded_views.h"
 #include "flutter/fml/logging.h"
 #include "flutter/impeller/runtime_stage/runtime_stage.h"
 
@@ -162,9 +168,11 @@ PlatformViewRuntimeShaderProgram::Make(
     });
   }
 
+  std::string agsl_source = AdaptSkSLToAGSL(sksl_source, sampler_names);
   const std::string& input_shader_name = sampler_names.front();
   const std::string input_size_name = input_shader_name + "_size";
-  if (sksl_source.find(input_size_name) != std::string_view::npos) {
+  if (agsl_source.find("uniform float2 " + input_size_name + ";") !=
+      std::string::npos) {
     uniforms.push_back(Uniform{
         .name = input_size_name,
         .source = Uniform::Source::kInputSize,
@@ -174,9 +182,8 @@ PlatformViewRuntimeShaderProgram::Make(
 
   return std::shared_ptr<PlatformViewRuntimeShaderProgram>(
       new PlatformViewRuntimeShaderProgram(
-          g_next_program_id.fetch_add(1),
-          AdaptSkSLToAGSL(sksl_source, sampler_names), input_shader_name,
-          std::move(uniforms)));
+          g_next_program_id.fetch_add(1), std::move(agsl_source),
+          input_shader_name, std::move(uniforms)));
 }
 
 PlatformViewRuntimeShaderProgram::PlatformViewRuntimeShaderProgram(
@@ -233,6 +240,13 @@ PlatformViewRuntimeShaderProgram::ComputeUniformValues(
   return values;
 }
 
+PlatformViewRuntimeShaderProgramCache&
+PlatformViewRuntimeShaderProgramCache::Shared() {
+  static PlatformViewRuntimeShaderProgramCache* cache =
+      new PlatformViewRuntimeShaderProgramCache();
+  return *cache;
+}
+
 PlatformViewRuntimeShaderProgramCache::PlatformViewRuntimeShaderProgramCache() =
     default;
 
@@ -241,7 +255,8 @@ PlatformViewRuntimeShaderProgramCache::
 
 PlatformViewRuntimeShaderProgramCache::Result
 PlatformViewRuntimeShaderProgramCache::GetProgram(
-    const DlRuntimeEffect& runtime_effect) {
+    const DlRuntimeEffect& runtime_effect,
+    bool mark_registered) {
   std::shared_ptr<impeller::RuntimeStage> sksl_stage =
       runtime_effect.sksl_runtime_stage();
   std::shared_ptr<impeller::RuntimeStage> data_layout_stage =
@@ -260,7 +275,11 @@ PlatformViewRuntimeShaderProgramCache::GetProgram(
   std::scoped_lock lock(mutex_);
   auto it = entries_.find(sksl_stage.get());
   if (it != entries_.end() && !it->second.stage.expired()) {
-    return {.program = it->second.program, .is_new = false};
+    const bool is_new = it->second.program != nullptr && !it->second.registered;
+    if (mark_registered && it->second.program != nullptr) {
+      it->second.registered = true;
+    }
+    return {.program = it->second.program, .is_new = is_new};
   }
 
   PurgeExpiredEntries();
@@ -274,8 +293,10 @@ PlatformViewRuntimeShaderProgramCache::GetProgram(
                         "views: "
                      << error;
   }
-  entries_.insert_or_assign(sksl_stage.get(),
-                            Entry{.stage = sksl_stage, .program = program});
+  const bool registered = mark_registered && program != nullptr;
+  entries_.insert_or_assign(sksl_stage.get(), Entry{.stage = sksl_stage,
+                                                    .program = program,
+                                                    .registered = registered});
   return {.program = program, .is_new = program != nullptr};
 }
 
@@ -293,6 +314,47 @@ void PlatformViewRuntimeShaderProgramCache::PurgeExpiredEntries() {
       ++it;
     }
   }
+}
+
+DlRect GetSliceViewRect(const EmbeddedViewParams& params) {
+  DlRect rect = params.finalBoundingRect();
+#if defined(__ANDROID__)
+  if (android_get_device_api_level() < 33) {
+    return rect;
+  }
+#endif
+  for (auto it = params.mutatorsStack().Begin();
+       it != params.mutatorsStack().End(); ++it) {
+    if ((*it)->GetType() != MutatorType::kContentImageFilter) {
+      continue;
+    }
+    const ContentImageFilterMutation& mutation =
+        (*it)->GetContentImageFilterMutation();
+    const std::optional<DlIRect> frame = mutation.GetFrame();
+    if (!frame.has_value() || frame->IsEmpty()) {
+      continue;
+    }
+    const std::shared_ptr<DlImageFilter>& filter = mutation.GetFilter();
+    const DlRuntimeEffectImageFilter* runtime_filter =
+        filter ? filter->asRuntimeEffectFilter() : nullptr;
+    if (!runtime_filter || !runtime_filter->runtime_effect() ||
+        !runtime_filter->uniform_data()) {
+      continue;
+    }
+    PlatformViewRuntimeShaderProgramCache::Result result =
+        PlatformViewRuntimeShaderProgramCache::Shared().GetProgram(
+            *runtime_filter->runtime_effect(), /*mark_registered=*/false);
+    if (!result.program ||
+        !result.program
+             ->ComputeUniformValues(*runtime_filter->uniform_data(),
+                                    frame->GetSize())
+             .has_value()) {
+      continue;
+    }
+    rect = rect.Union(DlRect::Make(*frame));
+    break;
+  }
+  return rect;
 }
 
 }  // namespace flutter

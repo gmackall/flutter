@@ -45,14 +45,14 @@ public class FlutterMutatorsStack {
    * <p>Programs are registered once by the engine (see {@link #registerRuntimeShaderProgram}) and
    * then referenced by their id from {@link RuntimeShaderFilter}s.
    */
-  public static final class RuntimeShaderProgram {
-    public final long id;
-    @NonNull public final String agslSource;
-    @NonNull public final String inputShaderName;
-    @NonNull public final String[] uniformNames;
-    @NonNull public final int[] uniformSizes;
+  static final class RuntimeShaderProgram {
+    final long id;
+    @NonNull final String agslSource;
+    @NonNull final String inputShaderName;
+    @NonNull final String[] uniformNames;
+    @NonNull final int[] uniformSizes;
 
-    public RuntimeShaderProgram(
+    RuntimeShaderProgram(
         long id,
         @NonNull String agslSource,
         @NonNull String inputShaderName,
@@ -78,15 +78,15 @@ public class FlutterMutatorsStack {
    * laid out with the frame as its bounds for the filter to line up with the Flutter content that
    * the same filter is applied to.
    */
-  public static final class RuntimeShaderFilter {
-    public final long programId;
-    @NonNull public final float[] uniformValues;
-    public final int left;
-    public final int top;
-    public final int right;
-    public final int bottom;
+  static final class RuntimeShaderFilter {
+    final long programId;
+    @NonNull final float[] uniformValues;
+    final int left;
+    final int top;
+    final int right;
+    final int bottom;
 
-    public RuntimeShaderFilter(
+    RuntimeShaderFilter(
         long programId, @NonNull float[] uniformValues, int left, int top, int right, int bottom) {
       this.programId = programId;
       this.uniformValues = uniformValues;
@@ -96,15 +96,15 @@ public class FlutterMutatorsStack {
       this.bottom = bottom;
     }
 
-    public int getWidth() {
+    int getWidth() {
       return right - left;
     }
 
-    public int getHeight() {
+    int getHeight() {
       return bottom - top;
     }
 
-    public boolean isEmpty() {
+    boolean isEmpty() {
       return right <= left || bottom <= top;
     }
 
@@ -151,6 +151,7 @@ public class FlutterMutatorsStack {
    * @param uniformNames the names of the float uniforms that are set for every frame.
    * @param uniformSizes the number of floats of each of the uniforms in {@code uniformNames}.
    */
+  @Keep
   public static void registerRuntimeShaderProgram(
       long id,
       @NonNull String agslSource,
@@ -163,7 +164,7 @@ public class FlutterMutatorsStack {
 
   /** Returns the program registered with {@code id}, or null if there is none. */
   @Nullable
-  public static RuntimeShaderProgram getRuntimeShaderProgram(long id) {
+  static RuntimeShaderProgram getRuntimeShaderProgram(long id) {
     return runtimeShaderPrograms.get(id);
   }
 
@@ -248,7 +249,7 @@ public class FlutterMutatorsStack {
      *
      * @param filter the filter to apply.
      */
-    public FlutterMutator(@NonNull RuntimeShaderFilter filter) {
+    FlutterMutator(@NonNull RuntimeShaderFilter filter) {
       this.type = FlutterMutatorType.RUNTIME_SHADER_FILTER;
       this.runtimeShaderFilter = filter;
     }
@@ -306,7 +307,7 @@ public class FlutterMutatorsStack {
      *     null.
      */
     @Nullable
-    public RuntimeShaderFilter getRuntimeShaderFilter() {
+    RuntimeShaderFilter getRuntimeShaderFilter() {
       return runtimeShaderFilter;
     }
   }
@@ -411,6 +412,7 @@ public class FlutterMutatorsStack {
    * @param right the right edge of the filter input in physical pixels.
    * @param bottom the bottom edge of the filter input in physical pixels.
    */
+  @Keep
   public void pushRuntimeShaderFilter(
       long programId, @NonNull float[] uniformValues, int left, int top, int right, int bottom) {
     RuntimeShaderFilter filter =
@@ -465,7 +467,7 @@ public class FlutterMutatorsStack {
    * <p>If the stack contains more than one runtime shader filter, this is the outermost one.
    */
   @Nullable
-  public RuntimeShaderFilter getFinalRuntimeShaderFilter() {
+  RuntimeShaderFilter getFinalRuntimeShaderFilter() {
     return finalRuntimeShaderFilter;
   }
 }

@@ -25,6 +25,8 @@ class RuntimeStage;
 
 namespace flutter {
 
+class EmbeddedViewParams;
+
 //------------------------------------------------------------------------------
 /// @brief      A runtime effect image filter (|ui.ImageFilter.shader|),
 ///             translated so that it can be applied to platform views as an
@@ -167,6 +169,10 @@ class PlatformViewRuntimeShaderProgram {
 ///
 class PlatformViewRuntimeShaderProgramCache {
  public:
+  /// Process-wide shared cache instance used by the Android view embedder and
+  /// JNI mutator bridge.
+  static PlatformViewRuntimeShaderProgramCache& Shared();
+
   PlatformViewRuntimeShaderProgramCache();
 
   ~PlatformViewRuntimeShaderProgramCache();
@@ -174,8 +180,9 @@ class PlatformViewRuntimeShaderProgramCache {
   struct Result {
     /// The program, or nullptr if the effect is not supported.
     std::shared_ptr<PlatformViewRuntimeShaderProgram> program;
-    /// Whether this is the first time that this program is returned by the
-    /// cache, i.e. whether it still needs to be registered with the platform.
+    /// Whether this is the first time that this program is marked as
+    /// registered in the cache, i.e. whether it still needs to be registered
+    /// with the platform.
     bool is_new = false;
   };
 
@@ -183,7 +190,14 @@ class PlatformViewRuntimeShaderProgramCache {
   /// @brief      Returns the program for the given runtime effect, creating
   ///             it if needed.
   ///
-  Result GetProgram(const DlRuntimeEffect& runtime_effect);
+  /// @param[in]  runtime_effect   The runtime effect to translate.
+  /// @param[in]  mark_registered  Whether to mark the program as registered
+  ///                              with the platform so subsequent calls return
+  ///                              `is_new = false`. Pass `false` when only
+  ///                              checking whether a valid program exists.
+  ///
+  Result GetProgram(const DlRuntimeEffect& runtime_effect,
+                    bool mark_registered = true);
 
   /// The number of live entries. Exposed for testing.
   size_t GetEntryCountForTesting();
@@ -193,6 +207,7 @@ class PlatformViewRuntimeShaderProgramCache {
     // Used to detect that the stage was destroyed and its address reused.
     std::weak_ptr<impeller::RuntimeStage> stage;
     std::shared_ptr<PlatformViewRuntimeShaderProgram> program;
+    bool registered = false;
   };
 
   void PurgeExpiredEntries();
@@ -202,6 +217,18 @@ class PlatformViewRuntimeShaderProgramCache {
 
   FML_DISALLOW_COPY_AND_ASSIGN(PlatformViewRuntimeShaderProgramCache);
 };
+
+//------------------------------------------------------------------------------
+/// @brief      Returns the bounds within which the platform view may draw on
+///             screen, for intersecting against post-platform-view Flutter
+///             drawings in `SliceViews`.
+///
+///             When a valid runtime shader content image filter with a known
+///             device-space frame is active on Android API 33+,
+///             `FlutterMutatorView` is laid out to that frame and the shader
+///             may displace the platform view's pixels anywhere within it.
+///
+DlRect GetSliceViewRect(const EmbeddedViewParams& params);
 
 }  // namespace flutter
 

@@ -967,6 +967,19 @@ TEST(ImageFilterLayerFrameTest, ComputeRuntimeEffectInputFrame) {
   EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
                 DlRect::MakeXYWH(5.0f, 5.0f, 0.5f, 100.0f), cull),
             std::nullopt);
+
+  // When content_device_bounds exceeds max_subpass_size, falls back to the
+  // intersection with device_cull_rect and clamps the dimensions to
+  // max_subpass_size.
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeLTRB(0.0f, -2000.0f, 1000.0f, 4000.0f), cull,
+                DlISize(4096, 4096)),
+            DlIRect::MakeLTRB(0, 0, 1000, 2000));
+  EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
+                DlRect::MakeLTRB(0.0f, 0.0f, 5000.0f, 6000.0f),
+                DlRect::MakeLTRB(100.0f, 200.0f, 5000.0f, 6000.0f),
+                DlISize(4096, 4096)),
+            DlIRect::MakeXYWH(100, 200, 4096, 4096));
 }
 
 }  // namespace testing

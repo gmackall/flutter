@@ -4,6 +4,7 @@
 
 #include "flutter/flow/layers/image_filter_layer.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "flutter/display_list/effects/dl_image_filters.h"
@@ -71,31 +72,42 @@ bool ContainsPlatformView(const ContainerLayer& container) {
 
 std::optional<DlIRect> ImageFilterLayer::ComputeRuntimeEffectInputFrame(
     const DlRect& content_device_bounds,
-    const DlRect& device_cull_rect) {
+    const DlRect& device_cull_rect,
+    DlISize max_subpass_size) {
   if (content_device_bounds.IsEmpty() || !content_device_bounds.IsFinite()) {
     return std::nullopt;
   }
   // For runtime effect filters, |RuntimeEffectFilterContents| reports unbounded
   // source coverage, so |impeller::ComputeSaveLayerCoverage| preserves the full
-  // |content_device_bounds| whenever it intersects the device clip.
+  // |content_device_bounds| whenever it intersects the device clip and fits
+  // within |max_subpass_size|, falling back to the clip intersection otherwise.
   std::optional<DlRect> intersection =
       content_device_bounds.Intersection(device_cull_rect);
   if (!intersection.has_value() || intersection->IsEmpty()) {
     return std::nullopt;
   }
-  const DlRect& coverage = content_device_bounds;
+  DlRect transformed_coverage = content_device_bounds;
+  if (std::ceil(transformed_coverage.GetWidth()) > max_subpass_size.width ||
+      std::ceil(transformed_coverage.GetHeight()) > max_subpass_size.height) {
+    transformed_coverage = *intersection;
+  }
   // |impeller::Canvas::SaveLayer| sizes the subpass texture with
-  // ISize(coverage.GetSize()) (i.e. truncation) when the layer has an image
-  // filter, and positions it at the (possibly fractional) coverage origin.
-  // When the texture is composited back, each device pixel picks up the texel
-  // nearest to its center, which corresponds to rounding the origin.
-  const int64_t width = static_cast<int64_t>(coverage.GetWidth());
-  const int64_t height = static_cast<int64_t>(coverage.GetHeight());
+  // ISize(coverage.GetSize()) (i.e. truncation) clamped to |max_subpass_size|
+  // when the layer has an image filter, and positions it at the (possibly
+  // fractional) coverage origin. When the texture is composited back, each
+  // device pixel picks up the texel nearest to its center, which corresponds to
+  // rounding the origin.
+  int64_t width = static_cast<int64_t>(transformed_coverage.GetWidth());
+  int64_t height = static_cast<int64_t>(transformed_coverage.GetHeight());
+  width = std::min<int64_t>(width, max_subpass_size.width);
+  height = std::min<int64_t>(height, max_subpass_size.height);
   if (width <= 0 || height <= 0) {
     return std::nullopt;
   }
-  return DlIRect::MakeXYWH(std::round(coverage.GetX()),
-                           std::round(coverage.GetY()), width, height);
+  return DlIRect::MakeXYWH(
+      static_cast<int64_t>(std::round(transformed_coverage.GetLeft())),
+      static_cast<int64_t>(std::round(transformed_coverage.GetTop())), width,
+      height);
 }
 
 void ImageFilterLayer::Preroll(PrerollContext* context) {

@@ -10,6 +10,7 @@
 #include "flutter/common/constants.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/shell/platform/android/external_view_embedder/platform_view_runtime_shader.h"
 #include "fml/make_copyable.h"
 
 namespace flutter {
@@ -30,27 +31,6 @@ namespace {
 // See https://github.com/flutter/flutter/issues/189834.
 int32_t ToPhysicalPixels(DlScalar size_points, double device_pixel_ratio) {
   return static_cast<int32_t>(std::round(size_points * device_pixel_ratio));
-}
-
-// Returns the bounds within which the platform view may draw on screen, for
-// intersecting against post-platform-view Flutter drawings in `SliceViews`.
-//
-// When a content image filter with a known device-space frame is active (such
-// as a runtime shader filter), `FlutterMutatorView` is laid out to that frame
-// and the shader may displace the platform view's pixels anywhere within it.
-DlRect GetSliceViewRect(const EmbeddedViewParams& params) {
-  DlRect rect = params.finalBoundingRect();
-  for (auto it = params.mutatorsStack().Begin();
-       it != params.mutatorsStack().End(); ++it) {
-    if ((*it)->GetType() == MutatorType::kContentImageFilter) {
-      const std::optional<DlIRect> frame =
-          (*it)->GetContentImageFilterMutation().GetFrame();
-      if (frame.has_value() && !frame->IsEmpty()) {
-        rect = rect.Union(DlRect::Make(*frame));
-      }
-    }
-  }
-  return rect;
 }
 
 }  // namespace

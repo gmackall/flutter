@@ -53,7 +53,9 @@ public class FlutterMutatorView extends FrameLayout {
 
   // SurfaceView content is composited by SurfaceFlinger in a separate layer, so it can't be
   // filtered by a RenderEffect.
-  private static final Class[] VIEW_TYPES_THAT_PREVENT_RENDER_EFFECTS = {SurfaceView.class};
+  @SuppressWarnings("unchecked")
+  private static final Class<? extends View>[] VIEW_TYPES_THAT_PREVENT_RENDER_EFFECTS =
+      new Class[] {SurfaceView.class};
   @Nullable private Boolean cachedHasChildSurfaceView = null;
 
   // The ids of programs whose AGSL failed to compile or whose uniforms couldn't be set.
@@ -140,10 +142,11 @@ public class FlutterMutatorView extends FrameLayout {
 
     FlutterMutatorsStack.RuntimeShaderFilter filter = mutatorsStack.getFinalRuntimeShaderFilter();
     boolean appliedFilter = false;
-    if (filter != null && !filter.isEmpty() && Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
-      if (!hasChildSurfaceView()) {
-        appliedFilter = applyRuntimeShaderFilter(filter);
-      }
+    if (filter != null
+        && !filter.isEmpty()
+        && Build.VERSION.SDK_INT >= API_LEVELS.API_33
+        && !hasChildSurfaceView()) {
+      appliedFilter = applyRuntimeShaderFilter(filter);
     }
     if (appliedFilter) {
       // The shader's coordinates are relative to the filter's frame, so lay the view out with the

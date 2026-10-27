@@ -1774,12 +1774,6 @@ void PlatformViewAndroidJNIImpl::HardwareBufferClose(
 
 namespace {
 
-PlatformViewRuntimeShaderProgramCache& GetRuntimeShaderProgramCache() {
-  static PlatformViewRuntimeShaderProgramCache* cache =
-      new PlatformViewRuntimeShaderProgramCache();
-  return *cache;
-}
-
 // Pushes a runtime effect (|ui.ImageFilter.shader|) image filter that applies
 // to a platform view onto the Java mutators stack, where it is applied as a
 // RuntimeShader RenderEffect.
@@ -1802,7 +1796,7 @@ void PushContentImageFilterMutator(JNIEnv* env,
   }
 
   PlatformViewRuntimeShaderProgramCache::Result result =
-      GetRuntimeShaderProgramCache().GetProgram(
+      PlatformViewRuntimeShaderProgramCache::Shared().GetProgram(
           *runtime_filter->runtime_effect());
   const std::shared_ptr<PlatformViewRuntimeShaderProgram>& program =
       result.program;
