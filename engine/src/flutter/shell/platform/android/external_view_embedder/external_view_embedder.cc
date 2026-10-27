@@ -32,6 +32,27 @@ int32_t ToPhysicalPixels(DlScalar size_points, double device_pixel_ratio) {
   return static_cast<int32_t>(std::round(size_points * device_pixel_ratio));
 }
 
+// Returns the bounds within which the platform view may draw on screen, for
+// intersecting against post-platform-view Flutter drawings in `SliceViews`.
+//
+// When a content image filter with a known device-space frame is active (such
+// as a runtime shader filter), `FlutterMutatorView` is laid out to that frame
+// and the shader may displace the platform view's pixels anywhere within it.
+DlRect GetSliceViewRect(const EmbeddedViewParams& params) {
+  DlRect rect = params.finalBoundingRect();
+  for (auto it = params.mutatorsStack().Begin();
+       it != params.mutatorsStack().End(); ++it) {
+    if ((*it)->GetType() == MutatorType::kContentImageFilter) {
+      const std::optional<DlIRect> frame =
+          (*it)->GetContentImageFilterMutation().GetFrame();
+      if (frame.has_value() && !frame->IsEmpty()) {
+        rect = rect.Union(DlRect::Make(*frame));
+      }
+    }
+  }
+  return rect;
+}
+
 }  // namespace
 
 AndroidExternalViewEmbedder::AndroidExternalViewEmbedder(
@@ -102,7 +123,7 @@ void AndroidExternalViewEmbedder::SubmitFlutterView(
 
   std::unordered_map<int64_t, DlRect> view_rects;
   for (auto platform_id : composition_order_) {
-    view_rects[platform_id] = GetViewRect(platform_id);
+    view_rects[platform_id] = GetSliceViewRect(view_params_.at(platform_id));
   }
 
   std::unordered_map<int64_t, DlRect> overlay_layers =

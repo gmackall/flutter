@@ -900,7 +900,8 @@ TEST_F(ImageFilterLayerTest,
   EXPECT_EQ(preroll_context()->state_stack.outstanding_image_filter(), nullptr);
 }
 
-TEST_F(ImageFilterLayerTest, RuntimeEffectFilterFrameUsesClipHeuristic) {
+TEST_F(ImageFilterLayerTest,
+       RuntimeEffectFilterFramePreservesFullBoundsWhenClipped) {
   auto filter = DlImageFilter::MakeRuntimeEffect(
       nullptr, {nullptr},
       std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>(8, 0)));
@@ -918,26 +919,26 @@ TEST_F(ImageFilterLayerTest, RuntimeEffectFilterFrameUsesClipHeuristic) {
     return (*mutators.Begin())->GetContentImageFilterMutation().GetFrame();
   };
 
-  // A clip that cuts off less than 30% of the content: Impeller renders the
-  // full content into the filter input.
+  // Even when a parent clip cuts off more than 30% of the content, Impeller
+  // preserves the full SaveLayer bounds for runtime effect filters so u_size
+  // and FlutterFragCoord remain in the layer's coordinate space.
   {
     MockViewEmbedder embedder;
     preroll_context()->view_embedder = &embedder;
     preroll_context()->state_stack.set_preroll_delegate(
-        DlRect::MakeLTRB(0.0f, 100.0f, 400.0f, 1000.0f));
+        DlRect::MakeLTRB(0.0f, 500.0f, 400.0f, 900.0f));
     make_layer()->Preroll(preroll_context());
     EXPECT_EQ(get_frame(embedder), DlIRect::MakeLTRB(0, 0, 400, 1000));
   }
-  // A clip that cuts off more than 30% of the content: Impeller renders only
-  // the clipped content into the filter input.
+  // Entirely outside the clip: produces std::nullopt.
   {
     MockViewEmbedder embedder;
     preroll_context()->view_embedder = &embedder;
     preroll_context()->has_platform_view = false;
     preroll_context()->state_stack.set_preroll_delegate(
-        DlRect::MakeLTRB(0.0f, 500.0f, 400.0f, 900.0f));
+        DlRect::MakeLTRB(0.0f, 1100.0f, 400.0f, 1500.0f));
     make_layer()->Preroll(preroll_context());
-    EXPECT_EQ(get_frame(embedder), DlIRect::MakeLTRB(0, 500, 400, 900));
+    EXPECT_EQ(get_frame(embedder), std::nullopt);
   }
   preroll_context()->view_embedder = nullptr;
 }
@@ -949,14 +950,14 @@ TEST(ImageFilterLayerFrameTest, ComputeRuntimeEffectInputFrame) {
   EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
                 DlRect::MakeXYWH(10.4f, 20.6f, 100.7f, 50.2f), cull),
             DlIRect::MakeXYWH(10, 21, 100, 50));
-  // Partially clipped by less than 30% in each dimension: full content.
+  // Partially clipped: preserves the full content bounds as long as it
+  // intersects the cull rect.
   EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
                 DlRect::MakeLTRB(-100.0f, 0.0f, 900.0f, 1000.0f), cull),
             DlIRect::MakeLTRB(-100, 0, 900, 1000));
-  // Clipped by more than 30% in one dimension: the clipped content.
   EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
                 DlRect::MakeLTRB(0.0f, 1500.0f, 1000.0f, 2500.0f), cull),
-            DlIRect::MakeLTRB(0, 1500, 1000, 2000));
+            DlIRect::MakeLTRB(0, 1500, 1000, 2500));
   // Entirely clipped or empty.
   EXPECT_EQ(ImageFilterLayer::ComputeRuntimeEffectInputFrame(
                 DlRect::MakeLTRB(0.0f, 2100.0f, 1000.0f, 2500.0f), cull),

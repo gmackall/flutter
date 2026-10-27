@@ -54,16 +54,6 @@ void ImageFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
 
 namespace {
 
-// Mirrors |impeller::SizeDifferenceUnderThreshold| in
-// impeller/entity/save_layer_utils.cc.
-bool SizeDifferenceUnderThreshold(DlSize a, DlSize b, DlScalar threshold) {
-  return (std::abs(a.width - b.width) / b.width) < threshold &&
-         (std::abs(a.height - b.height) / b.height) < threshold;
-}
-
-// Mirrors |kDefaultSizeThreshold| in impeller/entity/save_layer_utils.cc.
-constexpr DlScalar kSaveLayerSizeThreshold = 0.3f;
-
 bool ContainsPlatformView(const ContainerLayer& container) {
   for (const std::shared_ptr<Layer>& layer : container.layers()) {
     if (layer->as_platform_view_layer() != nullptr) {
@@ -85,20 +75,15 @@ std::optional<DlIRect> ImageFilterLayer::ComputeRuntimeEffectInputFrame(
   if (content_device_bounds.IsEmpty() || !content_device_bounds.IsFinite()) {
     return std::nullopt;
   }
-  // For runtime effect filters, |GetSourceCoverage| of the coverage limit is
-  // the coverage limit itself, so the "worst case" source coverage is the
-  // device clip. See |impeller::ComputeSaveLayerCoverage|.
+  // For runtime effect filters, |RuntimeEffectFilterContents| reports unbounded
+  // source coverage, so |impeller::ComputeSaveLayerCoverage| preserves the full
+  // |content_device_bounds| whenever it intersects the device clip.
   std::optional<DlRect> intersection =
       content_device_bounds.Intersection(device_cull_rect);
   if (!intersection.has_value() || intersection->IsEmpty()) {
     return std::nullopt;
   }
-  DlRect coverage = intersection.value();
-  if (SizeDifferenceUnderThreshold(content_device_bounds.GetSize(),
-                                   intersection->GetSize(),
-                                   kSaveLayerSizeThreshold)) {
-    coverage = content_device_bounds;
-  }
+  const DlRect& coverage = content_device_bounds;
   // |impeller::Canvas::SaveLayer| sizes the subpass texture with
   // ISize(coverage.GetSize()) (i.e. truncation) when the layer has an image
   // filter, and positions it at the (possibly fractional) coverage origin.
