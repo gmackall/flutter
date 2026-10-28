@@ -110,9 +110,9 @@ typedef _ApplyTextBoundary = TextPosition Function(TextPosition, bool, TextBound
 // to transparent, is twice this duration.
 const Duration _kCursorBlinkHalfPeriod = Duration(milliseconds: 500);
 
-// Number of cursor ticks during which the most recently entered character
+// The duration for which the most recently entered character
 // is shown in an obscured text field.
-const int _kObscureShowLatestCharCursorTicks = 3;
+const Duration _kObscureShowLatestCharDuration = Duration(milliseconds: 1500);
 
 /// The default mime types to be used when allowedMimeTypes is not provided.
 ///
@@ -3568,8 +3568,7 @@ class EditableTextState extends State<EditableText>
       if (obscureTextChanged || oldWidget.keyboardType != widget.keyboardType) {
         if (obscureTextChanged) {
           // When obscureText is toggled, we should reset its state to prevent the last character from being visible between state changes.
-          _obscureShowCharTicksPending = 0;
-          _obscureLatestCharIndex = null;
+          _stopObscureShowCharTimer();
         }
         _textInputConnection!.updateConfig(_effectiveAutofillClient.textInputConfiguration);
       }
@@ -3664,6 +3663,8 @@ class EditableTextState extends State<EditableText>
     assert(!_hasInputConnection);
     _cursorTimer?.cancel();
     _cursorTimer = null;
+    _obscureShowCharTimer?.cancel();
+    _obscureShowCharTimer = null;
     _backingCursorBlinkOpacityController?.dispose();
     _backingCursorBlinkOpacityController = null;
     _selectionOverlay?.dispose();
@@ -3758,14 +3759,17 @@ class EditableTextState extends State<EditableText>
           WidgetsBinding.instance.platformDispatcher.brieflyShowPassword &&
           value.text.length == _value.text.length + 1;
 
-      _obscureShowCharTicksPending = revealObscuredInput ? _kObscureShowLatestCharCursorTicks : 0;
-      _obscureLatestCharIndex = revealObscuredInput ? _value.selection.baseOffset : null;
+      if (revealObscuredInput) {
+        _startObscureShowCharTimer(_value.selection.baseOffset);
+      } else {
+        _stopObscureShowCharTimer();
+      }
       _formatAndSetValue(value, SelectionChangedCause.keyboard);
     }
 
     if (_showBlinkingCursor && _cursorTimer != null) {
       // To keep the cursor from blinking while typing, restart the timer here.
-      _stopCursorBlink(resetCharTicks: false);
+      _stopCursorBlink();
       _startCursorBlink();
     }
 
@@ -3855,7 +3859,7 @@ class EditableTextState extends State<EditableText>
           _onFloatingCursorResetTick();
         }
         // Stop cursor blinking and making it visible.
-        _stopCursorBlink(resetCharTicks: false);
+        _stopCursorBlink();
         _cursorBlinkOpacityController.value = 1.0;
         // We want to send in points that are centered around a (0,0) origin, so
         // we cache the position.
@@ -4194,6 +4198,7 @@ class EditableTextState extends State<EditableText>
       _textInputConnection = null;
       _lastKnownRemoteTextEditingValue = null;
       _scribbleCacheKey = null;
+      _stopObscureShowCharTimer();
       removeTextPlaceholder();
     }
   }
@@ -4599,7 +4604,7 @@ class EditableTextState extends State<EditableText>
 
     // To keep the cursor from blinking while it moves, restart the timer here.
     if (_showBlinkingCursor && _cursorTimer != null) {
-      _stopCursorBlink(resetCharTicks: false);
+      _stopCursorBlink();
       _startCursorBlink();
     }
   }
@@ -4886,8 +4891,26 @@ class EditableTextState extends State<EditableText>
   @visibleForTesting
   TextSelectionOverlay? get selectionOverlay => _selectionOverlay;
 
-  int _obscureShowCharTicksPending = 0;
+  Timer? _obscureShowCharTimer;
   int? _obscureLatestCharIndex;
+
+  void _startObscureShowCharTimer(int index) {
+    _obscureShowCharTimer?.cancel();
+    _obscureLatestCharIndex = index;
+    _obscureShowCharTimer = Timer(_kObscureShowLatestCharDuration, _onObscureShowCharTimer);
+  }
+
+  void _onObscureShowCharTimer() {
+    _obscureShowCharTimer = null;
+    _obscureLatestCharIndex = null;
+    setState(() {});
+  }
+
+  void _stopObscureShowCharTimer() {
+    _obscureShowCharTimer?.cancel();
+    _obscureShowCharTimer = null;
+    _obscureLatestCharIndex = null;
+  }
 
   void _startCursorBlink() {
     assert(
@@ -4917,15 +4940,6 @@ class EditableTextState extends State<EditableText>
   }
 
   void _onCursorTick() {
-    if (_obscureShowCharTicksPending > 0) {
-      _obscureShowCharTicksPending = WidgetsBinding.instance.platformDispatcher.brieflyShowPassword
-          ? _obscureShowCharTicksPending - 1
-          : 0;
-      if (_obscureShowCharTicksPending == 0) {
-        setState(() {});
-      }
-    }
-
     if (widget.cursorOpacityAnimates) {
       _cursorTimer?.cancel();
       // Schedule this as an async task to avoid blocking tester.pumpAndSettle
@@ -4946,15 +4960,12 @@ class EditableTextState extends State<EditableText>
     }
   }
 
-  void _stopCursorBlink({bool resetCharTicks = true}) {
+  void _stopCursorBlink() {
     // If the cursor is animating, stop the animation, and we always
     // want the cursor to be visible when the floating cursor is enabled.
     _cursorBlinkOpacityController.value = renderEditable.floatingCursorOn ? 1.0 : 0.0;
     _cursorTimer?.cancel();
     _cursorTimer = null;
-    if (resetCharTicks) {
-      _obscureShowCharTicksPending = 0;
-    }
   }
 
   void _startOrStopCursorTimerIfNeeded() {
@@ -6097,7 +6108,7 @@ class EditableTextState extends State<EditableText>
           WidgetsBinding.instance.platformDispatcher.brieflyShowPassword &&
           mobilePlatforms.contains(defaultTargetPlatform);
       if (brieflyShowPassword) {
-        final int? o = _obscureShowCharTicksPending > 0 ? _obscureLatestCharIndex : null;
+        final int? o = (_obscureShowCharTimer?.isActive ?? false) ? _obscureLatestCharIndex : null;
         if (o != null && o >= 0 && o < text.length) {
           text = text.replaceRange(o, o + 1, _value.text.substring(o, o + 1));
         }

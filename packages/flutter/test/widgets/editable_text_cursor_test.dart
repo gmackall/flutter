@@ -1135,10 +1135,9 @@ void main() {
   testWidgets('password briefly does not show last character when disabled by system', (
     WidgetTester tester,
   ) async {
-    final bool debugDeterministicCursor = EditableText.debugDeterministicCursor;
-    EditableText.debugDeterministicCursor = false;
+    tester.binding.platformDispatcher.brieflyShowPasswordTestValue = false;
     addTearDown(() {
-      EditableText.debugDeterministicCursor = debugDeterministicCursor;
+      tester.binding.platformDispatcher.brieflyShowPasswordTestValue = true;
     });
 
     await tester.pumpWidget(
@@ -1159,12 +1158,6 @@ void main() {
     await tester.enterText(find.byType(EditableText), 'AAA');
     await tester.pump();
 
-    tester.binding.platformDispatcher.brieflyShowPasswordTestValue = false;
-    addTearDown(() {
-      tester.binding.platformDispatcher.brieflyShowPasswordTestValue = true;
-    });
-    expect((findRenderEditable(tester).text! as TextSpan).text, '••A');
-    await tester.pump(const Duration(milliseconds: 500));
     expect((findRenderEditable(tester).text! as TextSpan).text, '•••');
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump(const Duration(milliseconds: 500));

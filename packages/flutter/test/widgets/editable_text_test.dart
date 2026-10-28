@@ -5669,6 +5669,42 @@ void main() {
     }),
   );
 
+  testWidgets(
+    'password briefly shows and hides last character independently of cursor blink',
+    (WidgetTester tester) async {
+      await tester.pumpWidget(
+        TestWidgetsApp(
+          home: EditableText(
+            backgroundCursorColor: const Color(0xFF808080),
+            controller: controller,
+            obscureText: true,
+            showCursor: false,
+            cursorOpacityAnimates: defaultTargetPlatform == TargetPlatform.iOS,
+            focusNode: focusNode,
+            style: textStyle,
+            cursorColor: cursorColor,
+          ),
+        ),
+      );
+
+      await tester.enterText(find.byType(EditableText), 'AA');
+      await tester.pump();
+      await tester.enterText(find.byType(EditableText), 'AAA');
+      await tester.pump();
+
+      expect((findRenderEditable(tester).text! as TextSpan).text, '••A');
+      await tester.pump(const Duration(milliseconds: 1499));
+      expect((findRenderEditable(tester).text! as TextSpan).text, '••A');
+      await tester.pump(const Duration(milliseconds: 1));
+      expect((findRenderEditable(tester).text! as TextSpan).text, '•••');
+    },
+    variant: const TargetPlatformVariant(<TargetPlatform>{
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+      TargetPlatform.fuchsia,
+    }),
+  );
+
   group('a11y copy/cut/paste', () {
     Future<void> buildApp(MockTextSelectionControls controls, WidgetTester tester) {
       return tester.pumpWidget(
