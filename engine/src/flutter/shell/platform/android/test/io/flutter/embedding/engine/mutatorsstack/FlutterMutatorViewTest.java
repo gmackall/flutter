@@ -270,6 +270,78 @@ public class FlutterMutatorViewTest {
     assertFalse(view.getFlutterWonGesture());
   }
 
+  @Test
+  public void readyToDisplay_movesViewWithoutRequestingLayoutWhenSizeUnchanged() {
+    final int[] scrollChangedCalls = new int[1];
+    final FlutterMutatorView view =
+        new FlutterMutatorView(ctx) {
+          @Override
+          protected void onScrollChanged(int l, int t, int oldl, int oldt) {
+            super.onScrollChanged(l, t, oldl, oldt);
+            scrollChangedCalls[0]++;
+          }
+        };
+    final FlutterMutatorsStack mutatorStack = new FlutterMutatorsStack();
+    final FrameLayout parent = new FrameLayout(ctx);
+    parent.addView(view);
+
+    view.readyToDisplay(mutatorStack, /*left=*/ 1, /*top=*/ 2, /*width=*/ 10, /*height=*/ 10);
+    parent.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    parent.layout(0, 0, 100, 100);
+    assertEquals(1, view.getLeft());
+    assertEquals(2, view.getTop());
+    assertFalse(view.isLayoutRequested());
+
+    view.readyToDisplay(mutatorStack, /*left=*/ 30, /*top=*/ 40, /*width=*/ 10, /*height=*/ 10);
+
+    // Moving without a size change translates directly without requesting layout.
+    assertFalse(view.isLayoutRequested());
+    assertFalse(parent.isLayoutRequested());
+    assertEquals(30, view.getLeft());
+    assertEquals(40, view.getTop());
+    assertEquals(40, view.getRight());
+    assertEquals(50, view.getBottom());
+    assertEquals(1, scrollChangedCalls[0]);
+
+    // Same position does not fire another scroll callback.
+    view.readyToDisplay(mutatorStack, /*left=*/ 30, /*top=*/ 40, /*width=*/ 10, /*height=*/ 10);
+    assertEquals(1, scrollChangedCalls[0]);
+
+    // LayoutParams margins stay synced so a subsequent layout pass preserves the offset.
+    final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+    assertEquals(30, params.leftMargin);
+    assertEquals(40, params.topMargin);
+    parent.requestLayout();
+    parent.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    parent.layout(0, 0, 100, 100);
+    assertEquals(30, view.getLeft());
+    assertEquals(40, view.getTop());
+
+    // Changing size requests a layout pass.
+    view.readyToDisplay(mutatorStack, /*left=*/ 30, /*top=*/ 40, /*width=*/ 20, /*height=*/ 10);
+    assertTrue(view.isLayoutRequested());
+    assertEquals(20, view.getLayoutParams().width);
+  }
+
+  @Test
+  public void readyToDisplay_beforeLayout_onlyUpdatesLayoutParams() {
+    final FlutterMutatorView view = new FlutterMutatorView(ctx);
+    final FlutterMutatorsStack mutatorStack = new FlutterMutatorsStack();
+
+    view.readyToDisplay(mutatorStack, /*left=*/ 1, /*top=*/ 2, /*width=*/ 10, /*height=*/ 10);
+    view.readyToDisplay(mutatorStack, /*left=*/ 30, /*top=*/ 40, /*width=*/ 10, /*height=*/ 10);
+
+    final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+    assertEquals(30, params.leftMargin);
+    assertEquals(40, params.topMargin);
+    assertEquals(0, view.getLeft());
+    assertEquals(0, view.getTop());
+  }
+
   @Implements(ViewGroup.class)
   public static class ShadowViewGroup extends org.robolectric.shadows.ShadowViewGroup {
     @Implementation

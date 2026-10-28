@@ -974,6 +974,57 @@ public class PlatformViewsController2Test {
   }
 
   @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void onDisplayPlatformView_onlyUpdatesLayoutParamsWhenTheyChange() {
+    PlatformViewRegistryImpl registryImpl = new PlatformViewRegistryImpl();
+    PlatformViewsController2 platformViewsController = new PlatformViewsController2();
+    platformViewsController.setRegistry(registryImpl);
+
+    int platformViewId = 0;
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+    View androidView = spy(new View(ApplicationProvider.getApplicationContext()));
+    when(platformView.getView()).thenReturn(androidView);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    FlutterView flutterView = attach(jni, platformViewsController);
+    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+
+    platformViewsController.onDisplayPlatformView(
+        platformViewId, 0, 0, 10, 10, 10, 10, new FlutterMutatorsStack());
+    flutterView.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    flutterView.layout(0, 0, 100, 100);
+    FlutterMutatorView parentView = platformViewsController.getPlatformViewParent(platformViewId);
+    assertFalse(parentView.isLayoutRequested());
+    assertFalse(flutterView.isLayoutRequested());
+    clearInvocations(androidView);
+
+    // Moving the platform view without changing its size updates its position without requesting
+    // layout on the wrapper, FlutterView, or child view.
+    platformViewsController.onDisplayPlatformView(
+        platformViewId, 5, 5, 10, 10, 10, 10, new FlutterMutatorsStack());
+    verify(androidView, never()).setLayoutParams(any());
+    verify(androidView, never()).bringToFront();
+    assertFalse(parentView.isLayoutRequested());
+    assertFalse(flutterView.isLayoutRequested());
+    assertEquals(5, ((FrameLayout.LayoutParams) parentView.getLayoutParams()).leftMargin);
+    assertEquals(5, ((FrameLayout.LayoutParams) parentView.getLayoutParams()).topMargin);
+
+    platformViewsController.onDisplayPlatformView(
+        platformViewId, 5, 5, 20, 10, 20, 10, new FlutterMutatorsStack());
+    verify(androidView, times(1)).setLayoutParams(any());
+    assertEquals(20, androidView.getLayoutParams().width);
+    assertTrue(parentView.isLayoutRequested());
+  }
+
+  @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
   public void itInformsMutatorViewWhenGestureIsRejected() {
     PlatformViewRegistryImpl registryImpl = new PlatformViewRegistryImpl();

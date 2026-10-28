@@ -15,6 +15,7 @@ import android.graphics.Path;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
@@ -157,11 +158,36 @@ public class FlutterMutatorView extends FrameLayout {
     this.mutatorsStack = mutatorsStack;
     this.left = left;
     this.top = top;
-    FrameLayout.LayoutParams layoutParams =
-        new FrameLayout.LayoutParams(width, height, Gravity.LEFT | Gravity.TOP);
-    layoutParams.leftMargin = left;
-    layoutParams.topMargin = top;
-    setLayoutParams(layoutParams);
+    final ViewGroup.LayoutParams currentParams = getLayoutParams();
+    if (!(currentParams instanceof FrameLayout.LayoutParams)
+        || currentParams.width != width
+        || currentParams.height != height) {
+      FrameLayout.LayoutParams layoutParams =
+          new FrameLayout.LayoutParams(width, height, Gravity.LEFT | Gravity.TOP);
+      layoutParams.leftMargin = left;
+      layoutParams.topMargin = top;
+      setLayoutParams(layoutParams);
+    } else {
+      final FrameLayout.LayoutParams layoutParams = (FrameLayout.LayoutParams) currentParams;
+      layoutParams.leftMargin = left;
+      layoutParams.topMargin = top;
+      layoutParams.gravity = Gravity.LEFT | Gravity.TOP;
+      // If the view hasn't been laid out yet, the initial layout pass will position the view
+      // using the layout params.
+      if (isLaidOut()) {
+        final int dx = left - getLeft();
+        final int dy = top - getTop();
+        if (dx != 0 || dy != 0) {
+          offsetLeftAndRight(dx);
+          offsetTopAndBottom(dy);
+          // Notify ViewTreeObserver.OnScrollChangedListeners (e.g., PopupWindow, AdMob
+          // viewability) that this view moved without a layout pass, matching
+          // RecyclerView.dispatchOnScrolled.
+          onScrollChanged(getScrollX(), getScrollY(), getScrollX(), getScrollY());
+        }
+      }
+      invalidate();
+    }
     setWillNotDraw(false);
   }
 
