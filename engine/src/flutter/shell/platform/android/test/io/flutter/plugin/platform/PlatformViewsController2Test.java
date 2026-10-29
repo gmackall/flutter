@@ -1616,16 +1616,25 @@ public class PlatformViewsController2Test {
     when(surface.lockHardwareCanvas()).thenReturn(canvas);
     when(producer.getSurface()).thenReturn(surface);
 
-    View androidView = spy(new View(ApplicationProvider.getApplicationContext()));
+    final boolean[] drew = new boolean[1];
+    View androidView =
+        new View(ApplicationProvider.getApplicationContext()) {
+          @Override
+          protected void onDraw(Canvas c) {
+            drew[0] = true;
+          }
+        };
     PlatformViewsController2 controller = setUpCapture(androidView, producer);
     androidView.layout(0, 0, 100, 100);
     androidView.scrollTo(15, 35);
+    androidView.setAlpha(0.5f);
 
     assertNotNull(controller.capturePlatformView(0, true));
+    assertTrue(drew[0]);
 
-    org.mockito.InOrder inOrder = inOrder(canvas, androidView, surface);
+    org.mockito.InOrder inOrder = inOrder(canvas, surface);
     inOrder.verify(canvas).translate(-15f, -35f);
-    inOrder.verify(androidView).draw(canvas);
+    inOrder.verify(canvas).saveLayerAlpha(15f, 35f, 115f, 135f, 127);
     inOrder.verify(surface).unlockCanvasAndPost(canvas);
   }
 

@@ -163,8 +163,9 @@ final class PlatformViewCapture {
 
   @UiThread
   private void capture() {
+    final FlutterMutatorView parent = this.parent;
     final View view = this.view;
-    if (released || view == null) {
+    if (released || parent == null || view == null) {
       return;
     }
     if (!canCapture(view)) {
@@ -193,8 +194,7 @@ final class PlatformViewCapture {
     dirty = false;
     try {
       canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
-      canvas.translate(-view.getScrollX(), -view.getScrollY());
-      view.draw(canvas);
+      parent.drawChild(canvas, view);
     } finally {
       surface.unlockCanvasAndPost(canvas);
     }

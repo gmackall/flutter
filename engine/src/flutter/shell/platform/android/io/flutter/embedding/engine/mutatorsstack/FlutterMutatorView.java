@@ -205,6 +205,10 @@ public class FlutterMutatorView extends FrameLayout {
     }
   }
 
+  public void drawChild(@NonNull Canvas canvas, @NonNull View child) {
+    drawChild(canvas, child, getDrawingTime());
+  }
+
   @Override
   public void draw(Canvas canvas) {
     if (!drawToWindow) {
