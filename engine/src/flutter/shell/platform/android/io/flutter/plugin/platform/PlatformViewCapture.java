@@ -61,6 +61,7 @@ final class PlatformViewCapture {
   @Nullable private View view;
   // Whether the platform view may have changed since it was last captured.
   private boolean dirty = true;
+  private int lastVisibility = View.VISIBLE;
   private boolean released = false;
 
   /**
@@ -129,7 +130,8 @@ final class PlatformViewCapture {
   private boolean needsCapture() {
     return dirty
         || (view != null
-            && (view.getWidth() != producer.getWidth()
+            && (view.getVisibility() != lastVisibility
+                || view.getWidth() != producer.getWidth()
                 || view.getHeight() != producer.getHeight()));
   }
 
@@ -175,7 +177,9 @@ final class PlatformViewCapture {
     }
     final int width = view.getWidth();
     final int height = view.getHeight();
-    if (width <= 0 || height <= 0 || view.isLayoutRequested()) {
+    if (width <= 0
+        || height <= 0
+        || (view.getVisibility() != View.GONE && view.isLayoutRequested())) {
       // Not laid out yet; try again next frame.
       return;
     }
@@ -192,6 +196,7 @@ final class PlatformViewCapture {
       return;
     }
     dirty = false;
+    lastVisibility = view.getVisibility();
     try {
       canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
       parent.drawChild(canvas, view);

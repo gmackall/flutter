@@ -1636,6 +1636,25 @@ public class PlatformViewsController2Test {
     inOrder.verify(canvas).translate(-15f, -35f);
     inOrder.verify(canvas).saveLayerAlpha(15f, 35f, 115f, 135f, 127);
     inOrder.verify(surface).unlockCanvasAndPost(canvas);
+
+    // An active legacy Animation on the root view marks the capture dirty for the next frame.
+    android.view.animation.AlphaAnimation anim =
+        new android.view.animation.AlphaAnimation(1f, 0.5f);
+    anim.setDuration(1000);
+    androidView.startAnimation(anim);
+    assertNotNull(controller.capturePlatformView(0, true));
+    assertNotNull(controller.capturePlatformView(0, true));
+    verify(surface, times(3)).unlockCanvasAndPost(canvas);
+
+    // A GONE root view (which has isLayoutRequested() == true and only invalidates its parent)
+    // still clears and posts the buffer on the next parent draw without drawing the hidden child.
+    androidView.clearAnimation();
+    drew[0] = false;
+    androidView.setVisibility(View.GONE);
+    assertTrue(androidView.isLayoutRequested());
+    controller.getPlatformViewParent(0).draw(mock(Canvas.class));
+    assertFalse(drew[0]);
+    verify(surface, times(4)).unlockCanvasAndPost(canvas);
   }
 
   @Test
