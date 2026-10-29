@@ -11,6 +11,7 @@ import static org.mockito.Mockito.*;
 import android.app.Presentation;
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.graphics.Canvas;
 import android.graphics.SurfaceTexture;
 import android.media.Image;
 import android.util.SparseArray;
@@ -1377,6 +1378,80 @@ public class PlatformViewsController2Test {
     assertFalse(parentView.getDrawToWindow());
     controller.disposePlatformView(0);
     assertTrue(parentView.getDrawToWindow());
+  }
+
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      },
+      minSdk = 34)
+  public void capturePlatformView_defersInitializingNewViewUntilStagedTraversalCompletes() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), anyInt(), any()))
+        .thenAnswer(
+            invocation -> {
+              PlatformView pv = mock(PlatformView.class);
+              when(pv.getView()).thenReturn(new View(ApplicationProvider.getApplicationContext()));
+              return pv;
+            });
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    FlutterView flutterView = spy(attach(jni, controller));
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
+    controller.attachToView(flutterView);
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    FlutterRenderer renderer = mock(FlutterRenderer.class);
+    when(renderer.createSurfaceProducer()).thenReturn(producer);
+    controller.attachToFlutterRenderer(renderer);
+
+    createPlatformView(jni, controller, 0, "testType");
+    createPlatformView(jni, controller, 1, "testType");
+
+    // Frame 1 displays view 0 and stages the frame for Choreographer traversal.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // Frame 2 arrives before Frame 1's traversal runs and first displays + captures view 1.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(1, 0, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    java.lang.ref.WeakReference<TextureRegistry.ImageConsumer> consumer =
+        controller.capturePlatformView(1, true);
+    assertNotNull(consumer);
+    assertSame(producer, consumer.get());
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // View 1 must not be added to FlutterView before Frame 1's traversal finishes, and drawing
+    // Frame 1 must not throw on an unready FlutterMutatorView.
+    assertNull(controller.getPlatformViewParent(1));
+    flutterView.draw(new Canvas());
+
+    // Once Frame 1's traversal completes, view 1 is initialized, readyToDisplay, and substituted.
+    ShadowLooper.idleMainLooper();
+    FlutterMutatorView parent1 = controller.getPlatformViewParent(1);
+    assertNotNull(parent1);
+    assertFalse(parent1.getDrawToWindow());
+    flutterView.draw(new Canvas());
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {

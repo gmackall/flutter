@@ -199,6 +199,9 @@ public class FlutterMutatorView extends FrameLayout {
       }
       return;
     }
+    if (mutatorsStack == null) {
+      return;
+    }
 
     // Apply all clippings on the parent canvas.
     canvas.save();
@@ -231,6 +234,9 @@ public class FlutterMutatorView extends FrameLayout {
 
   @Override
   public void dispatchDraw(Canvas canvas) {
+    if (!drawToWindow || mutatorsStack == null) {
+      return;
+    }
     // Apply all the transforms on the child canvas.
     canvas.save();
 

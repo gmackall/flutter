@@ -9,6 +9,7 @@ import static junit.framework.TestCase.*;
 import static org.mockito.Mockito.*;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.view.MotionEvent;
 import android.view.View;
@@ -340,6 +341,25 @@ public class FlutterMutatorViewTest {
     assertEquals(40, params.topMargin);
     assertEquals(0, view.getLeft());
     assertEquals(0, view.getTop());
+  }
+
+  @Test
+  public void draw_beforeReadyToDisplay_doesNotThrow() {
+    final FlutterMutatorView view = new FlutterMutatorView(ctx);
+    final int[] childDraws = new int[1];
+    final View child =
+        new View(ctx) {
+          @Override
+          public void draw(Canvas canvas) {
+            super.draw(canvas);
+            childDraws[0]++;
+          }
+        };
+    view.addView(child);
+
+    view.draw(new Canvas());
+    view.dispatchDraw(new Canvas());
+    assertEquals(0, childDraws[0]);
   }
 
   @Implements(ViewGroup.class)

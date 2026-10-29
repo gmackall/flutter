@@ -38,8 +38,25 @@ final class PlatformViewCapture {
 
   @NonNull private final TextureRegistry.SurfaceProducer producer;
   @NonNull private final WeakReference<TextureRegistry.ImageConsumer> consumerReference;
-  @NonNull private final FlutterMutatorView parent;
+  private final FlutterMutatorView.ContentListener contentListener =
+      new FlutterMutatorView.ContentListener() {
+        @Override
+        public void onContentInvalidated() {
+          dirty = true;
+        }
 
+        @Override
+        public void onContentDrawn() {
+          // Capture in the same frame as the live platform view is drawn, so the
+          // capture lags the live view as little as possible. Drawing the view again
+          // here reuses the display lists that were just recorded.
+          if (dirty) {
+            capture();
+          }
+        }
+      };
+
+  @Nullable private FlutterMutatorView parent;
   @Nullable private View view;
   // Whether the platform view may have changed since it was last captured.
   private boolean dirty = true;
@@ -49,28 +66,9 @@ final class PlatformViewCapture {
    * Creates a capture that renders into {@code producer}, which must also be an {@link
    * TextureRegistry.ImageConsumer} (see {@link #canUseProducer}).
    */
-  PlatformViewCapture(
-      @NonNull TextureRegistry.SurfaceProducer producer, @NonNull FlutterMutatorView parent) {
+  PlatformViewCapture(@NonNull TextureRegistry.SurfaceProducer producer) {
     this.producer = producer;
     this.consumerReference = new WeakReference<>((TextureRegistry.ImageConsumer) producer);
-    this.parent = parent;
-    parent.setContentListener(
-        new FlutterMutatorView.ContentListener() {
-          @Override
-          public void onContentInvalidated() {
-            dirty = true;
-          }
-
-          @Override
-          public void onContentDrawn() {
-            // Capture in the same frame as the live platform view is drawn, so the
-            // capture lags the live view as little as possible. Drawing the view again
-            // here reuses the display lists that were just recorded.
-            if (dirty) {
-              capture();
-            }
-          }
-        });
   }
 
   /** Whether the engine can read captures rendered into {@code producer}. */
@@ -107,9 +105,16 @@ final class PlatformViewCapture {
 
   /** Captures {@code view} now if it may have changed since it was last captured. */
   @UiThread
-  void captureIfNeeded(@NonNull View view) {
+  void captureIfNeeded(@NonNull FlutterMutatorView parent, @NonNull View view) {
     if (released) {
       return;
+    }
+    if (this.parent != parent) {
+      if (this.parent != null) {
+        this.parent.setContentListener(null);
+      }
+      this.parent = parent;
+      parent.setContentListener(contentListener);
     }
     final boolean changed =
         this.view != view
@@ -127,7 +132,7 @@ final class PlatformViewCapture {
    */
   @UiThread
   void setSubstituted(boolean substituted) {
-    if (released) {
+    if (released || parent == null) {
       return;
     }
     parent.setDrawToWindow(!substituted);
@@ -141,8 +146,11 @@ final class PlatformViewCapture {
     }
     released = true;
     view = null;
-    parent.setContentListener(null);
-    parent.setDrawToWindow(true);
+    if (parent != null) {
+      parent.setContentListener(null);
+      parent.setDrawToWindow(true);
+      parent = null;
+    }
     producer.release();
   }
 

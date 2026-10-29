@@ -590,12 +590,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       int viewId, boolean substituted) {
     flushCompletedTraversalIfNeeded();
     final PlatformView platformView = platformViews.get(viewId);
-    final FlutterMutatorView parentView =
-        initializePlatformViewIfNeeded(viewId) ? platformViewParent.get(viewId) : null;
     final View view = platformView == null ? null : platformView.getView();
     if (captureUnsupported
         || textureRegistry == null
-        || parentView == null
         || view == null
         || !PlatformViewCapture.canCapture(view)) {
       releaseCapture(viewId);
@@ -611,22 +608,29 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         logCaptureUnavailable(viewId);
         return null;
       }
-      capture = new PlatformViewCapture(producer, parentView);
+      capture = new PlatformViewCapture(producer);
       captures.put(viewId, capture);
     }
     capturesRequestedThisFrame.add(viewId);
     if (frameStagedForTraversal) {
       final PlatformViewCapture deferredCapture = capture;
       pendingViewOps.add(
-          () -> {
-            deferredCapture.captureIfNeeded(view);
-            deferredCapture.setSubstituted(substituted);
-          });
+          () -> applyCapturePlatformView(viewId, deferredCapture, view, substituted));
     } else {
-      capture.captureIfNeeded(view);
-      capture.setSubstituted(substituted);
+      applyCapturePlatformView(viewId, capture, view, substituted);
     }
     return capture.getConsumerReference();
+  }
+
+  @RequiresApi(API_LEVELS.API_34)
+  private void applyCapturePlatformView(
+      int viewId, @NonNull PlatformViewCapture capture, @NonNull View view, boolean substituted) {
+    if (!initializePlatformViewIfNeeded(viewId)) {
+      return;
+    }
+    final FlutterMutatorView parentView = platformViewParent.get(viewId);
+    capture.captureIfNeeded(parentView, view);
+    capture.setSubstituted(substituted);
   }
 
   @VisibleForTesting
