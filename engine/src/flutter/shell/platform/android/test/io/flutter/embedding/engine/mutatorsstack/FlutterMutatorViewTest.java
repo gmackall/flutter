@@ -418,9 +418,8 @@ public class FlutterMutatorViewTest {
         mock(FlutterMutatorView.ContentListener.class);
     view.setContentListener(listener);
     view.layout(0, 0, 10, 10);
-    final org.mockito.InOrder inOrder = inOrder(listener);
-    inOrder.verify(listener).onContentInvalidated();
-    inOrder.verify(listener).onContentDrawn();
+    verify(listener, never()).onContentInvalidated();
+    verify(listener).onContentDrawn();
   }
 
   @Implements(ViewGroup.class)

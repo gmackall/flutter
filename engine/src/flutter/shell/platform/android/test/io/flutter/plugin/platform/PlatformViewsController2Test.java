@@ -1704,14 +1704,14 @@ public class PlatformViewsController2Test {
     parentView.layout(0, 0, 80, 90);
     verify(surface, times(3)).lockHardwareCanvas();
 
-    // A subsequent native requestLayout() without invalidate() at the same 80x90 outer size still
-    // marks the capture dirty in onLayout and recaptures.
-    androidView.requestLayout();
+    // Changing only parentView's transformed bounding box (100x100) while keeping the child view's
+    // untransformed size (80x90) fixed does not trigger a redundant recapture on layout.
+    controller.onDisplayPlatformView(0, 0, 0, 100, 100, 80, 90, new FlutterMutatorsStack());
     parentView.measure(
-        View.MeasureSpec.makeMeasureSpec(80, View.MeasureSpec.EXACTLY),
-        View.MeasureSpec.makeMeasureSpec(90, View.MeasureSpec.EXACTLY));
-    parentView.layout(0, 0, 80, 90);
-    verify(surface, times(4)).lockHardwareCanvas();
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    parentView.layout(0, 0, 100, 100);
+    verify(surface, times(3)).lockHardwareCanvas();
   }
 
   @Test

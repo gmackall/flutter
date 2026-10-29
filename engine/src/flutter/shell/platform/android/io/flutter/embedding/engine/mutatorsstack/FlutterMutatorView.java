@@ -201,7 +201,6 @@ public class FlutterMutatorView extends FrameLayout {
   protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
     super.onLayout(changed, left, top, right, bottom);
     if (contentListener != null) {
-      contentListener.onContentInvalidated();
       contentListener.onContentDrawn();
     }
   }
