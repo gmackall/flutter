@@ -50,7 +50,7 @@ final class PlatformViewCapture {
           // Capture in the same frame as the live platform view is drawn, so the
           // capture lags the live view as little as possible. Drawing the view again
           // here reuses the display lists that were just recorded.
-          if (dirty) {
+          if (needsCapture()) {
             capture();
           }
         }
@@ -116,14 +116,18 @@ final class PlatformViewCapture {
       this.parent = parent;
       parent.setContentListener(contentListener);
     }
-    final boolean changed =
-        this.view != view
-            || view.getWidth() != producer.getWidth()
-            || view.getHeight() != producer.getHeight();
+    final boolean viewChanged = this.view != view;
     this.view = view;
-    if (dirty || changed) {
+    if (viewChanged || needsCapture()) {
       capture();
     }
+  }
+
+  private boolean needsCapture() {
+    return dirty
+        || (view != null
+            && (view.getWidth() != producer.getWidth()
+                || view.getHeight() != producer.getHeight()));
   }
 
   /**
@@ -181,6 +185,7 @@ final class PlatformViewCapture {
     dirty = false;
     try {
       canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+      canvas.translate(-view.getScrollX(), -view.getScrollY());
       view.draw(canvas);
     } finally {
       surface.unlockCanvasAndPost(canvas);

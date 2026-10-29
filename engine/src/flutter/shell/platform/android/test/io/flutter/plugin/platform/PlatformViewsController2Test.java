@@ -1585,6 +1585,82 @@ public class PlatformViewsController2Test {
     verify(producer, times(1)).release();
   }
 
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void capturePlatformView_translatesCanvasByViewScrollOffset() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    Surface surface = mock(Surface.class);
+    Canvas canvas = mock(Canvas.class);
+    when(surface.isValid()).thenReturn(true);
+    when(surface.lockHardwareCanvas()).thenReturn(canvas);
+    when(producer.getSurface()).thenReturn(surface);
+
+    View androidView = spy(new View(ApplicationProvider.getApplicationContext()));
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+    androidView.layout(0, 0, 100, 100);
+    androidView.scrollTo(15, 35);
+
+    assertNotNull(controller.capturePlatformView(0, true));
+
+    org.mockito.InOrder inOrder = inOrder(canvas, androidView, surface);
+    inOrder.verify(canvas).translate(-15f, -35f);
+    inOrder.verify(androidView).draw(canvas);
+    inOrder.verify(surface).unlockCanvasAndPost(canvas);
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void capturePlatformView_recapturesOnContentDrawnWhenSizeChangesAfterLayout() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    final int[] producerSize = new int[2];
+    doAnswer(
+            invocation -> {
+              producerSize[0] = invocation.getArgument(0);
+              producerSize[1] = invocation.getArgument(1);
+              return null;
+            })
+        .when(producer)
+        .setSize(anyInt(), anyInt());
+    when(producer.getWidth()).thenAnswer(invocation -> producerSize[0]);
+    when(producer.getHeight()).thenAnswer(invocation -> producerSize[1]);
+    Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    when(surface.lockHardwareCanvas()).thenReturn(mock(Canvas.class));
+    when(producer.getSurface()).thenReturn(surface);
+
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+    FlutterMutatorView parentView = controller.getPlatformViewParent(0);
+
+    // Initial frame at 50x50.
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    parentView.layout(0, 0, 50, 50);
+    androidView.layout(0, 0, 50, 50);
+    assertNotNull(controller.capturePlatformView(0, true));
+    assertEquals(50, producer.getWidth());
+    assertEquals(50, producer.getHeight());
+
+    // Resize frame: onDisplayPlatformView updates LayoutParams (marking dirty=true while the view
+    // still has pre-layout 50x50 dimensions), and capturePlatformView runs before layout, clearing
+    // dirty=false at the old 50x50 size.
+    controller.onDisplayPlatformView(0, 0, 0, 80, 90, 80, 90, new FlutterMutatorsStack());
+    assertNotNull(controller.capturePlatformView(0, true));
+    assertEquals(50, producer.getWidth());
+    assertEquals(50, producer.getHeight());
+
+    // When the traversal lays out the view at 80x90 and draws parentView, onContentDrawn() must
+    // detect the post-layout size change via needsCapture() and recapture at 80x90.
+    parentView.layout(0, 0, 80, 90);
+    androidView.layout(0, 0, 80, 90);
+    parentView.draw(new Canvas());
+    assertEquals(80, producer.getWidth());
+    assertEquals(90, producer.getHeight());
+  }
+
   private static ByteBuffer encodeMethodCall(MethodCall call) {
     final ByteBuffer buffer = StandardMethodCodec.INSTANCE.encodeMethodCall(call);
     buffer.rewind();
