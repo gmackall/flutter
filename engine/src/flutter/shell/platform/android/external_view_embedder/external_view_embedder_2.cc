@@ -73,6 +73,14 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
 
 // |ExternalViewEmbedder|
 DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(int64_t view_id) {
+  return CompositeEmbeddedView(view_id, nullptr, nullptr);
+}
+
+// |ExternalViewEmbedder|
+DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(
+    int64_t view_id,
+    DlCanvas* current_canvas,
+    const DlPaint* paint) {
   if (slices_.count(view_id) == 0) {
     return nullptr;
   }
@@ -89,16 +97,21 @@ DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(int64_t view_id) {
   if (!ShouldSubstitute(view_id)) {
     return slice_canvas;
   }
-  // Draw the capture of the platform view, as the platform view would be
-  // composited, at the start of its slice. Everything painted after the
-  // platform view (including the backdrop filters over it) is recorded into
-  // the same slice right after, so the filters see the platform view exactly
-  // like they would see a texture layer platform view. The live platform view
+  // Draw the capture of the platform view in place so backdrop filters painted
+  // after it see the platform view just like a texture layer, while keeping any
+  // enclosing SaveLayer on current_canvas unbroken. The live platform view
   // stops drawing itself (see FlutterMutatorView#setDrawToWindow) and no
   // longer takes part in slicing.
+  substituted_views_.insert(view_id);
+  if (current_canvas != nullptr) {
+    current_canvas->DrawImageRect(
+        snapshots_.at(view_id),
+        DlRect::MakeSize(view_params_.at(view_id).sizePoints()),
+        DlImageSampling::kLinear, paint);
+    return current_canvas;
+  }
   DrawPlatformViewSnapshot(*slice_canvas, view_params_.at(view_id),
                            snapshots_.at(view_id));
-  substituted_views_.insert(view_id);
   return slice_canvas;
 }
 

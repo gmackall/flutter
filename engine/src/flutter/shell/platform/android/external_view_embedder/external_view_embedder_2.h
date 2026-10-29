@@ -87,6 +87,11 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   DlCanvas* CompositeEmbeddedView(int64_t view_id) override;
 
   // |ExternalViewEmbedder|
+  DlCanvas* CompositeEmbeddedView(int64_t view_id,
+                                  DlCanvas* current_canvas,
+                                  const DlPaint* paint) override;
+
+  // |ExternalViewEmbedder|
   void SubmitFlutterView(
       int64_t flutter_view_id,
       GrDirectContext* context,

@@ -499,14 +499,22 @@ TEST(AndroidExternalViewEmbedder2Capture,
     red_paint.setDrawStyle(DlDrawStyle::kFill);
     slice2->DrawRect(DlRect::MakeXYWH(0, 0, 100, 100), red_paint);
 
-    // Paint the grayscale backdrop filter over View 3's bottom half
-    // (35, 25, 65, 50), a blurred red/green badge spanning across the View 1 /
-    // View 4 overlap boundary at x = 12 in (0, 25, 30, 50), and a green badge
-    // over View 2 at (70, 75, 100, 95) in slice3.
-    DlCanvas* slice3 = embedder->CompositeEmbeddedView(3);
+    // Paint View 3 and the grayscale backdrop filter over View 3's bottom half
+    // (35, 25, 65, 50) inside an enclosing SaveLayer on slice2, plus a blurred
+    // red/green badge spanning across the View 1 / View 4 overlap boundary at
+    // x = 12 in (0, 25, 30, 50), and a green badge over View 2 at
+    // (70, 75, 100, 95).
+    const DlRect view3_rect = DlRect::MakeLTRB(35, 0, 65, 50);
+    slice2->SaveLayer(view3_rect, nullptr);
+    slice2->Save();
+    slice2->Translate(35, 0);
+    DlCanvas* slice3 = embedder->CompositeEmbeddedView(3, slice2, nullptr);
+    EXPECT_EQ(slice3, slice2);
+    slice3->Restore();
     slice3->Save();
     slice3->ClipRect(filter_rect);
     slice3->SaveLayer(filter_rect, nullptr, filter.get());
+    slice3->Restore();
     slice3->Restore();
     slice3->Restore();
 

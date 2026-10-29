@@ -480,6 +480,12 @@ class ExternalViewEmbedder {
   // Must be called on the UI thread.
   virtual DlCanvas* CompositeEmbeddedView(int64_t platform_view_id) = 0;
 
+  virtual DlCanvas* CompositeEmbeddedView(int64_t platform_view_id,
+                                          DlCanvas* current_canvas,
+                                          const DlPaint* paint) {
+    return CompositeEmbeddedView(platform_view_id);
+  }
+
   // Prepare for a view to be drawn.
   virtual void PrepareFlutterView(DlISize frame_size,
                                   double device_pixel_ratio) = 0;

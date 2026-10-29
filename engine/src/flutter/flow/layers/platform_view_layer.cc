@@ -39,7 +39,9 @@ void PlatformViewLayer::Paint(PaintContext& context) const {
                        "does not support embedding";
     return;
   }
-  DlCanvas* canvas = context.view_embedder->CompositeEmbeddedView(view_id_);
+  DlPaint paint;
+  DlCanvas* canvas = context.view_embedder->CompositeEmbeddedView(
+      view_id_, context.canvas, context.state_stack.fill(paint));
   context.canvas = canvas;
   context.state_stack.set_delegate(canvas);
   context.rendering_above_platform_view = true;
