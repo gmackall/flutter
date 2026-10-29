@@ -166,7 +166,7 @@ final class PlatformViewCapture {
     }
     final int width = view.getWidth();
     final int height = view.getHeight();
-    if (width <= 0 || height <= 0) {
+    if (width <= 0 || height <= 0 || view.isLayoutRequested()) {
       // Not laid out yet; try again next frame.
       return;
     }

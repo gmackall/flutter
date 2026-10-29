@@ -6,6 +6,7 @@
 
 #include "flutter/fml/platform/android/jni_util.h"
 #include "flutter/fml/platform/android/scoped_java_ref.h"
+#include "flutter/impeller/renderer/backend/vulkan/context_vk.h"
 #include "flutter/shell/platform/android/image_external_texture_vk_impeller.h"
 
 namespace flutter {
@@ -43,17 +44,18 @@ class Source final : public PlatformViewSnapshotSource {
 }  // namespace
 
 PlatformViewCaptureAndroid::PlatformViewCaptureAndroid(
-    std::shared_ptr<impeller::ContextVK> impeller_context,
+    const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade)
-    : impeller_context_(std::move(impeller_context)),
-      jni_facade_(std::move(jni_facade)) {}
+    : android_context_(android_context), jni_facade_(std::move(jni_facade)) {}
 
 std::shared_ptr<PlatformViewSnapshotSource>
 PlatformViewCaptureAndroid::RequestCapture(
     int64_t view_id,
     bool substituted,
     const std::shared_ptr<PlatformViewSnapshotSource>& previous) {
-  if (!impeller_context_) {
+  auto impeller_context = std::static_pointer_cast<impeller::ContextVK>(
+      android_context_.GetImpellerContext());
+  if (!impeller_context) {
     return nullptr;
   }
   JavaLocalRef consumer =
@@ -70,7 +72,7 @@ PlatformViewCaptureAndroid::RequestCapture(
   }
 
   return std::make_shared<Source>(
-      impeller_context_, view_id,
+      impeller_context, view_id,
       fml::jni::ScopedJavaGlobalRef<jobject>(env, consumer.obj()), jni_facade_);
 }
 

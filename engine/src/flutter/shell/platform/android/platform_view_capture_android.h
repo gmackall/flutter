@@ -8,7 +8,7 @@
 #include <memory>
 
 #include "flutter/fml/macros.h"
-#include "flutter/impeller/renderer/backend/vulkan/context_vk.h"
+#include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
 
@@ -23,7 +23,7 @@ namespace flutter {
 class PlatformViewCaptureAndroid final : public PlatformViewCaptureDelegate {
  public:
   PlatformViewCaptureAndroid(
-      std::shared_ptr<impeller::ContextVK> impeller_context,
+      const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade);
 
   // |PlatformViewCaptureDelegate|
@@ -33,7 +33,7 @@ class PlatformViewCaptureAndroid final : public PlatformViewCaptureDelegate {
       const std::shared_ptr<PlatformViewSnapshotSource>& previous) override;
 
  private:
-  const std::shared_ptr<impeller::ContextVK> impeller_context_;
+  const AndroidContext& android_context_;
   const std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(PlatformViewCaptureAndroid);

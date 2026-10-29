@@ -1638,27 +1638,34 @@ public class PlatformViewsController2Test {
 
     // Initial frame at 50x50.
     controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    parentView.measure(
+        View.MeasureSpec.makeMeasureSpec(50, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(50, View.MeasureSpec.EXACTLY));
     parentView.layout(0, 0, 50, 50);
-    androidView.layout(0, 0, 50, 50);
     assertNotNull(controller.capturePlatformView(0, true));
     assertEquals(50, producer.getWidth());
     assertEquals(50, producer.getHeight());
+    verify(surface, times(1)).lockHardwareCanvas();
 
-    // Resize frame: onDisplayPlatformView updates LayoutParams (marking dirty=true while the view
-    // still has pre-layout 50x50 dimensions), and capturePlatformView runs before layout, clearing
-    // dirty=false at the old 50x50 size.
+    // Resize frame: onDisplayPlatformView updates LayoutParams (marking dirty=true and requesting
+    // layout while the view still has pre-layout 50x50 dimensions), and capturePlatformView runs
+    // before layout. Because isLayoutRequested() is true, capture() defers until layout completes.
     controller.onDisplayPlatformView(0, 0, 0, 80, 90, 80, 90, new FlutterMutatorsStack());
     assertNotNull(controller.capturePlatformView(0, true));
     assertEquals(50, producer.getWidth());
     assertEquals(50, producer.getHeight());
+    verify(surface, times(1)).lockHardwareCanvas();
 
-    // When the traversal lays out the view at 80x90 and draws parentView, onContentDrawn() must
-    // detect the post-layout size change via needsCapture() and recapture at 80x90.
+    // When the traversal lays out the view at 80x90 and draws parentView, onContentDrawn()
+    // captures the post-layout 80x90 view without an extra pre-layout capture.
+    parentView.measure(
+        View.MeasureSpec.makeMeasureSpec(80, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(90, View.MeasureSpec.EXACTLY));
     parentView.layout(0, 0, 80, 90);
-    androidView.layout(0, 0, 80, 90);
     parentView.draw(new Canvas());
     assertEquals(80, producer.getWidth());
     assertEquals(90, producer.getHeight());
+    verify(surface, times(2)).lockHardwareCanvas();
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {

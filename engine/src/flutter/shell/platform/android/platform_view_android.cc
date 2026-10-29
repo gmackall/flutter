@@ -436,14 +436,13 @@ std::unique_ptr<Surface> PlatformViewAndroid::CreateRenderingSurface() {
 std::shared_ptr<ExternalViewEmbedder>
 PlatformViewAndroid::CreateExternalViewEmbedder() {
   // Capturing platform views (to apply backdrop filters to them) is only
-  // supported by HCPP, which requires Impeller on Vulkan.
+  // supported by HCPP, which requires Impeller on Vulkan. Avoid querying
+  // RenderingApi() or GetImpellerContext() here on the platform thread so
+  // dynamic Impeller initialization on the raster thread is not blocked.
   std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate;
-  if (android_context_->RenderingApi() ==
-      AndroidRenderingAPI::kImpellerVulkan) {
+  if (android_meets_hcpp_criteria_) {
     capture_delegate = std::make_shared<PlatformViewCaptureAndroid>(
-        std::static_pointer_cast<impeller::ContextVK>(
-            android_context_->GetImpellerContext()),
-        jni_facade_);
+        *android_context_, jni_facade_);
   }
   return std::make_shared<AndroidExternalViewEmbedderWrapper>(
       android_meets_hcpp_criteria_, *android_context_, jni_facade_,
