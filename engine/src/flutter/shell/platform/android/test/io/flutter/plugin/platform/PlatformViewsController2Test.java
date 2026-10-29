@@ -1615,6 +1615,8 @@ public class PlatformViewsController2Test {
     when(surface.isValid()).thenReturn(true);
     when(surface.lockHardwareCanvas()).thenReturn(canvas);
     when(producer.getSurface()).thenReturn(surface);
+    when(producer.getWidth()).thenReturn(100);
+    when(producer.getHeight()).thenReturn(100);
 
     final boolean[] drew = new boolean[1];
     View androidView =
@@ -1637,24 +1639,30 @@ public class PlatformViewsController2Test {
     inOrder.verify(canvas).saveLayerAlpha(15f, 35f, 115f, 135f, 127);
     inOrder.verify(surface).unlockCanvasAndPost(canvas);
 
-    // An active legacy Animation on the root view marks the capture dirty for the next frame.
+    // An active legacy Animation on the root view marks the capture dirty for the next frame, and
+    // when it finishes (with fillAfter=false clearing the animation) it schedules one final
+    // post-animation recapture.
     android.view.animation.AlphaAnimation anim =
         new android.view.animation.AlphaAnimation(1f, 0.5f);
-    anim.setDuration(1000);
+    anim.setDuration(0);
     androidView.startAnimation(anim);
+    anim.setStartTime(0);
+    controller.getPlatformViewParent(0).onDescendantInvalidated(androidView, androidView);
     assertNotNull(controller.capturePlatformView(0, true));
     assertNotNull(controller.capturePlatformView(0, true));
-    verify(surface, times(3)).unlockCanvasAndPost(canvas);
+    assertNull(androidView.getAnimation());
+    assertNotNull(controller.capturePlatformView(0, true));
+    assertNotNull(controller.capturePlatformView(0, true));
+    verify(surface, times(4)).unlockCanvasAndPost(canvas);
 
     // A GONE root view (which has isLayoutRequested() == true and only invalidates its parent)
     // still clears and posts the buffer on the next parent draw without drawing the hidden child.
-    androidView.clearAnimation();
     drew[0] = false;
     androidView.setVisibility(View.GONE);
     assertTrue(androidView.isLayoutRequested());
     controller.getPlatformViewParent(0).draw(mock(Canvas.class));
     assertFalse(drew[0]);
-    verify(surface, times(4)).unlockCanvasAndPost(canvas);
+    verify(surface, times(5)).unlockCanvasAndPost(canvas);
   }
 
   @Test

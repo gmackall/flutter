@@ -62,6 +62,7 @@ final class PlatformViewCapture {
   // Whether the platform view may have changed since it was last captured.
   private boolean dirty = true;
   private int lastVisibility = View.VISIBLE;
+  private boolean hadAnimation = false;
   private boolean released = false;
 
   /**
@@ -131,6 +132,7 @@ final class PlatformViewCapture {
     return dirty
         || (view != null
             && (view.getVisibility() != lastVisibility
+                || (hadAnimation && view.getAnimation() == null)
                 || view.getWidth() != producer.getWidth()
                 || view.getHeight() != producer.getHeight()));
   }
@@ -201,6 +203,7 @@ final class PlatformViewCapture {
       canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
       parent.drawChild(canvas, view);
     } finally {
+      hadAnimation = view.getAnimation() != null;
       surface.unlockCanvasAndPost(canvas);
     }
   }
