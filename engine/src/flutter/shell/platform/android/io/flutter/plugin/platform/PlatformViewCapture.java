@@ -29,8 +29,8 @@ import java.lang.ref.WeakReference;
  * <p>The live platform view stays in the view hierarchy. In addition, while a capture exists, the
  * platform view is drawn into a {@link TextureRegistry.SurfaceProducer} (backed by an {@code
  * ImageReader} of {@code HardwareBuffer}s, the same mechanism that texture layer platform views
- * use) whenever its content changes. The engine imports the latest buffer as a texture and draws
- * it, filtered, above the live platform view where the filter applies.
+ * use) whenever its content changes. The engine imports the latest buffer as a texture and draws it
+ * in place of the live platform view when a filter applies.
  */
 @RequiresApi(API_LEVELS.API_34)
 final class PlatformViewCapture {
