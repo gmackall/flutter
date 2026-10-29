@@ -130,13 +130,42 @@ void AndroidExternalViewEmbedder2::PushFilterToVisitedPlatformViews(
   const DlRect capture_rect =
       rect->Expand(margin, margin).IntersectionOrEmpty(frame);
 
-  for (int64_t view_id : composition_order_) {
+  // Propagate substitution and prefetch backwards to any earlier platform view
+  // that overlaps a later filtered or prefetched view. Substituting a later
+  // view onto the background canvas (z = -2) while leaving an earlier
+  // overlapping view live at z = 0 would invert their painter's order and force
+  // SliceViews to hoist the later view's slice (and part of the backdrop
+  // filter) onto the overlay canvas.
+  for (size_t i = composition_order_.size(); i-- > 0;) {
+    const int64_t view_id = composition_order_[i];
     const DlRect view_rect =
         GetViewRect(view_id, view_params_).IntersectionOrEmpty(frame);
-    if (view_rect.IntersectsWithRect(rect.value())) {
+    bool filtered = filtered_views_.contains(view_id) ||
+                    view_rect.IntersectsWithRect(rect.value());
+    bool nearby = nearby_views_.contains(view_id) || filtered ||
+                  view_rect.IntersectsWithRect(capture_rect);
+    for (size_t k = i + 1;
+         k < composition_order_.size() && (!filtered || !nearby); ++k) {
+      const int64_t later_id = composition_order_[k];
+      if (!filtered_views_.contains(later_id) &&
+          !nearby_views_.contains(later_id)) {
+        continue;
+      }
+      const DlRect later_rect =
+          GetViewRect(later_id, view_params_).IntersectionOrEmpty(frame);
+      if (view_rect.IntersectsWithRect(later_rect)) {
+        if (filtered_views_.contains(later_id)) {
+          filtered = true;
+          nearby = true;
+        } else {
+          nearby = true;
+        }
+      }
+    }
+    if (filtered) {
       filtered_views_.insert(view_id);
     }
-    if (view_rect.IntersectsWithRect(capture_rect)) {
+    if (nearby) {
       nearby_views_.insert(view_id);
     }
   }

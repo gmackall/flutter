@@ -485,5 +485,121 @@ TEST(AndroidExternalViewEmbedder2Capture,
   embedder.reset();
 }
 
+TEST(AndroidExternalViewEmbedder2Capture,
+     SubstitutesEarlierViewOverlappingFilteredLaterViewWithoutOverlayLayer) {
+  using ::testing::_;
+  using ::testing::ByMove;
+  using ::testing::ElementsAre;
+  using ::testing::Return;
+
+  auto jni_mock = std::make_shared<JNIMock>();
+  auto android_context =
+      std::make_shared<AndroidContext>(AndroidRenderingAPI::kSoftware);
+  ThreadHost thread_host("io.flutter.test.OverlappingFilteredLaterView.",
+                         ThreadHost::Type::kPlatform | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi | ThreadHost::Type::kRaster);
+  TaskRunners task_runners(
+      "test",
+      thread_host.platform_thread->GetTaskRunner(),  // platform
+      thread_host.raster_thread->GetTaskRunner(),    // raster
+      thread_host.ui_thread->GetTaskRunner(),        // ui
+      thread_host.io_thread->GetTaskRunner()         // io
+  );
+
+  const DlISize frame_size(400, 400);
+  SurfaceFrame::FramebufferInfo framebuffer_info;
+  auto surface_mock = std::make_unique<SurfaceMock>();
+  EXPECT_CALL(*surface_mock, AcquireFrame(_)).Times(0);
+
+  auto surface_factory = std::make_shared<TestAndroidSurfaceFactory>(
+      fml::MakeCopyable([surface_mock = std::move(surface_mock)]() mutable {
+        auto android_surface = std::make_unique<AndroidSurfaceMock>();
+        EXPECT_CALL(*android_surface, IsValid()).WillRepeatedly(Return(true));
+        EXPECT_CALL(*android_surface, SetNativeWindow(_, _))
+            .WillRepeatedly(Return(true));
+        EXPECT_CALL(*android_surface, CreateGPUSurface(_))
+            .WillOnce(Return(ByMove(std::move(surface_mock))));
+        return android_surface;
+      }));
+
+  fml::RefPtr<AndroidNativeWindow> window =
+      fml::MakeRefCounted<AndroidNativeWindow>(nullptr);
+  EXPECT_CALL(*jni_mock, MaybeResizeSurfaceView(400, 400));
+  EXPECT_CALL(*jni_mock, createOverlaySurface2())
+      .WillOnce(Return(
+          ByMove(std::make_unique<PlatformViewAndroidJNI::OverlayMetadata>(
+              0, window))));
+  EXPECT_CALL(*jni_mock, showOverlaySurface2()).Times(0);
+  EXPECT_CALL(*jni_mock, sealFrameTransactions());
+  EXPECT_CALL(*jni_mock,
+              onDisplayPlatformView2(1, 20, 150, 180, 220, 180, 220, _));
+  EXPECT_CALL(*jni_mock,
+              onDisplayPlatformView2(2, 100, 150, 200, 220, 200, 220, _));
+  EXPECT_CALL(*jni_mock, swapTransaction());
+  EXPECT_CALL(*jni_mock, onEndFrame2());
+
+  auto delegate = std::make_shared<MockCaptureDelegate>();
+  EXPECT_CALL(*delegate, RequestCapture(1, true, _)).WillOnce(Return(nullptr));
+  EXPECT_CALL(*delegate, RequestCapture(2, true, _)).WillOnce(Return(nullptr));
+
+  auto embedder = std::make_unique<AndroidExternalViewEmbedder2>(
+      *android_context, jni_mock, surface_factory, task_runners, delegate);
+  sk_sp<SkSurface> snapshot_surface1 =
+      SkSurfaces::Raster(SkImageInfo::MakeN32Premul(180, 220));
+  sk_sp<SkSurface> snapshot_surface2 =
+      SkSurfaces::Raster(SkImageInfo::MakeN32Premul(200, 220));
+  embedder->SetSnapshotSourceForTesting(
+      1, std::make_shared<FakeSnapshotSource>(
+             DlImageSkia::Make(snapshot_surface1->makeImageSnapshot())));
+  embedder->SetSnapshotSourceForTesting(
+      2, std::make_shared<FakeSnapshotSource>(
+             DlImageSkia::Make(snapshot_surface2->makeImageSnapshot())));
+
+  PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
+    embedder->PrepareFlutterView(frame_size, 1.0);
+
+    // View 1 at (20, 150, 200, 370) is behind View 2 at (100, 150, 300, 370),
+    // overlapping at x = 100..200.
+    MutatorsStack mutators1;
+    DlMatrix matrix1 = DlMatrix::MakeTranslation({20, 150});
+    mutators1.PushTransform(matrix1);
+    embedder->PrerollCompositeEmbeddedView(
+        1, std::make_unique<EmbeddedViewParams>(matrix1, DlSize(180, 220),
+                                                mutators1));
+
+    MutatorsStack mutators2;
+    DlMatrix matrix2 = DlMatrix::MakeTranslation({100, 150});
+    mutators2.PushTransform(matrix2);
+    embedder->PrerollCompositeEmbeddedView(
+        2, std::make_unique<EmbeddedViewParams>(matrix2, DlSize(200, 220),
+                                                mutators2));
+
+    // The backdrop filter at (210, 120, 360, 400) intersects View 2 only (not
+    // View 1), but because View 2 overlaps earlier View 1, View 1 must also be
+    // substituted so View 2's slice and filter are not hoisted to an overlay.
+    auto blur = Blur(14);
+    const DlRect filter_rect = DlRect::MakeLTRB(210, 120, 360, 400);
+    embedder->PushFilterToVisitedPlatformViews(blur, filter_rect);
+    EXPECT_THAT(embedder->GetViewsToCaptureForTesting(), ElementsAre(1, 2));
+
+    embedder->CompositeEmbeddedView(1);
+    DlCanvas* slice2 = embedder->CompositeEmbeddedView(2);
+    PaintBackdropFilter(slice2, blur, filter_rect);
+    EXPECT_TRUE(embedder->IsSubstitutedForTesting(1));
+    EXPECT_TRUE(embedder->IsSubstitutedForTesting(2));
+
+    auto main_frame = std::make_unique<SurfaceFrame>(
+        SkSurfaces::Null(400, 400), framebuffer_info,
+        [](const SurfaceFrame&, DlCanvas*) { return true; },
+        [](const SurfaceFrame&) { return true; }, frame_size);
+    embedder->SubmitFlutterView(0, nullptr, nullptr, std::move(main_frame));
+  });
+  PostTaskSync(task_runners.GetPlatformTaskRunner(), []() {});
+
+  EXPECT_CALL(*jni_mock, destroyOverlaySurface2());
+  embedder->Teardown();
+  embedder.reset();
+}
+
 }  // namespace testing
 }  // namespace flutter
