@@ -41,8 +41,7 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
 
   // |ExternalViewEmbedder|
   DlCanvas* CompositeEmbeddedView(int64_t view_id,
-                                  DlCanvas* current_canvas,
-                                  const DlPaint* paint) override;
+                                  DlCanvas* current_canvas) override;
 
   // |ExternalViewEmbedder|
   void SubmitFlutterView(

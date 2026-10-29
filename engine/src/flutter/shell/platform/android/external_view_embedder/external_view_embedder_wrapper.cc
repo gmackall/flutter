@@ -62,18 +62,16 @@ void AndroidExternalViewEmbedderWrapper::PrerollCompositeEmbeddedView(
 // |ExternalViewEmbedder|
 DlCanvas* AndroidExternalViewEmbedderWrapper::CompositeEmbeddedView(
     int64_t view_id) {
-  return CompositeEmbeddedView(view_id, nullptr, nullptr);
+  return CompositeEmbeddedView(view_id, nullptr);
 }
 
 // |ExternalViewEmbedder|
 DlCanvas* AndroidExternalViewEmbedderWrapper::CompositeEmbeddedView(
     int64_t view_id,
-    DlCanvas* current_canvas,
-    const DlPaint* paint) {
+    DlCanvas* current_canvas) {
   EnsureInitialized();
   if (hcpp_view_embedder_) {
-    return hcpp_view_embedder_->CompositeEmbeddedView(view_id, current_canvas,
-                                                      paint);
+    return hcpp_view_embedder_->CompositeEmbeddedView(view_id, current_canvas);
   } else {
     return non_hcpp_view_embedder_->CompositeEmbeddedView(view_id);
   }

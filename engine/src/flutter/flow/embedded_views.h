@@ -481,8 +481,7 @@ class ExternalViewEmbedder {
   virtual DlCanvas* CompositeEmbeddedView(int64_t platform_view_id) = 0;
 
   virtual DlCanvas* CompositeEmbeddedView(int64_t platform_view_id,
-                                          DlCanvas* current_canvas,
-                                          const DlPaint* paint) {
+                                          DlCanvas* current_canvas) {
     return CompositeEmbeddedView(platform_view_id);
   }
 

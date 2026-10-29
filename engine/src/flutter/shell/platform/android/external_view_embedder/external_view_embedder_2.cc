@@ -73,14 +73,13 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
 
 // |ExternalViewEmbedder|
 DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(int64_t view_id) {
-  return CompositeEmbeddedView(view_id, nullptr, nullptr);
+  return CompositeEmbeddedView(view_id, nullptr);
 }
 
 // |ExternalViewEmbedder|
 DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(
     int64_t view_id,
-    DlCanvas* current_canvas,
-    const DlPaint* paint) {
+    DlCanvas* current_canvas) {
   if (slices_.count(view_id) == 0) {
     return nullptr;
   }
@@ -106,7 +105,7 @@ DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(
   DlCanvas* target = current_canvas != nullptr ? current_canvas : slice_canvas;
   target->DrawImageRect(snapshots_.at(view_id),
                         DlRect::MakeSize(view_params_.at(view_id).sizePoints()),
-                        DlImageSampling::kLinear, paint);
+                        DlImageSampling::kLinear);
   return target;
 }
 

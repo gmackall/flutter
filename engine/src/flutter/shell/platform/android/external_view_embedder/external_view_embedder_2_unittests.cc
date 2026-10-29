@@ -508,7 +508,7 @@ TEST(AndroidExternalViewEmbedder2Capture,
     slice2->SaveLayer(view3_rect, nullptr);
     slice2->Save();
     slice2->Translate(35, 0);
-    DlCanvas* slice3 = embedder->CompositeEmbeddedView(3, slice2, nullptr);
+    DlCanvas* slice3 = embedder->CompositeEmbeddedView(3, slice2);
     EXPECT_EQ(slice3, slice2);
     slice3->Restore();
     slice3->Save();
