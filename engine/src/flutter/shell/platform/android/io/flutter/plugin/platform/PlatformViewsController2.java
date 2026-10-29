@@ -100,6 +100,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   private static final class QueuedFrame {
     final ArrayList<Runnable> viewOps = new ArrayList<>();
+    final ArrayList<Runnable> captureOps = new ArrayList<>();
     final HashSet<Integer> capturesRequested = new HashSet<>();
     @Nullable SurfaceControl.Transaction platformTransaction;
     final ArrayList<SurfaceControl.Transaction> rasterTransactions = new ArrayList<>();
@@ -108,6 +109,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   // Platform-thread only: defers a second frame that arrives before the current Choreographer
   // traversal has drawn the already-staged frame, so at most one frame is consumed per VSync.
   private final ArrayList<Runnable> pendingViewOps = new ArrayList<>();
+  private final ArrayList<Runnable> pendingCaptureOps = new ArrayList<>();
   @Nullable private QueuedFrame queuedFrame;
   private boolean frameStagedForTraversal = false;
   private boolean choreographerCallbackFired = false;
@@ -617,7 +619,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     capturesRequestedThisFrame.add(viewId);
     if (frameStagedForTraversal) {
       final PlatformViewCapture deferredCapture = capture;
-      pendingViewOps.add(
+      pendingCaptureOps.add(
           () -> applyCapturePlatformView(viewId, deferredCapture, view, substituted));
     } else {
       applyCapturePlatformView(viewId, capture, view, substituted);
@@ -628,7 +630,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @RequiresApi(API_LEVELS.API_34)
   private void applyCapturePlatformView(
       int viewId, @NonNull PlatformViewCapture capture, @NonNull View view, boolean substituted) {
-    if (!capturesRequestedThisFrame.contains(viewId) || !initializePlatformViewIfNeeded(viewId)) {
+    if (!initializePlatformViewIfNeeded(viewId)) {
       return;
     }
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
@@ -918,6 +920,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       queuedFrame.viewOps.addAll(pendingViewOps);
       queuedFrame.viewOps.add(() -> lastDisplayedChildIndex = -1);
       pendingViewOps.clear();
+      queuedFrame.captureOps.clear();
+      queuedFrame.captureOps.addAll(pendingCaptureOps);
+      pendingCaptureOps.clear();
       queuedFrame.capturesRequested.clear();
       queuedFrame.capturesRequested.addAll(capturesRequestedThisFrame);
       capturesRequestedThisFrame.clear();
@@ -1018,10 +1023,13 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final SurfaceControl.Transaction savedPendingPlatformTx = pendingPlatformTransaction;
     pendingPlatformTransaction = next.platformTransaction;
 
-    capturesRequestedThisFrame.addAll(next.capturesRequested);
     for (Runnable op : next.viewOps) {
       op.run();
     }
+    for (Runnable op : next.captureOps) {
+      op.run();
+    }
+    capturesRequestedThisFrame.addAll(next.capturesRequested);
 
     activePlatformTransaction = pendingPlatformTransaction;
     pendingPlatformTransaction = savedPendingPlatformTx;
@@ -1067,6 +1075,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     frameStagedForTraversal = false;
     choreographerCallbackFired = false;
     pendingViewOps.clear();
+    pendingCaptureOps.clear();
+    capturesRequestedThisFrame.clear();
     Choreographer.getInstance().removeFrameCallback(traversalFrameCallback);
     if (mainHandler != null) {
       mainHandler.removeCallbacks(traversalCompleteRunnable);

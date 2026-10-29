@@ -1786,6 +1786,99 @@ public class PlatformViewsController2Test {
     verify(producer, times(1)).release();
   }
 
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      },
+      minSdk = 34)
+  public void onEndFrame_coalescedQueuedFramesRunOnlyLatestCaptureOpsAfterViewOps() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    Context context = ApplicationProvider.getApplicationContext();
+    View view0 = new View(context);
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+    when(platformView.getView()).thenReturn(view0);
+    when(viewFactory.create(any(), eq(0), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    FlutterView flutterView =
+        new FlutterView(context, new FlutterSurfaceView(context)) {
+          @Override
+          public AttachedSurfaceControl getRootSurfaceControl() {
+            return rootSurfaceControl;
+          }
+        };
+    attachToFlutterView(jni, controller, flutterView);
+
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    when(surface.lockHardwareCanvas()).thenReturn(mock(Canvas.class));
+    when(producer.getSurface()).thenReturn(surface);
+    FlutterRenderer renderer = mock(FlutterRenderer.class);
+    when(renderer.createSurfaceProducer()).thenReturn(producer);
+    controller.attachToFlutterRenderer(renderer);
+
+    createPlatformView(jni, controller, 0, "testType");
+
+    // Frame 1 displays view 0 at 50x50 and stages the frame for traversal.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    flutterView.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    flutterView.layout(0, 0, 100, 100);
+    assertFalse(flutterView.isLayoutRequested());
+
+    // While Frame 1's traversal is staged, Frame 2 requests capture of view 0 at 50x50 with
+    // substituted=true, and Frame 3 resizes view 0 to 80x90 and requests capture with
+    // substituted=false (prefetch only).
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    assertNotNull(controller.capturePlatformView(0, true));
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 80, 90, 80, 90, new FlutterMutatorsStack());
+    assertNotNull(controller.capturePlatformView(0, false));
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // Replaying the coalesced queuedFrame must run Frame 3's viewOps before Frame 3's captureOp
+    // (skipping Frame 2's superseded captureOp), so capture() sees the pending 80x90 layout request
+    // and defers locking the hardware canvas until post-layout draw, while drawToWindow stays true.
+    ShadowLooper.idleMainLooper();
+    FlutterMutatorView parent0 = controller.getPlatformViewParent(0);
+    assertTrue(parent0.getDrawToWindow());
+    assertEquals(80, view0.getLayoutParams().width);
+    assertEquals(90, view0.getLayoutParams().height);
+    assertTrue(parent0.isLayoutRequested());
+    assertTrue(controller.hasCapture(0));
+    verify(surface, never()).lockHardwareCanvas();
+  }
+
   private static ByteBuffer encodeMethodCall(MethodCall call) {
     final ByteBuffer buffer = StandardMethodCodec.INSTANCE.encodeMethodCall(call);
     buffer.rewind();

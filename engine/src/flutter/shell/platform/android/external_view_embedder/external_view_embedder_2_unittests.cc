@@ -412,57 +412,71 @@ TEST(AndroidExternalViewEmbedder2Capture,
               0, window))));
   EXPECT_CALL(*jni_mock, showOverlaySurface2());
   EXPECT_CALL(*jni_mock, sealFrameTransactions());
-  EXPECT_CALL(*jni_mock,
-              onDisplayPlatformView2(1, 0, 0, 100, 100, 100, 100, _));
-  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(2, 0, 0, 50, 50, 50, 50, _));
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(1, 0, 0, 30, 100, 30, 100, _));
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(2, 70, 0, 30, 100, 30, 100, _));
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(3, 35, 0, 30, 50, 30, 50, _));
   EXPECT_CALL(*jni_mock, swapTransaction());
   EXPECT_CALL(*jni_mock, onEndFrame2());
 
   auto delegate = std::make_shared<MockCaptureDelegate>();
   EXPECT_CALL(*delegate, RequestCapture(1, false, _)).WillOnce(Return(nullptr));
-  EXPECT_CALL(*delegate, RequestCapture(2, true, _)).WillOnce(Return(nullptr));
+  EXPECT_CALL(*delegate, RequestCapture(2, false, _)).WillOnce(Return(nullptr));
+  EXPECT_CALL(*delegate, RequestCapture(3, true, _)).WillOnce(Return(nullptr));
 
   auto embedder = std::make_unique<AndroidExternalViewEmbedder2>(
       *android_context, jni_mock, surface_factory, task_runners, delegate);
   sk_sp<SkSurface> snapshot_surface =
-      SkSurfaces::Raster(SkImageInfo::MakeN32Premul(50, 50));
+      SkSurfaces::Raster(SkImageInfo::MakeN32Premul(30, 50));
   embedder->SetSnapshotSourceForTesting(
-      2, std::make_shared<FakeSnapshotSource>(
+      3, std::make_shared<FakeSnapshotSource>(
              DlImageSkia::Make(snapshot_surface->makeImageSnapshot())));
 
   PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
     embedder->PrepareFlutterView(frame_size, 1.0);
 
-    // View 1 at (0, 0, 100, 100) is not under a filter (e.g. a SurfaceView).
+    // View 1 at (0, 0, 30, 100) and View 2 at (70, 0, 100, 100) are not under
+    // a filter (and do not overlap View 3).
     MutatorsStack mutators1;
     DlMatrix matrix1 = DlMatrix::MakeTranslation({0, 0});
     mutators1.PushTransform(matrix1);
     embedder->PrerollCompositeEmbeddedView(
-        1, std::make_unique<EmbeddedViewParams>(matrix1, DlSize(100, 100),
+        1, std::make_unique<EmbeddedViewParams>(matrix1, DlSize(30, 100),
                                                 mutators1));
 
-    // View 2 at (0, 0, 50, 50) is substituted under a backdrop filter at
-    // (25, 25, 50, 50), and has a transparent capture at (10, 10).
     MutatorsStack mutators2;
-    DlMatrix matrix2 = DlMatrix::MakeTranslation({0, 0});
+    DlMatrix matrix2 = DlMatrix::MakeTranslation({70, 0});
     mutators2.PushTransform(matrix2);
     embedder->PrerollCompositeEmbeddedView(
-        2, std::make_unique<EmbeddedViewParams>(matrix2, DlSize(50, 50),
+        2, std::make_unique<EmbeddedViewParams>(matrix2, DlSize(30, 100),
                                                 mutators2));
-    embedder->PushFilterToVisitedPlatformViews(
-        Blur(5), DlRect::MakeLTRB(25, 25, 50, 50));
 
-    // A red Flutter widget painted between View 1 and View 2 covers (0, 0, 50,
-    // 50) in View 1's overlay layer.
-    DlCanvas* slice1 = embedder->CompositeEmbeddedView(1);
+    // View 3 at (35, 0, 65, 50) sits between View 1 and View 2 without
+    // overlapping either, and is substituted under a backdrop filter at
+    // (35, 25, 65, 50).
+    MutatorsStack mutators3;
+    DlMatrix matrix3 = DlMatrix::MakeTranslation({35, 0});
+    mutators3.PushTransform(matrix3);
+    embedder->PrerollCompositeEmbeddedView(
+        3, std::make_unique<EmbeddedViewParams>(matrix3, DlSize(30, 50),
+                                                mutators3));
+    embedder->PushFilterToVisitedPlatformViews(
+        Blur(5), DlRect::MakeLTRB(35, 25, 65, 50));
+
+    embedder->CompositeEmbeddedView(1);
+
+    // A red Flutter widget painted after View 2 covers (0, 0, 100, 50),
+    // intersecting both View 1 and View 2 so SliceViews joins their overlay
+    // bounds to (0, 0, 100, 50) spanning across View 3 at (40, 10).
+    DlCanvas* slice2 = embedder->CompositeEmbeddedView(2);
     DlPaint red_paint;
     red_paint.setColor(DlColor::kRed());
     red_paint.setDrawStyle(DlDrawStyle::kFill);
-    slice1->DrawRect(DlRect::MakeXYWH(0, 0, 50, 50), red_paint);
+    slice2->DrawRect(DlRect::MakeXYWH(0, 0, 100, 50), red_paint);
 
-    embedder->CompositeEmbeddedView(2);
+    embedder->CompositeEmbeddedView(3);
     EXPECT_FALSE(embedder->IsSubstitutedForTesting(1));
-    EXPECT_TRUE(embedder->IsSubstitutedForTesting(2));
+    EXPECT_FALSE(embedder->IsSubstitutedForTesting(2));
+    EXPECT_TRUE(embedder->IsSubstitutedForTesting(3));
 
     auto main_frame = std::make_unique<SurfaceFrame>(
         SkSurfaces::Null(100, 100), framebuffer_info,
@@ -472,13 +486,13 @@ TEST(AndroidExternalViewEmbedder2Capture,
   });
   PostTaskSync(task_runners.GetPlatformTaskRunner(), []() {});
 
-  // Because view 2 is substituted (not a live native view at z = 0), it must
-  // not punch a DlClipOp::kDifference hole out of view 1's overlay layer at
-  // (10, 10).
+  // Because view 3 is substituted (not a live native view at z = 0), it must
+  // not punch a DlClipOp::kDifference hole out of the earlier overlay layer at
+  // (40, 10).
   SkBitmap bitmap;
   bitmap.allocN32Pixels(100, 100);
   ASSERT_TRUE(overlay_sk_surface->readPixels(bitmap, 0, 0));
-  EXPECT_EQ(bitmap.getColor(10, 10), SK_ColorRED);
+  EXPECT_EQ(bitmap.getColor(40, 10), SK_ColorRED);
 
   EXPECT_CALL(*jni_mock, destroyOverlaySurface2());
   embedder->Teardown();
@@ -599,6 +613,47 @@ TEST(AndroidExternalViewEmbedder2Capture,
   EXPECT_CALL(*jni_mock, destroyOverlaySurface2());
   embedder->Teardown();
   embedder.reset();
+}
+
+TEST(AndroidExternalViewEmbedder2Capture,
+     DoesNotSubstituteLaterViewOverlappingUncapturedEarlierView) {
+  auto embedder = MakeEmbedder();
+  auto source2 = std::make_shared<FakeSnapshotSource>(
+      sk_make_sp<FakeImage>(DlISize(200, 200)));
+  embedder->SetSnapshotSourceForTesting(2, source2);
+
+  // View 1 at (0, 0, 100, 100) has no snapshot yet (or is uncapturable) and
+  // overlaps View 2 at (50, 0, 150, 100), which is under a filter.
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  AddPlatformView(*embedder, 2, DlRect::MakeLTRB(50, 0, 150, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(100, 0, 150, 100)));
+  EXPECT_THAT(embedder->GetViewsToCaptureForTesting(),
+              ::testing::ElementsAre(1, 2));
+
+  ASSERT_NE(embedder->CompositeEmbeddedView(1), nullptr);
+  ASSERT_NE(embedder->CompositeEmbeddedView(2), nullptr);
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(1));
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(2));
+  EXPECT_EQ(source2->acquire_count, 0);
+
+  // On the next frame, once View 1 also has a snapshot, both View 1 and View 2
+  // are substituted.
+  auto source1 = std::make_shared<FakeSnapshotSource>(
+      sk_make_sp<FakeImage>(DlISize(200, 200)));
+  embedder->SetSnapshotSourceForTesting(1, source1);
+  embedder->PrepareFlutterView(kFrameSize, kDpr);
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  AddPlatformView(*embedder, 2, DlRect::MakeLTRB(50, 0, 150, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(100, 0, 150, 100)));
+
+  ASSERT_NE(embedder->CompositeEmbeddedView(1), nullptr);
+  ASSERT_NE(embedder->CompositeEmbeddedView(2), nullptr);
+  EXPECT_TRUE(embedder->IsSubstitutedForTesting(1));
+  EXPECT_TRUE(embedder->IsSubstitutedForTesting(2));
+  EXPECT_EQ(source1->acquire_count, 1);
+  EXPECT_EQ(source2->acquire_count, 1);
 }
 
 }  // namespace testing

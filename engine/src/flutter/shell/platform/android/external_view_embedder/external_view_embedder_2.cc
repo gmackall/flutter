@@ -208,7 +208,36 @@ void AndroidExternalViewEmbedder2::AcquireSnapshots() {
     std::scoped_lock lock(capture_state_->mutex);
     sources = capture_state_->sources;
   }
-  for (int64_t view_id : filtered_views_) {
+  const DlRect screen_bounds = DlRect::MakeSize(frame_size_);
+  for (size_t i = 0; i < composition_order_.size(); ++i) {
+    int64_t view_id = composition_order_[i];
+    if (filtered_views_.count(view_id) == 0) {
+      continue;
+    }
+    auto params_it = view_params_.find(view_id);
+    if (params_it == view_params_.end()) {
+      continue;
+    }
+    DlRect view_rect = GetViewRect(view_id, view_params_);
+    if (!view_rect.IntersectsWithRect(screen_bounds)) {
+      continue;
+    }
+    bool blocked_by_earlier_unsubstituted = false;
+    for (size_t j = 0; j < i; ++j) {
+      int64_t earlier_id = composition_order_[j];
+      if (ShouldSubstitute(earlier_id)) {
+        continue;
+      }
+      DlRect earlier_rect = GetViewRect(earlier_id, view_params_);
+      if (earlier_rect.IntersectsWithRect(screen_bounds) &&
+          earlier_rect.IntersectsWithRect(view_rect)) {
+        blocked_by_earlier_unsubstituted = true;
+        break;
+      }
+    }
+    if (blocked_by_earlier_unsubstituted) {
+      continue;
+    }
     auto it = sources.find(view_id);
     if (it == sources.end() || !it->second) {
       continue;
