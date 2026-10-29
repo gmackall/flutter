@@ -628,7 +628,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @RequiresApi(API_LEVELS.API_34)
   private void applyCapturePlatformView(
       int viewId, @NonNull PlatformViewCapture capture, @NonNull View view, boolean substituted) {
-    if (!initializePlatformViewIfNeeded(viewId)) {
+    if (!capturesRequestedThisFrame.contains(viewId) || !initializePlatformViewIfNeeded(viewId)) {
       return;
     }
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
@@ -913,6 +913,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         queuedFrame = new QueuedFrame();
       }
       queuedFrame.viewOps.addAll(pendingViewOps);
+      queuedFrame.viewOps.add(() -> lastDisplayedChildIndex = -1);
       pendingViewOps.clear();
       queuedFrame.capturesRequested.clear();
       queuedFrame.capturesRequested.addAll(capturesRequestedThisFrame);
@@ -1014,10 +1015,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final SurfaceControl.Transaction savedPendingPlatformTx = pendingPlatformTransaction;
     pendingPlatformTransaction = next.platformTransaction;
 
+    capturesRequestedThisFrame.addAll(next.capturesRequested);
     for (Runnable op : next.viewOps) {
       op.run();
     }
-    capturesRequestedThisFrame.addAll(next.capturesRequested);
 
     activePlatformTransaction = pendingPlatformTransaction;
     pendingPlatformTransaction = savedPendingPlatformTx;

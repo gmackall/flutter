@@ -1102,10 +1102,16 @@ public class PlatformViewsController2Test {
 
     FlutterJNI jni = new FlutterJNI();
     jni.attachToNative();
-    FlutterView flutterView = spy(attach(jni, controller));
     AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
-    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
-    controller.attachToView(flutterView);
+    Context context = ApplicationProvider.getApplicationContext();
+    FlutterView flutterView =
+        new FlutterView(context, new FlutterSurfaceView(context)) {
+          @Override
+          public AttachedSurfaceControl getRootSurfaceControl() {
+            return rootSurfaceControl;
+          }
+        };
+    attachToFlutterView(jni, controller, flutterView);
 
     createPlatformView(jni, controller, 1, "testType");
 
@@ -1180,10 +1186,16 @@ public class PlatformViewsController2Test {
 
     FlutterJNI jni = new FlutterJNI();
     jni.attachToNative();
-    FlutterView flutterView = spy(attach(jni, controller));
     AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
-    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
-    controller.attachToView(flutterView);
+    Context context = ApplicationProvider.getApplicationContext();
+    FlutterView flutterView =
+        new FlutterView(context, new FlutterSurfaceView(context)) {
+          @Override
+          public AttachedSurfaceControl getRootSurfaceControl() {
+            return rootSurfaceControl;
+          }
+        };
+    attachToFlutterView(jni, controller, flutterView);
 
     createPlatformView(jni, controller, 1, "testType");
 
@@ -1411,10 +1423,16 @@ public class PlatformViewsController2Test {
 
     FlutterJNI jni = new FlutterJNI();
     jni.attachToNative();
-    FlutterView flutterView = spy(attach(jni, controller));
     AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
-    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
-    controller.attachToView(flutterView);
+    Context context = ApplicationProvider.getApplicationContext();
+    FlutterView flutterView =
+        new FlutterView(context, new FlutterSurfaceView(context)) {
+          @Override
+          public AttachedSurfaceControl getRootSurfaceControl() {
+            return rootSurfaceControl;
+          }
+        };
+    attachToFlutterView(jni, controller, flutterView);
     TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
     FlutterRenderer renderer = mock(FlutterRenderer.class);
     when(renderer.createSurfaceProducer()).thenReturn(producer);
@@ -1666,6 +1684,106 @@ public class PlatformViewsController2Test {
     assertEquals(80, producer.getWidth());
     assertEquals(90, producer.getHeight());
     verify(surface, times(2)).lockHardwareCanvas();
+  }
+
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      },
+      minSdk = 34)
+  public void
+      onEndFrame_coalescedQueuedFramesResetLastDisplayedChildIndexAndSkipSupersededCapture() {
+    ShadowRecordingTransaction.reset();
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), anyInt(), any()))
+        .thenAnswer(
+            invocation -> {
+              PlatformView pv = mock(PlatformView.class);
+              when(pv.getView()).thenReturn(new View(ApplicationProvider.getApplicationContext()));
+              return pv;
+            });
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    FlutterView flutterView =
+        new FlutterView(context, new FlutterSurfaceView(context)) {
+          @Override
+          public AttachedSurfaceControl getRootSurfaceControl() {
+            return rootSurfaceControl;
+          }
+        };
+    attachToFlutterView(jni, controller, flutterView);
+
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    when(surface.lockHardwareCanvas()).thenReturn(mock(Canvas.class));
+    when(producer.getSurface()).thenReturn(surface);
+    FlutterRenderer renderer = mock(FlutterRenderer.class);
+    when(renderer.createSurfaceProducer()).thenReturn(producer);
+    controller.attachToFlutterRenderer(renderer);
+
+    createPlatformView(jni, controller, 0, "testType");
+    createPlatformView(jni, controller, 1, "testType");
+
+    // Frame 1 displays view 0 then view 1 and stages the frame for traversal.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onDisplayPlatformView(1, 0, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    flutterView.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(120, View.MeasureSpec.EXACTLY));
+    flutterView.layout(0, 0, 100, 120);
+    assertFalse(flutterView.isLayoutRequested());
+
+    // While Frame 1's traversal is still staged, Frame 2 and Frame 3 both arrive and coalesce into
+    // queuedFrame. Frame 2 requests a capture of view 0, then Frame 3 drops that capture while both
+    // frames display view 0 and view 1 in the same order with unchanged bounds.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 5, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    assertNotNull(controller.capturePlatformView(0, true));
+    controller.onDisplayPlatformView(1, 5, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 10, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onDisplayPlatformView(1, 10, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // Replaying the coalesced queuedFrame must reset lastDisplayedChildIndex between Frame 2 and
+    // Frame 3 (so neither calls bringToFront()/requestLayout()) and must skip Frame 2's superseded
+    // capture without locking the hardware canvas before releasing the capture.
+    ShadowLooper.idleMainLooper();
+    FlutterMutatorView parent0 = controller.getPlatformViewParent(0);
+    FlutterMutatorView parent1 = controller.getPlatformViewParent(1);
+    assertTrue(flutterView.indexOfChild(parent0) < flutterView.indexOfChild(parent1));
+    assertFalse(flutterView.isLayoutRequested());
+    assertFalse(controller.hasCapture(0));
+    verify(surface, never()).lockHardwareCanvas();
+    verify(producer, times(1)).release();
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {
