@@ -1454,6 +1454,137 @@ public class PlatformViewsController2Test {
     flutterView.draw(new Canvas());
   }
 
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void onDisplayPlatformView_preservesRelativeZOrderWithoutSteadyStateBringToFront() {
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    when(viewFactory.create(any(), anyInt(), any()))
+        .thenAnswer(
+            invocation -> {
+              PlatformView pv = mock(PlatformView.class);
+              when(pv.getView()).thenReturn(new View(ApplicationProvider.getApplicationContext()));
+              return pv;
+            });
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    FlutterView flutterView = attach(jni, controller);
+
+    createPlatformView(jni, controller, 0, "testType");
+    createPlatformView(jni, controller, 1, "testType");
+
+    // Frame 1 displays view 0 then view 1, followed by layout.
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onDisplayPlatformView(1, 0, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onEndFrame();
+    flutterView.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    flutterView.layout(0, 0, 100, 100);
+
+    FlutterMutatorView parent0 = controller.getPlatformViewParent(0);
+    FlutterMutatorView parent1 = controller.getPlatformViewParent(1);
+    assertTrue(flutterView.indexOfChild(parent0) < flutterView.indexOfChild(parent1));
+    assertFalse(flutterView.isLayoutRequested());
+
+    // Frame 2 displays view 0 then view 1 in the same order: neither calls bringToFront(), so
+    // FlutterView does not request a layout pass.
+    controller.onDisplayPlatformView(0, 5, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onDisplayPlatformView(1, 5, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onEndFrame();
+    assertTrue(flutterView.indexOfChild(parent0) < flutterView.indexOfChild(parent1));
+    assertFalse(flutterView.isLayoutRequested());
+
+    // Frame 3 swaps composition order to view 1 then view 0: view 0 is brought to front.
+    controller.onDisplayPlatformView(1, 5, 60, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onDisplayPlatformView(0, 5, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    controller.onEndFrame();
+    assertTrue(flutterView.indexOfChild(parent1) < flutterView.indexOfChild(parent0));
+  }
+
+  @Test
+  @Config(
+      shadows = {
+        ShadowFlutterJNI.class,
+        ShadowPlatformTaskQueue.class,
+        ShadowRecordingTransaction.class
+      },
+      minSdk = 34)
+  public void
+      capturePlatformView_defersReleaseAndSchedulesFrameWhenSubstitutedViewBecomesUncapturable() {
+    ShadowRecordingTransaction.reset();
+    ShadowFlutterJNI.scheduleFrameCalls = 0;
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+
+    Context context = ApplicationProvider.getApplicationContext();
+    FrameLayout containerView = new FrameLayout(context);
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+    when(platformView.getView()).thenReturn(containerView);
+    when(viewFactory.create(any(), eq(0), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    controller.setFlutterJNI(jni);
+    FlutterView flutterView = spy(attach(jni, controller));
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    doReturn(rootSurfaceControl).when(flutterView).getRootSurfaceControl();
+    controller.attachToView(flutterView);
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    FlutterRenderer renderer = mock(FlutterRenderer.class);
+    when(renderer.createSurfaceProducer()).thenReturn(producer);
+    controller.attachToFlutterRenderer(renderer);
+
+    createPlatformView(jni, controller, 0, "testType");
+
+    // Frame 1 substitutes view 0 and stages the frame for Choreographer traversal.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    assertNotNull(controller.capturePlatformView(0, true));
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    FlutterMutatorView parent0 = controller.getPlatformViewParent(0);
+    assertFalse(parent0.getDrawToWindow());
+
+    // Before Frame 1's traversal runs, view 0 adds a SurfaceView child (making it uncapturable)
+    // and Frame 2 arrives with substituted=true.
+    containerView.addView(new SurfaceView(context));
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.onDisplayPlatformView(0, 0, 0, 50, 50, 50, 50, new FlutterMutatorsStack());
+    assertNull(controller.capturePlatformView(0, true));
+    controller.swapTransactions();
+    controller.onEndFrame();
+
+    // A fallback frame is scheduled so the engine re-renders without substitution, and the capture
+    // is not released until Frame 1's staged traversal completes.
+    assertEquals(1, ShadowFlutterJNI.scheduleFrameCalls);
+    assertFalse(parent0.getDrawToWindow());
+    verify(producer, never()).release();
+
+    // Once Frame 1's traversal finishes, Frame 2 commits and releases the unrequested capture.
+    ShadowLooper.idleMainLooper();
+    assertTrue(parent0.getDrawToWindow());
+    assertFalse(controller.hasCapture(0));
+    verify(producer, times(1)).release();
+  }
+
   private static ByteBuffer encodeMethodCall(MethodCall call) {
     final ByteBuffer buffer = StandardMethodCodec.INSTANCE.encodeMethodCall(call);
     buffer.rewind();
@@ -1731,8 +1862,14 @@ public class PlatformViewsController2Test {
   @Implements(FlutterJNI.class)
   public static class ShadowFlutterJNI {
     private static SparseArray<ByteBuffer> replies = new SparseArray<>();
+    static int scheduleFrameCalls = 0;
 
     public ShadowFlutterJNI() {}
+
+    @Implementation
+    public void scheduleFrame() {
+      scheduleFrameCalls++;
+    }
 
     @Implementation
     public boolean getIsSoftwareRenderingEnabled() {

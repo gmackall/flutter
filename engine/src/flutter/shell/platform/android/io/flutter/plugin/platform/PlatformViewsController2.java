@@ -111,6 +111,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @Nullable private QueuedFrame queuedFrame;
   private boolean frameStagedForTraversal = false;
   private boolean choreographerCallbackFired = false;
+  private int lastDisplayedChildIndex = -1;
   @Nullable private Handler mainHandler;
   private final Runnable traversalCompleteRunnable =
       () -> {
@@ -595,7 +596,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         || textureRegistry == null
         || view == null
         || !PlatformViewCapture.canCapture(view)) {
-      releaseCapture(viewId);
+      if (substituted && flutterJNI != null && flutterJNI.isAttached()) {
+        flutterJNI.scheduleFrame();
+      }
       logCaptureUnavailable(viewId);
       return null;
     }
@@ -729,9 +732,12 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
-    if (flutterView.indexOfChild(parentView) != flutterView.getChildCount() - 1) {
+    int childIndex = flutterView.indexOfChild(parentView);
+    if (childIndex < lastDisplayedChildIndex) {
       parentView.bringToFront();
+      childIndex = flutterView.getChildCount() - 1;
     }
+    lastDisplayedChildIndex = childIndex;
 
     final View view = platformViews.get(viewId).getView();
     if (view != null) {
@@ -932,6 +938,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   private void commitActiveFrame() {
+    lastDisplayedChildIndex = -1;
     // Captures are only kept while a backdrop filter covers the platform view.
     releaseUnrequestedCaptures();
 
@@ -1052,6 +1059,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   private void dropTransactions() {
+    lastDisplayedChildIndex = -1;
     frameStagedForTraversal = false;
     choreographerCallbackFired = false;
     pendingViewOps.clear();

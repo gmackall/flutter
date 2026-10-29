@@ -104,6 +104,8 @@ DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(int64_t view_id) {
 }
 
 bool AndroidExternalViewEmbedder2::ShouldSubstitute(int64_t view_id) const {
+  // Until the first capture is produced (or if the view cannot be captured),
+  // fall back to standard HCPP composition.
   return filtered_views_.contains(view_id) && snapshots_.contains(view_id);
 }
 
@@ -362,10 +364,14 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       // For all following platform views that would cover this overlay,
       // emulate the effect by adding a difference clip. This makes the
       // overlays appear as if they are under the platform view, when in
-      // reality there is only a single layer.
+      // reality there is only a single layer. Substituted views are drawn in
+      // place in their slice rather than as live views above the base surface,
+      // so they do not cover the overlay.
       for (size_t j = i + 1; j < composition_order_.size(); j++) {
-        DlRect view_rect = GetViewRect(composition_order_[j], view_params_);
-        overlay_canvas->ClipRect(view_rect, DlClipOp::kDifference);
+        if (!substituted_views_.contains(composition_order_[j])) {
+          DlRect view_rect = GetViewRect(composition_order_[j], view_params_);
+          overlay_canvas->ClipRect(view_rect, DlClipOp::kDifference);
+        }
       }
 
       slices_[view_id]->render_into(overlay_canvas);
