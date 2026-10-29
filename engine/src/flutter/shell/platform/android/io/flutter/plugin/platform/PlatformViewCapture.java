@@ -30,7 +30,7 @@ import java.lang.ref.WeakReference;
  * platform view is drawn into a {@link TextureRegistry.SurfaceProducer} (backed by an {@code
  * ImageReader} of {@code HardwareBuffer}s, the same mechanism that texture layer platform views
  * use) whenever its content changes. The engine imports the latest buffer as a texture and draws it
- * in place of the live platform view when a filter applies.
+ * in place of the live platform view while the filter applies.
  */
 @RequiresApi(API_LEVELS.API_34)
 final class PlatformViewCapture {

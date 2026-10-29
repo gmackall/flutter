@@ -514,7 +514,7 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
                        substituted_views);
 
         jni_facade->swapTransaction();
-        jni_facade_->onEndFrame2();
+        jni_facade->onEndFrame2();
       }));
 
   views_visible_last_frame_.clear();
