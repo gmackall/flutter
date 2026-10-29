@@ -1703,6 +1703,15 @@ public class PlatformViewsController2Test {
         View.MeasureSpec.makeMeasureSpec(90, View.MeasureSpec.EXACTLY));
     parentView.layout(0, 0, 80, 90);
     verify(surface, times(3)).lockHardwareCanvas();
+
+    // A subsequent native requestLayout() without invalidate() at the same 80x90 outer size still
+    // marks the capture dirty in onLayout and recaptures.
+    androidView.requestLayout();
+    parentView.measure(
+        View.MeasureSpec.makeMeasureSpec(80, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(90, View.MeasureSpec.EXACTLY));
+    parentView.layout(0, 0, 80, 90);
+    verify(surface, times(4)).lockHardwareCanvas();
   }
 
   @Test
