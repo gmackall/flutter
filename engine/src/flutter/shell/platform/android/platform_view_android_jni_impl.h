@@ -151,6 +151,8 @@ class PlatformViewAndroidJNIImpl final : public PlatformViewAndroidJNI {
 
   void hidePlatformView2(int32_t view_id) override;
 
+  JavaLocalRef capturePlatformView2(int32_t view_id, bool substituted) override;
+
   void showOverlaySurface2() override;
 
   void hideOverlaySurface2() override;

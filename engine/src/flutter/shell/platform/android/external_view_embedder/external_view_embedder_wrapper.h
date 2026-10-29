@@ -28,7 +28,8 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
       const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
       std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-      const TaskRunners& task_runners);
+      const TaskRunners& task_runners,
+      std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate = nullptr);
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -76,6 +77,11 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
   // |ExternalViewEmbedder|
   void Teardown() override;
 
+  // |ExternalViewEmbedder|
+  void PushFilterToVisitedPlatformViews(
+      const std::shared_ptr<DlImageFilter>& filter,
+      const DlRect& filter_rect) override;
+
  private:
   void EnsureInitialized();
 
@@ -85,6 +91,7 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
   const TaskRunners& task_runners_;
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   std::shared_ptr<AndroidSurfaceFactory> surface_factory_;
+  std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate_;
   std::unique_ptr<AndroidExternalViewEmbedder> non_hcpp_view_embedder_;
   std::unique_ptr<AndroidExternalViewEmbedder2> hcpp_view_embedder_;
 };

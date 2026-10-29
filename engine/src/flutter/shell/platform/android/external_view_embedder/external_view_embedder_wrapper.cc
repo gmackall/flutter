@@ -18,13 +18,15 @@ AndroidExternalViewEmbedderWrapper::AndroidExternalViewEmbedderWrapper(
     const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
     std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-    const TaskRunners& task_runners)
+    const TaskRunners& task_runners,
+    std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate)
     : ExternalViewEmbedder(),
       meets_hcpp_criteria_(meets_hcpp_criteria),
       android_context_(android_context),
       task_runners_(task_runners),
       jni_facade_(std::move(jni_facade)),
-      surface_factory_(std::move(surface_factory)) {}
+      surface_factory_(std::move(surface_factory)),
+      capture_delegate_(std::move(capture_delegate)) {}
 
 void AndroidExternalViewEmbedderWrapper::EnsureInitialized() {
   if (non_hcpp_view_embedder_ || hcpp_view_embedder_) {
@@ -35,7 +37,8 @@ void AndroidExternalViewEmbedderWrapper::EnsureInitialized() {
       impeller::ContextVK::Cast(*android_context_.GetImpellerContext())
           .GetShouldEnableSurfaceControlSwapchain()) {
     hcpp_view_embedder_ = std::make_unique<AndroidExternalViewEmbedder2>(
-        android_context_, jni_facade_, surface_factory_, task_runners_);
+        android_context_, jni_facade_, surface_factory_, task_runners_,
+        capture_delegate_);
   } else {
     non_hcpp_view_embedder_ = std::make_unique<AndroidExternalViewEmbedder>(
         android_context_, jni_facade_, surface_factory_, task_runners_);
@@ -163,6 +166,18 @@ void AndroidExternalViewEmbedderWrapper::Teardown() {
     hcpp_view_embedder_->Teardown();
   } else {
     non_hcpp_view_embedder_->Teardown();
+  }
+}
+
+// |ExternalViewEmbedder|
+void AndroidExternalViewEmbedderWrapper::PushFilterToVisitedPlatformViews(
+    const std::shared_ptr<DlImageFilter>& filter,
+    const DlRect& filter_rect) {
+  EnsureInitialized();
+  // Only HCPP applies backdrop filters to platform views this way; the
+  // non-HCPP embedder has always ignored this hook.
+  if (hcpp_view_embedder_) {
+    hcpp_view_embedder_->PushFilterToVisitedPlatformViews(filter, filter_rect);
   }
 }
 

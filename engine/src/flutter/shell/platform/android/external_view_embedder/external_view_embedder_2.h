@@ -6,7 +6,10 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_EXTERNAL_VIEW_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_2_H_
 
 #include <atomic>
+#include <memory>
+#include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "flutter/common/task_runners.h"
 #include "flutter/flow/embedded_views.h"
@@ -17,6 +20,41 @@
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace flutter {
+
+//------------------------------------------------------------------------------
+/// A source of offscreen captures of the content of one HCPP platform view.
+class PlatformViewSnapshotSource {
+ public:
+  virtual ~PlatformViewSnapshotSource() = default;
+
+  /// Returns the most recent capture of the platform view, or null if there
+  /// is none yet. Called on the raster thread.
+  virtual sk_sp<DlImage> AcquireLatestImage() = 0;
+};
+
+//------------------------------------------------------------------------------
+/// Asks the platform to capture HCPP platform views that lie under a backdrop
+/// filter, so the filter can be applied to them. All methods are called on
+/// the platform thread.
+class PlatformViewCaptureDelegate {
+ public:
+  virtual ~PlatformViewCaptureDelegate() = default;
+
+  /// Starts (or continues) capturing the platform view |view_id|: the
+  /// platform renders the view offscreen now if it has changed since its last
+  /// capture, and again whenever its content changes. Returns the source of
+  /// the captured images (reusing |previous| when the underlying consumer has
+  /// not changed), or null if the view cannot be captured (for example
+  /// because it renders through a SurfaceView).
+  ///
+  /// If |substituted|, this frame draws the capture in place of the platform
+  /// view, so the platform must not draw the live view (it stays in place for
+  /// input and accessibility).
+  virtual std::shared_ptr<PlatformViewSnapshotSource> RequestCapture(
+      int64_t view_id,
+      bool substituted,
+      const std::shared_ptr<PlatformViewSnapshotSource>& previous) = 0;
+};
 
 //------------------------------------------------------------------------------
 /// Allows to embed Android views into a Flutter application.
@@ -37,7 +75,8 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
       const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
       std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-      const TaskRunners& task_runners);
+      const TaskRunners& task_runners,
+      std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate = nullptr);
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -84,6 +123,23 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
 
   // |ExternalViewEmbedder|
   void Teardown() override;
+
+  // |ExternalViewEmbedder|
+  void PushFilterToVisitedPlatformViews(
+      const std::shared_ptr<DlImageFilter>& filter,
+      const DlRect& filter_rect) override;
+
+  // The platform views that are under a backdrop filter this frame, and so
+  // need to be captured.
+  std::vector<int64_t> GetViewsToCaptureForTesting() const;
+
+  // Installs a capture source as if the capture delegate had returned it.
+  void SetSnapshotSourceForTesting(
+      int64_t view_id,
+      std::shared_ptr<PlatformViewSnapshotSource> source);
+
+  // Whether |view_id| is drawn from its capture this frame.
+  bool IsSubstitutedForTesting(int64_t view_id) const;
 
   // Gets the rect based on the device pixel ratio of a platform view displayed
   // on the screen.
@@ -139,6 +195,82 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
 
   // The set of platform views that were visible in the last frame.
   absl::flat_hash_set<int64_t> views_visible_last_frame_;
+
+  // ---------------------------------------------------------------------------
+  // Backdrop filters over platform views.
+  //
+  // A backdrop filter that is painted after a platform view only sees the
+  // Flutter content of its own slice, because the platform view itself lives
+  // in the Android view hierarchy. When that happens, the platform is asked to
+  // render the platform view offscreen (a capture). While a capture is
+  // available, the platform view is "substituted": its capture is drawn at the
+  // start of its slice, exactly where a texture layer platform view would be
+  // drawn, so the backdrop filters painted after it filter it like any other
+  // Flutter content. The live platform view stays in the view hierarchy (for
+  // input and accessibility) but does not draw, and is left out of slicing.
+  // If a capture is unavailable the frame is rendered exactly as without this
+  // feature.
+  // ---------------------------------------------------------------------------
+
+  // Tuning constant: how far around a backdrop filter (as a fraction of the
+  // frame height) platform views are captured ahead of time, giving lead time
+  // for views scrolling under a filter. Capped to frames where some platform
+  // view is already covered by a filter.
+  static constexpr DlScalar kCapturePrefetchFraction = 0.25f;
+
+  // State shared with tasks posted to the platform thread.
+  struct CaptureState {
+    std::mutex mutex;
+    // Guarded by mutex (written only on the platform thread). The capture
+    // source of each captured platform view.
+    std::unordered_map<int64_t, std::shared_ptr<PlatformViewSnapshotSource>>
+        sources;
+  };
+
+  // Asks the platform to capture exactly |views|. Platform thread.
+  static void UpdateCaptures(
+      const std::shared_ptr<PlatformViewCaptureDelegate>& delegate,
+      const std::shared_ptr<CaptureState>& state,
+      const std::vector<int64_t>& views,
+      const std::vector<int64_t>& substituted_views);
+
+  // The platform views to capture this frame.
+  std::vector<int64_t> ViewsToCapture() const;
+
+  // Acquires the latest capture of each platform view in |filtered_views_|.
+  void AcquireSnapshots();
+
+  // Whether |view_id| is under a backdrop filter and has a capture this frame.
+  bool ShouldSubstitute(int64_t view_id) const;
+
+  // Draws |image|, a capture of a platform view, as the platform view with
+  // |params| would be composited.
+  static void DrawPlatformViewSnapshot(DlCanvas& canvas,
+                                       const EmbeddedViewParams& params,
+                                       const sk_sp<DlImage>& image);
+
+  // Null if capturing platform views is not supported.
+  const std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate_;
+
+  const std::shared_ptr<CaptureState> capture_state_ =
+      std::make_shared<CaptureState>();
+
+  // On-screen platform views that intersect a backdrop filter painted after
+  // them this frame. Substituted when they have a capture.
+  absl::flat_hash_set<int64_t> filtered_views_;
+
+  // On-screen platform views in the prefetch neighborhood of a backdrop filter
+  // painted after them this frame (a superset of filtered_views_).
+  absl::flat_hash_set<int64_t> nearby_views_;
+
+  // This frame's captures, keyed by platform view id.
+  std::unordered_map<int64_t, sk_sp<DlImage>> snapshots_;
+
+  // Whether snapshots_ has been populated this frame.
+  bool snapshots_acquired_ = false;
+
+  // The platform views drawn from their capture this frame.
+  absl::flat_hash_set<int64_t> substituted_views_;
 
   // Destroys the surfaces created from the surface factory.
   // This method schedules a task on the platform thread, and waits for

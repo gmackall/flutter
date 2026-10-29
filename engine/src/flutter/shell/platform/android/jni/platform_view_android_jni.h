@@ -280,6 +280,24 @@ class PlatformViewAndroidJNI {
 
   virtual void hidePlatformView2(int32_t view_id) = 0;
 
+  //----------------------------------------------------------------------------
+  /// @brief      Asks the platform to capture the HCPP platform view |view_id|
+  ///             offscreen, because it is under a backdrop filter. The view is
+  ///             rendered now if it changed since its last capture, and again
+  ///             whenever its content changes, until the capture is no longer
+  ///             requested in a frame. If |substituted|, the engine draws
+  ///             the capture in place of the platform view this frame, so the
+  ///             live view must not draw.
+  ///
+  /// @return     A weak reference to the `ImageConsumer` that receives the
+  ///             captures (the same object for as long as the capture
+  ///             continues), or null if the view cannot be captured.
+  ///
+  /// @note       Must be called from the platform thread.
+  ///
+  virtual JavaLocalRef capturePlatformView2(int32_t view_id,
+                                            bool substituted) = 0;
+
   virtual void showOverlaySurface2() = 0;
 
   virtual void hideOverlaySurface2() = 0;

@@ -86,6 +86,59 @@ public class FlutterMutatorView extends FrameLayout {
     }
   }
 
+  /** Observes changes to the content of the platform view in this view. */
+  public interface ContentListener {
+    /** A descendant (the platform view or any view inside it) was invalidated. */
+    void onContentInvalidated();
+
+    /** This view, and so the platform view, was just drawn. */
+    void onContentDrawn();
+  }
+
+  @Nullable private ContentListener contentListener;
+  private boolean drawToWindow = true;
+
+  /**
+   * Sets whether this view draws the platform view to the window.
+   *
+   * <p>When false, the engine draws a capture of the platform view in its place. This view stays
+   * laid out and visible, so touch, focus and accessibility work as usual, and {@link
+   * ContentListener} is still notified so the capture can be kept up to date.
+   */
+  public void setDrawToWindow(boolean drawToWindow) {
+    if (this.drawToWindow == drawToWindow) {
+      return;
+    }
+    this.drawToWindow = drawToWindow;
+    invalidate();
+  }
+
+  @VisibleForTesting
+  public boolean getDrawToWindow() {
+    return drawToWindow;
+  }
+
+  /**
+   * Sets a listener that is notified when the content of the platform view may have changed, and
+   * again once it has been drawn.
+   *
+   * <p>While a listener is set, this view redraws whenever a descendant is invalidated, so that
+   * {@link ContentListener#onContentDrawn()} is called in the same frame as the platform view is
+   * drawn. Used to keep offscreen captures of the platform view up to date.
+   */
+  public void setContentListener(@Nullable ContentListener listener) {
+    contentListener = listener;
+  }
+
+  @Override
+  public void onDescendantInvalidated(@NonNull View child, @NonNull View target) {
+    super.onDescendantInvalidated(child, target);
+    if (contentListener != null) {
+      contentListener.onContentInvalidated();
+      invalidate();
+    }
+  }
+
   /** Unsets any active focus listener. */
   public void unsetOnDescendantFocusChangeListener() {
     final ViewTreeObserver observer = getViewTreeObserver();
@@ -114,6 +167,13 @@ public class FlutterMutatorView extends FrameLayout {
 
   @Override
   public void draw(Canvas canvas) {
+    if (!drawToWindow) {
+      if (contentListener != null) {
+        contentListener.onContentDrawn();
+      }
+      return;
+    }
+
     // Apply all clippings on the parent canvas.
     canvas.save();
     for (Path path : mutatorsStack.getFinalClippingPaths()) {
@@ -137,6 +197,10 @@ public class FlutterMutatorView extends FrameLayout {
 
     super.draw(canvas);
     canvas.restore();
+
+    if (contentListener != null) {
+      contentListener.onContentDrawn();
+    }
   }
 
   @Override

@@ -1169,6 +1169,165 @@ public class PlatformViewsController2Test {
     ShadowLooper.idleMainLooper();
   }
 
+  // Sets up a controller with a created HCPP platform view (id 0) whose view is
+  // `androidView`, and a renderer whose surface producers are `producer`.
+  private PlatformViewsController2 setUpCapture(
+      View androidView, TextureRegistry.SurfaceProducer producer) {
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(new PlatformViewRegistryImpl());
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+    when(platformView.getView()).thenReturn(androidView);
+    when(viewFactory.create(any(), eq(0), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    attach(jni, controller);
+    FlutterRenderer renderer = mock(FlutterRenderer.class);
+    when(renderer.createSurfaceProducer()).thenReturn(producer);
+    controller.attachToFlutterRenderer(renderer);
+
+    createPlatformView(jni, controller, 0, "testType");
+    assertTrue(controller.initializePlatformViewIfNeeded(0));
+    return controller;
+  }
+
+  private static TextureRegistry.SurfaceProducer mockCaptureProducer() {
+    return mock(
+        TextureRegistry.SurfaceProducer.class,
+        withSettings().extraInterfaces(TextureRegistry.ImageConsumer.class));
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void capturePlatformViewReturnsStableConsumer() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+
+    java.lang.ref.WeakReference<TextureRegistry.ImageConsumer> first =
+        controller.capturePlatformView(0, false);
+    assertNotNull(first);
+    assertSame(producer, first.get());
+    // Later frames reuse the same capture.
+    assertSame(first, controller.capturePlatformView(0, false));
+    assertTrue(controller.hasCapture(0));
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void captureIsReleasedWhenAFrameDoesNotRequestIt() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+
+    assertNotNull(controller.capturePlatformView(0, false));
+    // Requested in this frame: kept.
+    controller.onEndFrame();
+    assertTrue(controller.hasCapture(0));
+    verify(producer, never()).release();
+
+    // Not requested in the next frame: released.
+    controller.onEndFrame();
+    assertFalse(controller.hasCapture(0));
+    verify(producer).release();
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void surfaceViewsAreNotCaptured() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    SurfaceView androidView = new SurfaceView(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+
+    assertNull(controller.capturePlatformView(0, false));
+    assertFalse(controller.hasCapture(0));
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void producersThatAreNotImageConsumersAreNotUsed() {
+    // For example the SurfaceTexture-based producer used on devices with broken
+    // HardwareBuffer support.
+    TextureRegistry.SurfaceProducer producer = mock(TextureRegistry.SurfaceProducer.class);
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+    FlutterRenderer renderer = mock(FlutterRenderer.class);
+    when(renderer.createSurfaceProducer()).thenReturn(producer);
+    controller.attachToFlutterRenderer(renderer);
+
+    assertNull(controller.capturePlatformView(0, false));
+    assertNull(controller.capturePlatformView(0, false));
+    verify(renderer, times(1)).createSurfaceProducer();
+    verify(producer, times(1)).release();
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void captureIsReleasedWhenThePlatformViewIsDisposed() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+
+    assertNotNull(controller.capturePlatformView(0, false));
+    controller.disposePlatformView(0);
+    assertFalse(controller.hasCapture(0));
+    verify(producer).release();
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void substitutedViewsDoNotDrawToTheWindow() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+    FlutterMutatorView parentView = controller.getPlatformViewParent(0);
+    assertTrue(parentView.getDrawToWindow());
+
+    // Captured ahead of time only: the live view keeps drawing.
+    assertNotNull(controller.capturePlatformView(0, false));
+    assertTrue(parentView.getDrawToWindow());
+
+    // Drawn by the engine from the capture: the live view stops drawing.
+    assertNotNull(controller.capturePlatformView(0, true));
+    assertFalse(parentView.getDrawToWindow());
+    controller.onEndFrame();
+    assertFalse(parentView.getDrawToWindow());
+
+    // No longer under a filter: the capture is released and the live view draws again.
+    controller.onEndFrame();
+    assertTrue(parentView.getDrawToWindow());
+  }
+
+  @Test
+  @Config(
+      shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class},
+      minSdk = 34)
+  public void disposingASubstitutedViewRestoresWindowDrawing() {
+    TextureRegistry.SurfaceProducer producer = mockCaptureProducer();
+    View androidView = new View(ApplicationProvider.getApplicationContext());
+    PlatformViewsController2 controller = setUpCapture(androidView, producer);
+    FlutterMutatorView parentView = controller.getPlatformViewParent(0);
+
+    assertNotNull(controller.capturePlatformView(0, true));
+    assertFalse(parentView.getDrawToWindow());
+    controller.disposePlatformView(0);
+    assertTrue(parentView.getDrawToWindow());
+  }
+
   private static ByteBuffer encodeMethodCall(MethodCall call) {
     final ByteBuffer buffer = StandardMethodCodec.INSTANCE.encodeMethodCall(call);
     buffer.rewind();

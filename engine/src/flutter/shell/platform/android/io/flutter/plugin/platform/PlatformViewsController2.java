@@ -48,6 +48,8 @@ import io.flutter.embedding.engine.systemchannels.PlatformViewTouch;
 import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel2;
 import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.view.AccessibilityBridge;
+import io.flutter.view.TextureRegistry;
+import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -98,6 +100,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   private static final class QueuedFrame {
     final ArrayList<Runnable> viewOps = new ArrayList<>();
+    final HashSet<Integer> capturesRequested = new HashSet<>();
     @Nullable SurfaceControl.Transaction platformTransaction;
     final ArrayList<SurfaceControl.Transaction> rasterTransactions = new ArrayList<>();
   }
@@ -130,6 +133,14 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   private SurfaceControl overlaySurfaceControl = null;
 
   private final HashSet<Integer> viewsWithPendingSurfaceCallback = new HashSet<>();
+
+  // Platform-thread only. Offscreen captures of platform views that are under a backdrop filter;
+  // see capturePlatformView().
+  @Nullable private TextureRegistry textureRegistry;
+  private final SparseArray<PlatformViewCapture> captures = new SparseArray<>();
+  private final HashSet<Integer> capturesRequestedThisFrame = new HashSet<>();
+  private boolean captureUnsupported = false;
+  private boolean loggedCaptureUnavailable = false;
 
   public PlatformViewsController2() {
     accessibilityEventsDelegate = new AccessibilityEventsDelegate();
@@ -277,6 +288,8 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       platformViewsChannel.setPlatformViewsHandler(null);
     }
     destroyOverlaySurface();
+    releaseAllCaptures();
+    textureRegistry = null;
     platformViewsChannel = null;
     context = null;
   }
@@ -316,6 +329,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     }
 
     destroyOverlaySurface();
+    releaseAllCaptures();
     flutterView = null;
 
     if (Build.VERSION.SDK_INT >= API_LEVELS.API_34) {
@@ -552,6 +566,112 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
   public void attachToFlutterRenderer(@NonNull FlutterRenderer flutterRenderer) {
     androidTouchProcessor = new AndroidTouchProcessor(flutterRenderer, /*trackMotionEvents=*/ true);
+    textureRegistry = flutterRenderer;
+  }
+
+  /**
+   * Called when the platform view {@code viewId} is under a backdrop filter in the current frame.
+   *
+   * <p>Renders the platform view offscreen if it changed since it was last captured, and keeps
+   * doing so whenever its content changes, until a frame no longer requests the capture (see {@link
+   * #onEndFrame()}). The engine applies the backdrop filter to the captures.
+   *
+   * <p>If {@code substituted}, the engine draws the capture in place of the platform view this
+   * frame, so the live view stops drawing itself (it stays in place for input and accessibility)
+   * until a frame no longer substitutes it.
+   *
+   * @return a weak reference to the image consumer that receives the captures, or null if the view
+   *     cannot be captured, in which case the backdrop filter does not apply to it.
+   */
+  @UiThread
+  @Nullable
+  @RequiresApi(API_LEVELS.API_34)
+  public WeakReference<TextureRegistry.ImageConsumer> capturePlatformView(
+      int viewId, boolean substituted) {
+    flushCompletedTraversalIfNeeded();
+    final PlatformView platformView = platformViews.get(viewId);
+    final FlutterMutatorView parentView =
+        initializePlatformViewIfNeeded(viewId) ? platformViewParent.get(viewId) : null;
+    final View view = platformView == null ? null : platformView.getView();
+    if (captureUnsupported
+        || textureRegistry == null
+        || parentView == null
+        || view == null
+        || !PlatformViewCapture.canCapture(view)) {
+      releaseCapture(viewId);
+      logCaptureUnavailable(viewId);
+      return null;
+    }
+    PlatformViewCapture capture = captures.get(viewId);
+    if (capture == null) {
+      final TextureRegistry.SurfaceProducer producer = textureRegistry.createSurfaceProducer();
+      if (!PlatformViewCapture.canUseProducer(producer)) {
+        captureUnsupported = true;
+        producer.release();
+        logCaptureUnavailable(viewId);
+        return null;
+      }
+      capture = new PlatformViewCapture(producer, parentView);
+      captures.put(viewId, capture);
+    }
+    capturesRequestedThisFrame.add(viewId);
+    if (frameStagedForTraversal) {
+      final PlatformViewCapture deferredCapture = capture;
+      pendingViewOps.add(
+          () -> {
+            deferredCapture.captureIfNeeded(view);
+            deferredCapture.setSubstituted(substituted);
+          });
+    } else {
+      capture.captureIfNeeded(view);
+      capture.setSubstituted(substituted);
+    }
+    return capture.getConsumerReference();
+  }
+
+  @VisibleForTesting
+  boolean hasCapture(int viewId) {
+    return captures.get(viewId) != null;
+  }
+
+  private void logCaptureUnavailable(int viewId) {
+    if (!loggedCaptureUnavailable) {
+      loggedCaptureUnavailable = true;
+      Log.d(
+          TAG,
+          "Platform view "
+              + viewId
+              + " is under a backdrop filter but cannot be captured; the filter will not apply to"
+              + " it.");
+    }
+  }
+
+  private void releaseCapture(int viewId) {
+    final PlatformViewCapture capture = captures.get(viewId);
+    if (capture != null) {
+      capture.release();
+      captures.remove(viewId);
+    }
+  }
+
+  // Releases the captures that were not requested since the last call.
+  private void releaseUnrequestedCaptures() {
+    for (int i = captures.size() - 1; i >= 0; i--) {
+      final int viewId = captures.keyAt(i);
+      if (!capturesRequestedThisFrame.contains(viewId)) {
+        captures.valueAt(i).release();
+        captures.removeAt(i);
+      }
+    }
+    capturesRequestedThisFrame.clear();
+  }
+
+  private void releaseAllCaptures() {
+    for (int i = 0; i < captures.size(); i++) {
+      captures.valueAt(i).release();
+    }
+    captures.clear();
+    capturesRequestedThisFrame.clear();
   }
 
   /**
@@ -766,6 +886,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       }
       queuedFrame.viewOps.addAll(pendingViewOps);
       pendingViewOps.clear();
+      queuedFrame.capturesRequested.clear();
+      queuedFrame.capturesRequested.addAll(capturesRequestedThisFrame);
+      capturesRequestedThisFrame.clear();
       if (activePlatformTransaction != null) {
         if (queuedFrame.platformTransaction == null) {
           queuedFrame.platformTransaction = activePlatformTransaction;
@@ -787,6 +910,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   private void commitActiveFrame() {
+    // Captures are only kept while a backdrop filter covers the platform view.
+    releaseUnrequestedCaptures();
+
     final SurfaceControl.Transaction platformTx = activePlatformTransaction;
     activePlatformTransaction = null;
 
@@ -862,6 +988,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     for (Runnable op : next.viewOps) {
       op.run();
     }
+    capturesRequestedThisFrame.addAll(next.capturesRequested);
 
     activePlatformTransaction = pendingPlatformTransaction;
     pendingPlatformTransaction = savedPendingPlatformTx;
@@ -1090,6 +1217,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         @Override
         public void dispose(int viewId) {
           viewsWithPendingSurfaceCallback.remove(viewId);
+          releaseCapture(viewId);
           final PlatformView platformView = platformViews.get(viewId);
           if (platformView == null) {
             Log.e(TAG, "Disposing unknown platform view with id: " + viewId);

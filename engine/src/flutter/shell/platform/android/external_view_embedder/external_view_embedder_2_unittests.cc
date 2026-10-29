@@ -1,0 +1,321 @@
+// Copyright 2013 The Flutter Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#define FML_USED_ON_EMBEDDER
+
+#include <memory>
+
+#include "flutter/display_list/effects/dl_color_filter.h"
+#include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
+#include "flutter/display_list/effects/image_filters/dl_color_filter_image_filter.h"
+#include "flutter/flow/embedded_views.h"
+#include "flutter/fml/message_loop.h"
+#include "flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.h"
+#include "flutter/shell/platform/android/jni/jni_mock.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
+namespace flutter {
+namespace testing {
+
+namespace {
+
+constexpr double kDpr = 2.0;
+const DlISize kFrameSize = DlISize(1000, 2000);
+
+TaskRunners GetTaskRunnersForFixture() {
+  fml::MessageLoop::EnsureInitializedForCurrentThread();
+  auto& loop = fml::MessageLoop::GetCurrent();
+  return {
+      "test",
+      loop.GetTaskRunner(),  // platform
+      loop.GetTaskRunner(),  // raster
+      loop.GetTaskRunner(),  // ui
+      loop.GetTaskRunner()   // io
+  };
+}
+
+class FakeImage final : public DlImage {
+ public:
+  explicit FakeImage(DlISize size) : size_(size) {}
+  Type GetImageType() const override { return Type::kSkia; }
+  bool isTextureBacked() const override { return true; }
+  DlColorSpace GetColorSpace() const override { return DlColorSpace::kSRGB; }
+  bool isOpaque() const override { return true; }
+  bool isUIThreadSafe() const override { return true; }
+  DlISize GetSize() const override { return size_; }
+  size_t GetApproximateByteSize() const override { return 0; }
+
+ private:
+  DlISize size_;
+};
+
+class FakeSnapshotSource final : public PlatformViewSnapshotSource {
+ public:
+  explicit FakeSnapshotSource(sk_sp<DlImage> image)
+      : image_(std::move(image)) {}
+  sk_sp<DlImage> AcquireLatestImage() override {
+    acquire_count++;
+    return image_;
+  }
+  int acquire_count = 0;
+
+ private:
+  sk_sp<DlImage> image_;
+};
+
+class MockCaptureDelegate final : public PlatformViewCaptureDelegate {
+ public:
+  MOCK_METHOD(std::shared_ptr<PlatformViewSnapshotSource>,
+              RequestCapture,
+              (int64_t view_id,
+               bool substituted,
+               const std::shared_ptr<PlatformViewSnapshotSource>& previous),
+              (override));
+};
+
+std::unique_ptr<AndroidExternalViewEmbedder2> MakeEmbedder(
+    std::shared_ptr<PlatformViewCaptureDelegate> delegate =
+        std::make_shared<MockCaptureDelegate>()) {
+  static AndroidContext android_context(AndroidRenderingAPI::kSoftware);
+  auto embedder = std::make_unique<AndroidExternalViewEmbedder2>(
+      android_context, std::make_shared<JNIMock>(), nullptr,
+      GetTaskRunnersForFixture(), std::move(delegate));
+  embedder->PrepareFlutterView(kFrameSize, kDpr);
+  return embedder;
+}
+
+// Prerolls a platform view covering `rect_points` (logical pixels), as the
+// platform view layer would.
+void AddPlatformView(AndroidExternalViewEmbedder2& embedder,
+                     int64_t view_id,
+                     const DlRect& rect_points) {
+  DlMatrix matrix =
+      DlMatrix::MakeScale({kDpr, kDpr, 1}) *
+      DlMatrix::MakeTranslation({rect_points.GetX(), rect_points.GetY(), 0});
+  MutatorsStack stack;
+  stack.PushTransform(matrix);
+  embedder.PrerollCompositeEmbeddedView(
+      view_id, std::make_unique<EmbeddedViewParams>(
+                   matrix, rect_points.GetSize(), stack));
+}
+
+std::shared_ptr<DlImageFilter> Blur(DlScalar sigma) {
+  return DlBlurImageFilter::Make(sigma, sigma, DlTileMode::kClamp);
+}
+
+std::shared_ptr<DlImageFilter> Grayscale() {
+  const float matrix[20] = {
+      0.2126f, 0.7152f, 0.0722f, 0, 0,  //
+      0.2126f, 0.7152f, 0.0722f, 0, 0,  //
+      0.2126f, 0.7152f, 0.0722f, 0, 0,  //
+      0,       0,       0,       1, 0,
+  };
+  return DlColorFilterImageFilter::Make(DlColorFilter::MakeMatrix(matrix));
+}
+
+// Device-pixel rect of a filter, as the backdrop filter layer reports it.
+DlRect DeviceRect(const DlRect& rect_points) {
+  return rect_points.Scale(kDpr);
+}
+
+// Paints a backdrop filter clipped to `rect_points` into `canvas`, as a
+// ClipRectLayer with a BackdropFilterLayer child would.
+void PaintBackdropFilter(DlCanvas* canvas,
+                         const std::shared_ptr<DlImageFilter>& filter,
+                         const DlRect& rect_points) {
+  canvas->Save();
+  canvas->Scale(kDpr, kDpr);
+  canvas->ClipRect(rect_points);
+  canvas->SaveLayer(rect_points, nullptr, filter.get());
+  canvas->Restore();
+  canvas->Restore();
+}
+
+}  // namespace
+
+TEST(AndroidExternalViewEmbedder2Capture, NoCaptureWithoutDelegate) {
+  auto embedder = MakeEmbedder(nullptr);
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(5), DeviceRect(DlRect::MakeLTRB(50, 50, 150, 150)));
+  EXPECT_TRUE(embedder->GetViewsToCaptureForTesting().empty());
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, IgnoresFiltersBelowAllViews) {
+  auto embedder = MakeEmbedder();
+  // The filter is painted before any platform view, so it is below them.
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(5), DeviceRect(DlRect::MakeLTRB(0, 0, 100, 100)));
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  EXPECT_TRUE(embedder->GetViewsToCaptureForTesting().empty());
+}
+
+TEST(AndroidExternalViewEmbedder2Capture,
+     IgnoresFiltersThatDoNotCoverAPlatformView) {
+  auto embedder = MakeEmbedder();
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Grayscale(), DeviceRect(DlRect::MakeLTRB(200, 200, 300, 300)));
+  EXPECT_TRUE(embedder->GetViewsToCaptureForTesting().empty());
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, CapturesViewsUnderAndNearFilters) {
+  auto embedder = MakeEmbedder();
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  AddPlatformView(*embedder, 2, DlRect::MakeLTRB(0, 800, 100, 900));
+  // Covers view 1 only; view 2 is too far away to be prefetched.
+  embedder->PushFilterToVisitedPlatformViews(
+      Grayscale(), DeviceRect(DlRect::MakeLTRB(50, 50, 150, 150)));
+  EXPECT_THAT(embedder->GetViewsToCaptureForTesting(),
+              ::testing::ElementsAre(1));
+
+  // A blur just above view 2 does not cover it, but view 2 is close enough
+  // that it may soon move under it, so it is captured ahead of time.
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(0, 700, 100, 780)));
+  EXPECT_THAT(embedder->GetViewsToCaptureForTesting(),
+              ::testing::ElementsAre(1, 2));
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, DoesNotPrefetchWithoutCoveredViews) {
+  auto embedder = MakeEmbedder();
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 300, 100, 400));
+  // Near, but not over, the platform view.
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(0, 200, 100, 290)));
+  EXPECT_TRUE(embedder->GetViewsToCaptureForTesting().empty());
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, IgnoresViewsOutsideTheFrame) {
+  auto embedder = MakeEmbedder();
+  // Scrolled just above the top of the frame (but still in the layer tree).
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, -200, 100, -10));
+  AddPlatformView(*embedder, 2, DlRect::MakeLTRB(0, 0, 100, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(0, 0, 100, 50)));
+  // View 1 is entirely outside the frame, so it is neither required (a
+  // missing capture of it must not prevent the filter from applying to view
+  // 2) nor captured.
+  EXPECT_THAT(embedder->GetViewsToCaptureForTesting(),
+              ::testing::ElementsAre(2));
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, NeverProvidesARootCanvas) {
+  auto embedder = MakeEmbedder();
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(5), DeviceRect(DlRect::MakeLTRB(0, 0, 100, 100)));
+  EXPECT_EQ(embedder->GetRootCanvas(), nullptr);
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, LeavesViewsAloneWithoutFilters) {
+  auto embedder = MakeEmbedder();
+  embedder->SetSnapshotSourceForTesting(
+      1, std::make_shared<FakeSnapshotSource>(
+             sk_make_sp<FakeImage>(DlISize(200, 200))));
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+
+  DlCanvas* canvas = embedder->CompositeEmbeddedView(1);
+  ASSERT_NE(canvas, nullptr);
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(1));
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, SubstitutesCapturedViewUnderFilter) {
+  auto embedder = MakeEmbedder();
+  auto source = std::make_shared<FakeSnapshotSource>(
+      sk_make_sp<FakeImage>(DlISize(200, 200)));
+  embedder->SetSnapshotSourceForTesting(1, source);
+
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  const DlRect filter_rect = DlRect::MakeLTRB(50, 50, 150, 150);
+  auto blur = Blur(5);
+  embedder->PushFilterToVisitedPlatformViews(blur, DeviceRect(filter_rect));
+
+  DlCanvas* canvas = embedder->CompositeEmbeddedView(1);
+  ASSERT_NE(canvas, nullptr);
+  EXPECT_EQ(source->acquire_count, 1);
+  EXPECT_TRUE(embedder->IsSubstitutedForTesting(1));
+  // The capture is the first thing in the slice, below the filter.
+  PaintBackdropFilter(canvas, blur, filter_rect);
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, FallsBackUntilCaptureIsAvailable) {
+  auto embedder = MakeEmbedder();
+  // The capture has been requested, but no image has been produced yet.
+  embedder->SetSnapshotSourceForTesting(
+      1, std::make_shared<FakeSnapshotSource>(nullptr));
+
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(5), DeviceRect(DlRect::MakeLTRB(50, 50, 150, 150)));
+
+  ASSERT_NE(embedder->CompositeEmbeddedView(1), nullptr);
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(1));
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, SubstitutesOnlyViewsUnderFilters) {
+  auto embedder = MakeEmbedder();
+  auto source1 = std::make_shared<FakeSnapshotSource>(
+      sk_make_sp<FakeImage>(DlISize(200, 200)));
+  auto source2 = std::make_shared<FakeSnapshotSource>(
+      sk_make_sp<FakeImage>(DlISize(200, 200)));
+  embedder->SetSnapshotSourceForTesting(1, source1);
+  embedder->SetSnapshotSourceForTesting(2, source2);
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  // Close enough to the filter to be captured, but not under it.
+  AddPlatformView(*embedder, 2, DlRect::MakeLTRB(0, 200, 100, 300));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(0, 0, 100, 50)));
+  EXPECT_THAT(embedder->GetViewsToCaptureForTesting(),
+              ::testing::ElementsAre(1, 2));
+
+  ASSERT_NE(embedder->CompositeEmbeddedView(1), nullptr);
+  ASSERT_NE(embedder->CompositeEmbeddedView(2), nullptr);
+  EXPECT_TRUE(embedder->IsSubstitutedForTesting(1));
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(2));
+  EXPECT_EQ(source1->acquire_count, 1);
+  EXPECT_EQ(source2->acquire_count, 0);
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, DecidesPerView) {
+  auto embedder = MakeEmbedder();
+  embedder->SetSnapshotSourceForTesting(
+      1, std::make_shared<FakeSnapshotSource>(
+             sk_make_sp<FakeImage>(DlISize(200, 200))));
+  // View 2 has no capture yet (it just scrolled under the second filter).
+
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  AddPlatformView(*embedder, 2, DlRect::MakeLTRB(0, 600, 100, 700));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(0, 0, 100, 50)));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(10), DeviceRect(DlRect::MakeLTRB(0, 650, 100, 700)));
+
+  ASSERT_NE(embedder->CompositeEmbeddedView(1), nullptr);
+  ASSERT_NE(embedder->CompositeEmbeddedView(2), nullptr);
+  EXPECT_TRUE(embedder->IsSubstitutedForTesting(1));
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(2));
+}
+
+TEST(AndroidExternalViewEmbedder2Capture, ResetClearsFrameState) {
+  auto embedder = MakeEmbedder();
+  AddPlatformView(*embedder, 1, DlRect::MakeLTRB(0, 0, 100, 100));
+  embedder->PushFilterToVisitedPlatformViews(
+      Blur(5), DeviceRect(DlRect::MakeLTRB(0, 0, 100, 100)));
+  ASSERT_FALSE(embedder->GetViewsToCaptureForTesting().empty());
+
+  embedder->SetSnapshotSourceForTesting(
+      1, std::make_shared<FakeSnapshotSource>(
+             sk_make_sp<FakeImage>(DlISize(200, 200))));
+  ASSERT_NE(embedder->CompositeEmbeddedView(1), nullptr);
+  ASSERT_TRUE(embedder->IsSubstitutedForTesting(1));
+
+  embedder->CancelFrame();
+  EXPECT_TRUE(embedder->GetViewsToCaptureForTesting().empty());
+  EXPECT_FALSE(embedder->IsSubstitutedForTesting(1));
+}
+
+}  // namespace testing
+}  // namespace flutter

@@ -28,10 +28,25 @@ class ImageExternalTextureVKImpeller : public ImageExternalTexture {
 
   ~ImageExternalTextureVKImpeller() override;
 
+  //----------------------------------------------------------------------------
+  /// @brief      Imports the latest image produced by the image consumer, if
+  ///             there is a new one, and returns the most recent image.
+  ///
+  ///             This is for consumers that draw the image themselves rather
+  ///             than through |Paint| (for example to capture HCPP platform
+  ///             views under a backdrop filter).
+  ///
+  /// @note       Must be called from the raster thread.
+  ///
+  sk_sp<flutter::DlImage> AcquireLatestDlImage();
+
  private:
   void Attach(PaintContext& context) override;
   void ProcessFrame(PaintContext& context, const SkRect& bounds) override;
   void Detach() override;
+
+  // Imports the latest image from the image consumer into dl_image_.
+  void UpdateLatestImage();
 
   const std::shared_ptr<impeller::ContextVK> impeller_context_;
 };

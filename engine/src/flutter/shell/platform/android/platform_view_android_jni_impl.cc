@@ -91,6 +91,8 @@ static jfieldID g_jni_shell_holder_field = nullptr;
     "(IIIIIIILio/flutter/embedding/engine/mutatorsstack/"                     \
     "FlutterMutatorsStack;)V")                                                \
   V(g_hide_platform_view2_method, hidePlatformView2, "(I)V")                  \
+  V(g_capture_platform_view2_method, capturePlatformView2,                    \
+    "(IZ)Ljava/lang/ref/WeakReference;")                                      \
   V(g_on_end_frame2_method, endFrame2, "()V")                                 \
   V(g_show_overlay_surface2_method, showOverlaySurface2, "()V")               \
   V(g_hide_overlay_surface2_method, hideOverlaySurface2, "()V")               \
@@ -2423,6 +2425,26 @@ void PlatformViewAndroidJNIImpl::hidePlatformView2(int32_t view_id) {
   }
 
   env->CallVoidMethod(java_object.obj(), g_hide_platform_view2_method, view_id);
+}
+
+JavaLocalRef PlatformViewAndroidJNIImpl::capturePlatformView2(
+    int32_t view_id,
+    bool substituted) {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+  auto java_object = java_object_.get(env);
+  if (java_object.is_null()) {
+    return JavaLocalRef();
+  }
+
+  JavaLocalRef consumer = JavaLocalRef(
+      env,
+      env->CallObjectMethod(java_object.obj(), g_capture_platform_view2_method,
+                            view_id, static_cast<jboolean>(substituted)));
+  if (fml::jni::CheckException(env)) {
+    return consumer;
+  }
+  // The capture failed with an exception; treat the view as not capturable.
+  return JavaLocalRef();
 }
 
 void PlatformViewAndroidJNIImpl::onEndFrame2() {

@@ -38,6 +38,15 @@ void ImageExternalTextureVKImpeller::Detach() {}
 
 void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
                                                   const SkRect& bounds) {
+  UpdateLatestImage();
+}
+
+sk_sp<flutter::DlImage> ImageExternalTextureVKImpeller::AcquireLatestDlImage() {
+  UpdateLatestImage();
+  return dl_image_;
+}
+
+void ImageExternalTextureVKImpeller::UpdateLatestImage() {
   JavaLocalRef image = AcquireLatestImage();
   if (image.is_null()) {
     return;
@@ -89,9 +98,11 @@ void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
     barrier.new_layout = impeller::vk::ImageLayout::eShaderReadOnlyOptimal;
 
     if (!texture->SetLayout(barrier)) {
+      CloseHardwareBuffer(hardware_buffer);
       return;
     }
     if (!impeller_context_->GetCommandQueue()->Submit({buffer}).ok()) {
+      CloseHardwareBuffer(hardware_buffer);
       return;
     }
   }

@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "display_list/dl_color.h"
@@ -39,14 +40,16 @@ AndroidExternalViewEmbedder2::AndroidExternalViewEmbedder2(
     const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
     std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-    const TaskRunners& task_runners)
+    const TaskRunners& task_runners,
+    std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate)
     : ExternalViewEmbedder(),
       android_context_(android_context),
       jni_facade_(std::move(jni_facade)),
       surface_factory_(std::move(surface_factory)),
       surface_pool_(
           std::make_unique<SurfacePool>(/*use_new_surface_methods=*/true)),
-      task_runners_(task_runners) {}
+      task_runners_(task_runners),
+      capture_delegate_(std::move(capture_delegate)) {}
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
@@ -71,10 +74,193 @@ void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
 
 // |ExternalViewEmbedder|
 DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(int64_t view_id) {
-  if (slices_.count(view_id) == 1) {
-    return slices_.at(view_id)->canvas();
+  if (slices_.count(view_id) == 0) {
+    return nullptr;
   }
-  return nullptr;
+  DlCanvas* slice_canvas = slices_.at(view_id)->canvas();
+  if (filtered_views_.empty()) {
+    return slice_canvas;
+  }
+  // Preroll, which collected the backdrop filters, has finished; acquire the
+  // captures once per frame.
+  if (!snapshots_acquired_) {
+    AcquireSnapshots();
+    snapshots_acquired_ = true;
+  }
+  if (!ShouldSubstitute(view_id)) {
+    return slice_canvas;
+  }
+  // Draw the capture of the platform view, as the platform view would be
+  // composited, at the start of its slice. Everything painted after the
+  // platform view (including the backdrop filters over it) is recorded into
+  // the same slice right after, so the filters see the platform view exactly
+  // like they would see a texture layer platform view. The live platform view
+  // stops drawing itself (see FlutterMutatorView#setDrawToWindow) and no
+  // longer takes part in slicing.
+  DrawPlatformViewSnapshot(*slice_canvas, view_params_.at(view_id),
+                           snapshots_.at(view_id));
+  substituted_views_.insert(view_id);
+  return slice_canvas;
+}
+
+bool AndroidExternalViewEmbedder2::ShouldSubstitute(int64_t view_id) const {
+  return filtered_views_.contains(view_id) && snapshots_.contains(view_id);
+}
+
+// |ExternalViewEmbedder|
+void AndroidExternalViewEmbedder2::PushFilterToVisitedPlatformViews(
+    const std::shared_ptr<DlImageFilter>& filter,
+    const DlRect& filter_rect) {
+  // A filter painted before any platform view is below all of them.
+  if (!filter || !capture_delegate_ || composition_order_.empty()) {
+    return;
+  }
+  const DlRect frame = DlRect::MakeSize(frame_size_);
+  const std::optional<DlRect> rect = filter_rect.Intersection(frame);
+  if (!rect.has_value() || rect->IsEmpty()) {
+    return;
+  }
+
+  // Platform views that are close to the filter are captured too, so that a
+  // platform view that moves under the filter (for example while scrolling)
+  // already has a capture when it gets there.
+  const DlScalar margin = kCapturePrefetchFraction * frame_size_.height;
+  const DlRect capture_rect =
+      rect->Expand(margin, margin).IntersectionOrEmpty(frame);
+
+  for (int64_t view_id : composition_order_) {
+    const DlRect view_rect =
+        GetViewRect(view_id, view_params_).IntersectionOrEmpty(frame);
+    if (view_rect.IntersectsWithRect(rect.value())) {
+      filtered_views_.insert(view_id);
+    }
+    if (view_rect.IntersectsWithRect(capture_rect)) {
+      nearby_views_.insert(view_id);
+    }
+  }
+}
+
+std::vector<int64_t> AndroidExternalViewEmbedder2::ViewsToCapture() const {
+  if (filtered_views_.empty()) {
+    return {};
+  }
+  std::vector<int64_t> views;
+  for (int64_t view_id : composition_order_) {
+    if (nearby_views_.contains(view_id)) {
+      views.push_back(view_id);
+    }
+  }
+  return views;
+}
+
+std::vector<int64_t> AndroidExternalViewEmbedder2::GetViewsToCaptureForTesting()
+    const {
+  return ViewsToCapture();
+}
+
+void AndroidExternalViewEmbedder2::SetSnapshotSourceForTesting(
+    int64_t view_id,
+    std::shared_ptr<PlatformViewSnapshotSource> source) {
+  std::scoped_lock lock(capture_state_->mutex);
+  capture_state_->sources[view_id] = std::move(source);
+}
+
+bool AndroidExternalViewEmbedder2::IsSubstitutedForTesting(
+    int64_t view_id) const {
+  return substituted_views_.count(view_id) == 1;
+}
+
+void AndroidExternalViewEmbedder2::AcquireSnapshots() {
+  std::unordered_map<int64_t, std::shared_ptr<PlatformViewSnapshotSource>>
+      sources;
+  {
+    std::scoped_lock lock(capture_state_->mutex);
+    sources = capture_state_->sources;
+  }
+  for (int64_t view_id : filtered_views_) {
+    auto it = sources.find(view_id);
+    if (it == sources.end() || !it->second) {
+      continue;
+    }
+    sk_sp<DlImage> image = it->second->AcquireLatestImage();
+    if (image) {
+      snapshots_[view_id] = std::move(image);
+    }
+  }
+}
+
+void AndroidExternalViewEmbedder2::DrawPlatformViewSnapshot(
+    DlCanvas& canvas,
+    const EmbeddedViewParams& params,
+    const sk_sp<DlImage>& image) {
+  DlAutoCanvasRestore restore(&canvas, /*do_save=*/true);
+  DlScalar opacity = 1.0f;
+  const MutatorsStack& mutators = params.mutatorsStack();
+  for (auto it = mutators.Begin(); it != mutators.End(); ++it) {
+    const Mutator& mutator = **it;
+    switch (mutator.GetType()) {
+      case MutatorType::kTransform:
+        canvas.Transform(mutator.GetMatrix());
+        break;
+      case MutatorType::kClipRect:
+        canvas.ClipRect(mutator.GetRect(), DlClipOp::kIntersect, true);
+        break;
+      case MutatorType::kClipRRect:
+        canvas.ClipRoundRect(mutator.GetRRect(), DlClipOp::kIntersect, true);
+        break;
+      case MutatorType::kClipRSE:
+        canvas.ClipRoundSuperellipse(mutator.GetRSE(), DlClipOp::kIntersect,
+                                     true);
+        break;
+      case MutatorType::kClipPath:
+        canvas.ClipPath(mutator.GetPath(), DlClipOp::kIntersect, true);
+        break;
+      case MutatorType::kOpacity:
+        opacity *= mutator.GetAlphaFloat();
+        break;
+      default:
+        // Backdrop filters and their clips do not affect how the platform
+        // view itself is drawn.
+        break;
+    }
+  }
+  DlPaint paint;
+  paint.setOpacity(opacity);
+  canvas.DrawImageRect(image, DlRect::MakeSize(params.sizePoints()),
+                       DlImageSampling::kLinear, &paint);
+}
+
+// static
+void AndroidExternalViewEmbedder2::UpdateCaptures(
+    const std::shared_ptr<PlatformViewCaptureDelegate>& delegate,
+    const std::shared_ptr<CaptureState>& state,
+    const std::vector<int64_t>& views,
+    const std::vector<int64_t>& substituted_views) {
+  if (!delegate) {
+    return;
+  }
+  std::unordered_map<int64_t, std::shared_ptr<PlatformViewSnapshotSource>>
+      next_sources;
+  for (int64_t view_id : views) {
+    std::shared_ptr<PlatformViewSnapshotSource> previous;
+    // state->sources is only modified on the platform thread, so reading it
+    // here without the lock is safe.
+    if (auto it = state->sources.find(view_id); it != state->sources.end()) {
+      previous = it->second;
+    }
+    const bool substituted =
+        std::find(substituted_views.begin(), substituted_views.end(),
+                  view_id) != substituted_views.end();
+    // A view that cannot be captured is logged (once) by the platform.
+    if (std::shared_ptr<PlatformViewSnapshotSource> source =
+            delegate->RequestCapture(view_id, substituted, previous)) {
+      next_sources[view_id] = std::move(source);
+    }
+  }
+  {
+    std::scoped_lock lock(state->mutex);
+    state->sources.swap(next_sources);
+  }
 }
 
 DlRect AndroidExternalViewEmbedder2::GetViewRect(
@@ -96,9 +282,11 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   if (!FrameHasPlatformLayers()) {
     frame->Submit();
     jni_facade_->sealFrameTransactions();
-    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-        [this, jni_facade = jni_facade_,
-         views_visible_last_frame = views_visible_last_frame_]() {
+    task_runners_.GetPlatformTaskRunner()->PostTask(
+        fml::MakeCopyable([this, jni_facade = jni_facade_,
+                           views_visible_last_frame = views_visible_last_frame_,
+                           capture_delegate = capture_delegate_,
+                           capture_state = capture_state_]() {
           // This pointer is guaranteed to not be dangling as long as
           // DestroySurfaces is called before the embedder is deleted. See
           // https://github.com/flutter/flutter/pull/176742#discussion_r2415229396.
@@ -106,6 +294,7 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
           for (int64_t view_id : views_visible_last_frame) {
             jni_facade->hidePlatformView2(view_id);
           }
+          UpdateCaptures(capture_delegate, capture_state, {}, {});
 
           jni_facade->swapTransaction();
           jni_facade->onEndFrame2();
@@ -114,9 +303,13 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
     return;
   }
 
+  // A substituted platform view is drawn (from its capture) into its own
+  // slice, so it no longer needs any of the slice to go into the overlay.
   std::unordered_map<int64_t, DlRect> view_rects;
   for (auto platform_id : composition_order_) {
-    view_rects[platform_id] = GetViewRect(platform_id, view_params_);
+    view_rects[platform_id] = substituted_views_.count(platform_id) == 1
+                                  ? DlRect()
+                                  : GetViewRect(platform_id, view_params_);
   }
 
   std::unordered_map<int64_t, DlRect> overlay_layers =
@@ -192,12 +385,21 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   // Every path that posts a platform task calling swapTransaction() must call
   // sealFrameTransactions() once to keep the per-frame queue paired 1:1.
   jni_facade_->sealFrameTransactions();
+
+  std::vector<int64_t> views_to_capture = ViewsToCapture();
+  std::vector<int64_t> substituted_views(substituted_views_.begin(),
+                                         substituted_views_.end());
+
   task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
       [&, composition_order = composition_order_, view_params = view_params_,
        jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
        slices = std::move(slices_),
        views_visible_last_frame = views_visible_last_frame_,
-       overlay_layer_has_content_this_frame_]() mutable -> void {
+       overlay_layer_has_content_this_frame_,
+       views_to_capture = std::move(views_to_capture),
+       substituted_views = std::move(substituted_views),
+       capture_delegate = capture_delegate_,
+       capture_state = capture_state_]() mutable -> void {
         if (overlay_layer_has_content_this_frame_) {
           ShowOverlayLayerIfNeeded();
         } else {
@@ -228,6 +430,13 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
           jni_facade->hidePlatformView2(view_id);
         }
 
+        // Capture the platform views under backdrop filters after they have
+        // been laid out for this frame. Must run before onEndFrame2 so the
+        // drawToWindow flip and the raster transaction land in the same HWUI
+        // frame via applyTransactionOnDraw.
+        UpdateCaptures(capture_delegate, capture_state, views_to_capture,
+                       substituted_views);
+
         jni_facade->swapTransaction();
         jni_facade_->onEndFrame2();
       }));
@@ -256,6 +465,11 @@ DlCanvas* AndroidExternalViewEmbedder2::GetRootCanvas() {
 void AndroidExternalViewEmbedder2::Reset() {
   composition_order_.clear();
   slices_.clear();
+  filtered_views_.clear();
+  nearby_views_.clear();
+  snapshots_.clear();
+  snapshots_acquired_ = false;
+  substituted_views_.clear();
 }
 
 // |ExternalViewEmbedder|

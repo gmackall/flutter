@@ -21,6 +21,7 @@ source_set("external_view_embedder") {
 
   deps = [
     "//flutter/common",
+    "//flutter/display_list",
     "//flutter/flow",
     "//flutter/fml",
     "//flutter/impeller/renderer/backend/vulkan",
@@ -41,6 +42,7 @@ executable("android_external_view_embedder_unittests") {
   testonly = true
 
   sources = [
+    "external_view_embedder_2_unittests.cc",
     "external_view_embedder_unittests.cc",
     "surface_pool_unittests.cc",
   ]

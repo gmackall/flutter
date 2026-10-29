@@ -1492,6 +1492,29 @@ public class FlutterJNI {
     platformViewsController2.hidePlatformView(viewId);
   }
 
+  /**
+   * Called by the engine when the platform view {@code viewId} is under a backdrop filter in the
+   * current frame, so it must be captured offscreen for the filter to apply to it.
+   *
+   * <p>If {@code substituted}, the engine draws the capture in place of the platform view this
+   * frame, so the live view must not draw.
+   *
+   * @return a weak reference to the {@link TextureRegistry.ImageConsumer} that receives the
+   *     captures, or null if the view cannot be captured.
+   */
+  @UiThread
+  @SuppressWarnings("unused")
+  @SuppressLint("NewApi")
+  @Nullable
+  public WeakReference<TextureRegistry.ImageConsumer> capturePlatformView2(
+      int viewId, boolean substituted) {
+    ensureRunningOnMainThread();
+    if (platformViewsController2 == null) {
+      return null;
+    }
+    return platformViewsController2.capturePlatformView(viewId, substituted);
+  }
+
   // ----- Start Localization Support ----
 
   /** Sets the localization plugin that is used in various localization methods. */
