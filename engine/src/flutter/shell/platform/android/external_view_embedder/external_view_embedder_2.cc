@@ -8,7 +8,6 @@
 #include <cmath>
 
 #include "display_list/dl_color.h"
-#include "flow/view_slicer.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/trace_event.h"
 #include "fml/make_copyable.h"
@@ -32,82 +31,6 @@ namespace {
 // See https://github.com/flutter/flutter/issues/189834.
 int32_t ToPhysicalPixels(DlScalar size_points, double device_pixel_ratio) {
   return static_cast<int32_t>(std::round(size_points * device_pixel_ratio));
-}
-
-std::unordered_map<int64_t, std::vector<DlRect>> SliceViewsIntoOverlayRects(
-    DlCanvas* background_canvas,
-    const std::vector<int64_t>& composition_order,
-    const std::unordered_map<int64_t, std::unique_ptr<EmbedderViewSlice>>&
-        slices,
-    const std::unordered_map<int64_t, DlRect>& view_rects) {
-  std::unordered_map<int64_t, std::vector<DlRect>> overlay_layers;
-
-  DlAutoCanvasRestore save(background_canvas, /*do_save=*/true);
-
-  for (size_t i = 0; i < composition_order.size(); i++) {
-    int64_t view_id = composition_order[i];
-    EmbedderViewSlice* slice = slices.at(view_id).get();
-    if (slice->canvas() == nullptr) {
-      continue;
-    }
-
-    slice->end_recording();
-
-    std::vector<DlRect> overlay_rects;
-
-    // Determine if Flutter UI intersects with any of the previous
-    // unsubstituted platform views stacked by z position. Keep one rect per
-    // intersected platform view rather than unioning disjoint platform views
-    // across the screen, which would clip unrelated regions (including
-    // substituted platform views and their backdrop filters) out of the
-    // background canvas and hoist them onto the overlay surface.
-    for (int j = static_cast<int>(i); j >= 0; j--) {
-      int64_t current_view_id = composition_order[j];
-      auto maybe_rect = view_rects.find(current_view_id);
-      FML_DCHECK(maybe_rect != view_rects.end());
-      if (maybe_rect == view_rects.end() || maybe_rect->second.IsEmpty()) {
-        continue;
-      }
-
-      const DlRect current_view_rect = maybe_rect->second;
-      const DlIRect rounded_in_platform_view_rect =
-          DlIRect::RoundIn(current_view_rect);
-      const DlRect rounded_out_platform_view_rect =
-          DlRect::RoundOut(current_view_rect);
-
-      std::vector<DlIRect> intersection_rects =
-          slice->region(current_view_rect).getRects();
-
-      // Ignore intersections of single width/height on the edge of the platform
-      // view.
-      for (auto it = intersection_rects.begin();
-           it != intersection_rects.end();) {
-        if (!it->IntersectsWithRect(rounded_in_platform_view_rect)) {
-          it = intersection_rects.erase(it);
-        } else {
-          ++it;
-        }
-      }
-
-      DlRect partial_joined_rect;
-      for (const DlIRect& rect : intersection_rects) {
-        partial_joined_rect = partial_joined_rect.Union(DlRect::Make(rect));
-      }
-
-      if (partial_joined_rect.IntersectsWithRect(
-              rounded_out_platform_view_rect)) {
-        overlay_rects.push_back(partial_joined_rect);
-        background_canvas->ClipRect(partial_joined_rect, DlClipOp::kDifference);
-      }
-    }
-
-    if (!overlay_rects.empty()) {
-      overlay_layers.insert({view_id, std::move(overlay_rects)});
-    }
-    slice->render_into(background_canvas);
-  }
-
-  return overlay_layers;
 }
 
 }  // namespace
@@ -439,21 +362,44 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
     return;
   }
 
-  // A substituted platform view is drawn (from its capture) into its own
-  // slice, so it no longer needs any of the slice to go into the overlay.
-  std::unordered_map<int64_t, DlRect> view_rects;
-  for (auto platform_id : composition_order_) {
-    view_rects[platform_id] = substituted_views_.count(platform_id) == 1
-                                  ? DlRect()
-                                  : GetViewRect(platform_id, view_params_);
+  // Slice each recorded view against earlier unsubstituted platform views,
+  // keeping one overlay rect per intersected view so disjoint views do not
+  // union across substituted views or backdrop filters between them.
+  std::unordered_map<int64_t, std::vector<DlRect>> overlay_layers;
+  {
+    DlAutoCanvasRestore save(frame->Canvas(), /*do_save=*/true);
+    for (size_t i = 0; i < composition_order_.size(); i++) {
+      int64_t view_id = composition_order_[i];
+      EmbedderViewSlice* slice = slices_.at(view_id).get();
+      if (slice->canvas() == nullptr) {
+        continue;
+      }
+      slice->end_recording();
+      std::vector<DlRect> overlay_rects;
+      for (int j = static_cast<int>(i); j >= 0; j--) {
+        int64_t earlier_id = composition_order_[j];
+        if (substituted_views_.contains(earlier_id)) {
+          continue;
+        }
+        DlRect view_rect = GetViewRect(earlier_id, view_params_);
+        DlIRect rounded_in = DlIRect::RoundIn(view_rect);
+        DlRect joined;
+        for (const DlIRect& rect : slice->region(view_rect).getRects()) {
+          if (rect.IntersectsWithRect(rounded_in)) {
+            joined = joined.Union(DlRect::Make(rect));
+          }
+        }
+        if (!joined.IsEmpty()) {
+          overlay_rects.push_back(joined);
+          frame->Canvas()->ClipRect(joined, DlClipOp::kDifference);
+        }
+      }
+      if (!overlay_rects.empty()) {
+        overlay_layers.emplace(view_id, std::move(overlay_rects));
+      }
+      slice->render_into(frame->Canvas());
+    }
   }
-
-  std::unordered_map<int64_t, std::vector<DlRect>> overlay_layers =
-      SliceViewsIntoOverlayRects(frame->Canvas(),     //
-                                 composition_order_,  //
-                                 slices_,             //
-                                 view_rects           //
-      );
 
   // If there is no overlay Surface, initialize one on the platform thread. This
   // will only be done once per application launch, as the singular overlay
