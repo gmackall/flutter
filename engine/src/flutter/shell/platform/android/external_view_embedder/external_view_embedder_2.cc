@@ -391,18 +391,16 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         }
         if (!joined.IsEmpty()) {
           for (auto it = overlay_rects.begin(); it != overlay_rects.end();) {
-            DlRect union_rect = joined.Union(*it);
-            bool overlaps_substituted = false;
-            for (int64_t sub_id : substituted_views_) {
-              if (union_rect.IntersectsWithRect(
-                      GetViewRect(sub_id, view_params_))) {
-                overlaps_substituted = true;
-                break;
-              }
-            }
-            if (!overlaps_substituted &&
-                it->Expand(0.5f, 0.5f).IntersectsWithRect(joined)) {
-              joined = union_rect;
+            const bool shares_x_span =
+                std::abs(it->GetLeft() - joined.GetLeft()) <= 0.5f &&
+                std::abs(it->GetRight() - joined.GetRight()) <= 0.5f;
+            const bool shares_y_span =
+                std::abs(it->GetTop() - joined.GetTop()) <= 0.5f &&
+                std::abs(it->GetBottom() - joined.GetBottom()) <= 0.5f;
+            if (it->Expand(0.5f, 0.5f).IntersectsWithRect(joined) &&
+                (shares_x_span || shares_y_span || it->Contains(joined) ||
+                 joined.Contains(*it))) {
+              joined = joined.Union(*it);
               overlay_rects.erase(it);
               it = overlay_rects.begin();
             } else {

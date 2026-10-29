@@ -1247,6 +1247,7 @@ public class PlatformViewsController2Test {
 
     FlutterJNI jni = new FlutterJNI();
     jni.attachToNative();
+    controller.setFlutterJNI(jni);
     attach(jni, controller);
     FlutterRenderer renderer = mock(FlutterRenderer.class);
     when(renderer.createSurfaceProducer()).thenReturn(producer);
@@ -1684,6 +1685,24 @@ public class PlatformViewsController2Test {
     assertEquals(80, producer.getWidth());
     assertEquals(90, producer.getHeight());
     verify(surface, times(2)).lockHardwareCanvas();
+
+    // Detaching and re-attaching to a new FlutterView releases captures, schedules a frame, and
+    // recaptures on post-layout onLayout even when the child's 80x90 bounds are unchanged and
+    // parentView.draw() is not called.
+    ShadowFlutterJNI.scheduleFrameCalls = 0;
+    controller.detachFromView();
+    assertTrue(parentView.getDrawToWindow());
+    controller.attachToView(new FlutterView(ApplicationProvider.getApplicationContext()));
+    assertEquals(1, ShadowFlutterJNI.scheduleFrameCalls);
+
+    androidView.requestLayout();
+    assertNotNull(controller.capturePlatformView(0, true));
+    verify(surface, times(2)).lockHardwareCanvas();
+    parentView.measure(
+        View.MeasureSpec.makeMeasureSpec(80, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(90, View.MeasureSpec.EXACTLY));
+    parentView.layout(0, 0, 80, 90);
+    verify(surface, times(3)).lockHardwareCanvas();
   }
 
   @Test

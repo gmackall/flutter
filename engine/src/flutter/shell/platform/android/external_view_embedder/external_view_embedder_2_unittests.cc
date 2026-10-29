@@ -390,6 +390,10 @@ TEST(AndroidExternalViewEmbedder2Capture,
       .WillOnce(Return(ByMove(std::make_unique<SurfaceFrame>(
           overlay_sk_surface, framebuffer_info,
           [](const SurfaceFrame&, DlCanvas*) { return true; },
+          [](const SurfaceFrame&) { return true; }, frame_size))))
+      .WillOnce(Return(ByMove(std::make_unique<SurfaceFrame>(
+          overlay_sk_surface, framebuffer_info,
+          [](const SurfaceFrame&, DlCanvas*) { return true; },
           [](const SurfaceFrame&) { return true; }, frame_size))));
 
   auto surface_factory = std::make_shared<TestAndroidSurfaceFactory>(
@@ -411,13 +415,17 @@ TEST(AndroidExternalViewEmbedder2Capture,
           ByMove(std::make_unique<PlatformViewAndroidJNI::OverlayMetadata>(
               0, window))));
   EXPECT_CALL(*jni_mock, showOverlaySurface2());
-  EXPECT_CALL(*jni_mock, sealFrameTransactions());
-  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(1, 0, 0, 18, 100, 18, 100, _));
+  EXPECT_CALL(*jni_mock, sealFrameTransactions()).Times(2);
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(1, 0, 0, 18, 100, 18, 100, _))
+      .Times(2);
   EXPECT_CALL(*jni_mock, onDisplayPlatformView2(4, 12, 0, 18, 100, 18, 100, _));
-  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(2, 0, 70, 100, 30, 100, 30, _));
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(2, 0, 70, 100, 30, 100, 30, _))
+      .Times(2);
   EXPECT_CALL(*jni_mock, onDisplayPlatformView2(3, 35, 0, 30, 50, 30, 50, _));
-  EXPECT_CALL(*jni_mock, swapTransaction());
-  EXPECT_CALL(*jni_mock, onEndFrame2());
+  EXPECT_CALL(*jni_mock, hidePlatformView2(3));
+  EXPECT_CALL(*jni_mock, hidePlatformView2(4));
+  EXPECT_CALL(*jni_mock, swapTransaction()).Times(2);
+  EXPECT_CALL(*jni_mock, onEndFrame2()).Times(2);
 
   auto delegate = std::make_shared<MockCaptureDelegate>();
   EXPECT_CALL(*delegate, RequestCapture(1, false, _)).WillOnce(Return(nullptr));
@@ -554,6 +562,65 @@ TEST(AndroidExternalViewEmbedder2Capture,
   EXPECT_NE(filtered_color, SK_ColorTRANSPARENT);
   EXPECT_EQ(SkColorGetR(filtered_color), SkColorGetG(filtered_color));
   EXPECT_EQ(SkColorGetG(filtered_color), SkColorGetB(filtered_color));
+
+  // Frame 2: When substituted_views_ is empty and L-shaped unsubstituted View 1
+  // (0, 0, 18, 100) and View 2 (0, 70, 100, 100) surround a pure-Flutter
+  // backdrop filter at (35, 25, 65, 50) over pure-Flutter blue content in the
+  // concave interior, the L-arms do not coalesce across the concave interior.
+  overlay_sk_surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+  background_sk_surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+  PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
+    embedder->PrepareFlutterView(frame_size, 1.0);
+    MutatorsStack mutators1;
+    DlMatrix matrix1 = DlMatrix::MakeTranslation({0, 0});
+    mutators1.PushTransform(matrix1);
+    embedder->PrerollCompositeEmbeddedView(
+        1, std::make_unique<EmbeddedViewParams>(matrix1, DlSize(18, 100),
+                                                mutators1));
+    MutatorsStack mutators2;
+    DlMatrix matrix2 = DlMatrix::MakeTranslation({0, 70});
+    mutators2.PushTransform(matrix2);
+    embedder->PrerollCompositeEmbeddedView(
+        2, std::make_unique<EmbeddedViewParams>(matrix2, DlSize(100, 30),
+                                                mutators2));
+    auto filter = Grayscale();
+    const DlRect filter_rect = DlRect::MakeLTRB(35, 25, 65, 50);
+    embedder->PushFilterToVisitedPlatformViews(filter, filter_rect);
+
+    DlCanvas* slice1 = embedder->CompositeEmbeddedView(1);
+    DlPaint blue_paint;
+    blue_paint.setColor(DlColor::kBlue());
+    blue_paint.setDrawStyle(DlDrawStyle::kFill);
+    slice1->DrawRect(DlRect::MakeLTRB(35, 0, 65, 50), blue_paint);
+
+    DlCanvas* slice2 = embedder->CompositeEmbeddedView(2);
+    DlPaint red_paint;
+    red_paint.setColor(DlColor::kRed());
+    red_paint.setDrawStyle(DlDrawStyle::kFill);
+    slice2->DrawRect(DlRect::MakeLTRB(0, 0, 18, 100), red_paint);
+    slice2->DrawRect(DlRect::MakeLTRB(0, 70, 100, 100), red_paint);
+    slice2->Save();
+    slice2->ClipRect(filter_rect);
+    slice2->SaveLayer(filter_rect, nullptr, filter.get());
+    slice2->Restore();
+    slice2->Restore();
+
+    auto main_frame = std::make_unique<SurfaceFrame>(
+        background_sk_surface, framebuffer_info,
+        [](const SurfaceFrame&, DlCanvas*) { return true; },
+        [](const SurfaceFrame&) { return true; }, frame_size);
+    embedder->SubmitFlutterView(0, nullptr, nullptr, std::move(main_frame));
+  });
+  PostTaskSync(task_runners.GetPlatformTaskRunner(), []() {});
+
+  ASSERT_TRUE(background_sk_surface->readPixels(bg_bitmap, 0, 0));
+  SkColor pure_flutter_filtered = bg_bitmap.getColor(40, 35);
+  EXPECT_NE(pure_flutter_filtered, SK_ColorBLUE);
+  EXPECT_NE(pure_flutter_filtered, SK_ColorTRANSPARENT);
+  EXPECT_EQ(SkColorGetR(pure_flutter_filtered),
+            SkColorGetG(pure_flutter_filtered));
+  EXPECT_EQ(SkColorGetG(pure_flutter_filtered),
+            SkColorGetB(pure_flutter_filtered));
 
   EXPECT_CALL(*jni_mock, destroyOverlaySurface2());
   embedder->Teardown();

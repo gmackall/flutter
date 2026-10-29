@@ -315,6 +315,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       final PlatformView view = platformViews.valueAt(index);
       view.onFlutterViewAttached(flutterView);
     }
+    if (platformViewParent.size() > 0 && flutterJNI != null && flutterJNI.isAttached()) {
+      flutterJNI.scheduleFrame();
+    }
   }
 
   /**
@@ -759,9 +762,6 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           || ((FrameLayout.LayoutParams) currentLayoutParams).bottomMargin != 0) {
         view.setLayoutParams(
             new FrameLayout.LayoutParams(viewWidth, viewHeight, Gravity.LEFT | Gravity.TOP));
-        if (!parentView.getDrawToWindow()) {
-          parentView.invalidate();
-        }
       }
       if (parentView.indexOfChild(view) != parentView.getChildCount() - 1) {
         view.bringToFront();
