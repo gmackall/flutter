@@ -38,6 +38,7 @@ final class PlatformViewCapture {
 
   @NonNull private final TextureRegistry.SurfaceProducer producer;
   @NonNull private final WeakReference<TextureRegistry.ImageConsumer> consumerReference;
+  @NonNull private final Runnable onUncapturable;
   private final FlutterMutatorView.ContentListener contentListener =
       new FlutterMutatorView.ContentListener() {
         @Override
@@ -66,9 +67,11 @@ final class PlatformViewCapture {
    * Creates a capture that renders into {@code producer}, which must also be an {@link
    * TextureRegistry.ImageConsumer} (see {@link #canUseProducer}).
    */
-  PlatformViewCapture(@NonNull TextureRegistry.SurfaceProducer producer) {
+  PlatformViewCapture(
+      @NonNull TextureRegistry.SurfaceProducer producer, @NonNull Runnable onUncapturable) {
     this.producer = producer;
     this.consumerReference = new WeakReference<>((TextureRegistry.ImageConsumer) producer);
+    this.onUncapturable = onUncapturable;
   }
 
   /** Whether the engine can read captures rendered into {@code producer}. */
@@ -162,6 +165,11 @@ final class PlatformViewCapture {
   private void capture() {
     final View view = this.view;
     if (released || view == null) {
+      return;
+    }
+    if (!canCapture(view)) {
+      dirty = false;
+      onUncapturable.run();
       return;
     }
     final int width = view.getWidth();

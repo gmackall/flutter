@@ -1651,7 +1651,7 @@ public class PlatformViewsController2Test {
     when(surface.lockHardwareCanvas()).thenReturn(mock(Canvas.class));
     when(producer.getSurface()).thenReturn(surface);
 
-    View androidView = new View(ApplicationProvider.getApplicationContext());
+    FrameLayout androidView = new FrameLayout(ApplicationProvider.getApplicationContext());
     PlatformViewsController2 controller = setUpCapture(androidView, producer);
     FlutterMutatorView parentView = controller.getPlatformViewParent(0);
 
@@ -1712,6 +1712,19 @@ public class PlatformViewsController2Test {
         View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
     parentView.layout(0, 0, 100, 100);
     verify(surface, times(3)).lockHardwareCanvas();
+
+    // Adding a SurfaceView child while idle marks the view uncapturable, so onContentDrawn()
+    // schedules an engine frame instead of recording a hole-punched capture.
+    ShadowFlutterJNI.scheduleFrameCalls = 0;
+    androidView.addView(new SurfaceView(ApplicationProvider.getApplicationContext()));
+    parentView.onDescendantInvalidated(androidView, androidView);
+    parentView.measure(
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY));
+    parentView.layout(0, 0, 100, 100);
+    parentView.draw(new Canvas());
+    verify(surface, times(3)).lockHardwareCanvas();
+    assertEquals(1, ShadowFlutterJNI.scheduleFrameCalls);
   }
 
   @Test

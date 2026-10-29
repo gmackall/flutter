@@ -616,7 +616,14 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         logCaptureUnavailable(viewId);
         return null;
       }
-      capture = new PlatformViewCapture(producer);
+      capture =
+          new PlatformViewCapture(
+              producer,
+              () -> {
+                if (flutterJNI != null && flutterJNI.isAttached()) {
+                  flutterJNI.scheduleFrame();
+                }
+              });
       captures.put(viewId, capture);
     }
     capturesRequestedThisFrame.add(viewId);
