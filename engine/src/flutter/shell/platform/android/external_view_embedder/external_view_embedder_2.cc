@@ -390,10 +390,19 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
           }
         }
         if (!joined.IsEmpty()) {
-          frame->Canvas()->ClipRect(joined, DlClipOp::kDifference);
           for (auto it = overlay_rects.begin(); it != overlay_rects.end();) {
-            if (it->Expand(0.5f, 0.5f).IntersectsWithRect(joined)) {
-              joined = joined.Union(*it);
+            DlRect union_rect = joined.Union(*it);
+            bool overlaps_substituted = false;
+            for (int64_t sub_id : substituted_views_) {
+              if (union_rect.IntersectsWithRect(
+                      GetViewRect(sub_id, view_params_))) {
+                overlaps_substituted = true;
+                break;
+              }
+            }
+            if (!overlaps_substituted &&
+                it->Expand(0.5f, 0.5f).IntersectsWithRect(joined)) {
+              joined = union_rect;
               overlay_rects.erase(it);
               it = overlay_rects.begin();
             } else {
@@ -402,6 +411,9 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
           }
           overlay_rects.push_back(joined);
         }
+      }
+      for (const DlRect& overlay_rect : overlay_rects) {
+        frame->Canvas()->ClipRect(overlay_rect, DlClipOp::kDifference);
       }
       if (!overlay_rects.empty()) {
         overlay_layers.emplace(view_id, std::move(overlay_rects));
@@ -445,10 +457,14 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       }
 
       DlCanvas* overlay_canvas = overlay_frame->Canvas();
-      for (const DlRect& overlay_rect : overlay->second) {
+      for (size_t m = 0; m < overlay->second.size(); ++m) {
         int restore_count = overlay_canvas->GetSaveCount();
         overlay_canvas->Save();
-        overlay_canvas->ClipRect(overlay_rect);
+        overlay_canvas->ClipRect(overlay->second[m]);
+        for (size_t prev = 0; prev < m; ++prev) {
+          overlay_canvas->ClipRect(overlay->second[prev],
+                                   DlClipOp::kDifference);
+        }
 
         // For all following platform views that would cover this overlay,
         // emulate the effect by adding a difference clip. This makes the

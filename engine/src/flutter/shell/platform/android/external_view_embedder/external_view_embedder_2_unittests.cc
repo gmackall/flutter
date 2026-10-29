@@ -414,7 +414,7 @@ TEST(AndroidExternalViewEmbedder2Capture,
   EXPECT_CALL(*jni_mock, sealFrameTransactions());
   EXPECT_CALL(*jni_mock, onDisplayPlatformView2(1, 0, 0, 18, 100, 18, 100, _));
   EXPECT_CALL(*jni_mock, onDisplayPlatformView2(4, 12, 0, 18, 100, 18, 100, _));
-  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(2, 70, 0, 30, 100, 30, 100, _));
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(2, 0, 70, 100, 30, 100, 30, _));
   EXPECT_CALL(*jni_mock, onDisplayPlatformView2(3, 35, 0, 30, 50, 30, 50, _));
   EXPECT_CALL(*jni_mock, swapTransaction());
   EXPECT_CALL(*jni_mock, onEndFrame2());
@@ -440,8 +440,9 @@ TEST(AndroidExternalViewEmbedder2Capture,
     embedder->PrepareFlutterView(frame_size, 1.0);
 
     // View 1 at (0, 0, 18, 100) and View 4 at (12, 0, 30, 100) are overlapping
-    // unsubstituted views on the left; View 2 at (70, 0, 100, 100) is a
-    // disjoint unsubstituted view on the right.
+    // unsubstituted views on the left; View 2 at (0, 70, 100, 100) is an
+    // unsubstituted bottom bar that overlaps View 1 and View 4 at
+    // (0..30, 70..100) to form an L-shape around substituted View 3.
     MutatorsStack mutators1;
     DlMatrix matrix1 = DlMatrix::MakeTranslation({0, 0});
     mutators1.PushTransform(matrix1);
@@ -457,15 +458,15 @@ TEST(AndroidExternalViewEmbedder2Capture,
                                                 mutators4));
 
     MutatorsStack mutators2;
-    DlMatrix matrix2 = DlMatrix::MakeTranslation({70, 0});
+    DlMatrix matrix2 = DlMatrix::MakeTranslation({0, 70});
     mutators2.PushTransform(matrix2);
     embedder->PrerollCompositeEmbeddedView(
-        2, std::make_unique<EmbeddedViewParams>(matrix2, DlSize(30, 100),
+        2, std::make_unique<EmbeddedViewParams>(matrix2, DlSize(100, 30),
                                                 mutators2));
 
-    // View 3 at (35, 0, 65, 50) sits between (View 1 union View 4) and View 2
-    // without overlapping any of them, and is substituted under a grayscale
-    // backdrop filter at (35, 25, 65, 50).
+    // View 3 at (35, 0, 65, 50) sits in the concave interior of the L-shape
+    // without overlapping View 1, View 4, or View 2, and is substituted under a
+    // grayscale backdrop filter at (35, 25, 65, 50).
     MutatorsStack mutators3;
     DlMatrix matrix3 = DlMatrix::MakeTranslation({35, 0});
     mutators3.PushTransform(matrix3);
@@ -479,19 +480,21 @@ TEST(AndroidExternalViewEmbedder2Capture,
     embedder->CompositeEmbeddedView(1);
     embedder->CompositeEmbeddedView(4);
 
-    // A red Flutter widget painted after View 2 covers (0, 0, 100, 20),
-    // intersecting View 1 + View 4 (0..30) and View 2 (70..100). Disjoint
-    // regions stay separate so (35..65) is not hoisted above View 3.
+    // A red Flutter widget painted after View 2 covers (0, 0, 100, 100),
+    // intersecting View 1 + View 4 (0..30, 0..100) and View 2 (0..100,
+    // 70..100). View 1 and View 4 coalesce into (0, 0, 30, 100), but do not
+    // coalesce with View 2 into (0, 0, 100, 100) because that union would
+    // overlap substituted View 3 at (35, 0, 65, 50).
     DlCanvas* slice2 = embedder->CompositeEmbeddedView(2);
     DlPaint red_paint;
     red_paint.setColor(DlColor::kRed());
     red_paint.setDrawStyle(DlDrawStyle::kFill);
-    slice2->DrawRect(DlRect::MakeXYWH(0, 0, 100, 20), red_paint);
+    slice2->DrawRect(DlRect::MakeXYWH(0, 0, 100, 100), red_paint);
 
     // Paint the grayscale backdrop filter over View 3's bottom half
     // (35, 25, 65, 50), a blurred red/green badge spanning across the View 1 /
     // View 4 overlap boundary at x = 12 in (0, 25, 30, 50), and a green badge
-    // over View 2 in slice3.
+    // over View 2 at (70, 75, 100, 95) in slice3.
     DlCanvas* slice3 = embedder->CompositeEmbeddedView(3);
     slice3->Save();
     slice3->ClipRect(filter_rect);
@@ -511,7 +514,7 @@ TEST(AndroidExternalViewEmbedder2Capture,
     slice3->SaveLayer(left_blur_rect, nullptr, blur.get());
     slice3->Restore();
     slice3->Restore();
-    slice3->DrawRect(DlRect::MakeXYWH(70, 25, 30, 25), green_paint);
+    slice3->DrawRect(DlRect::MakeXYWH(70, 75, 30, 20), green_paint);
 
     EXPECT_FALSE(embedder->IsSubstitutedForTesting(1));
     EXPECT_FALSE(embedder->IsSubstitutedForTesting(4));
@@ -527,21 +530,19 @@ TEST(AndroidExternalViewEmbedder2Capture,
   PostTaskSync(task_runners.GetPlatformTaskRunner(), []() {});
 
   // Overlapping unsubstituted View 1 (0..18) and View 4 (12..30) coalesce into
-  // a single (0..30) overlay clip so the blur at (13, 35) blends red from x<12
-  // with green from x>=12 without a split-clip seam, while x = 40 over
-  // substituted View 3 remains transparent on the overlay layer and renders
-  // View 3's blue top half (40, 10) and grayscale-filtered bottom half (40, 35)
-  // on the background canvas.
+  // (0..30) so the blur at (13, 35) blends red and green without a seam, while
+  // the L-shape with View 2 (0..100, 70..100) does not expand into the concave
+  // interior at (40, 10) or (40, 35) where substituted View 3 renders on the
+  // background canvas.
   SkBitmap overlay_bitmap;
   overlay_bitmap.allocN32Pixels(100, 100);
   ASSERT_TRUE(overlay_sk_surface->readPixels(overlay_bitmap, 0, 0));
   EXPECT_EQ(overlay_bitmap.getColor(15, 10), SK_ColorRED);
-  EXPECT_EQ(overlay_bitmap.getColor(85, 10), SK_ColorRED);
+  EXPECT_EQ(overlay_bitmap.getColor(85, 80), SK_ColorGREEN);
   EXPECT_EQ(overlay_bitmap.getColor(40, 10), SK_ColorTRANSPARENT);
   SkColor seam_color = overlay_bitmap.getColor(13, 35);
   EXPECT_GT(SkColorGetR(seam_color), 0u);
   EXPECT_GT(SkColorGetG(seam_color), 0u);
-  EXPECT_EQ(overlay_bitmap.getColor(85, 35), SK_ColorGREEN);
   EXPECT_EQ(overlay_bitmap.getColor(40, 35), SK_ColorTRANSPARENT);
 
   SkBitmap bg_bitmap;
