@@ -111,6 +111,10 @@ public class FlutterMutatorView extends FrameLayout {
       return;
     }
     this.drawToWindow = drawToWindow;
+    if (!drawToWindow && paint.getAlpha() != 255) {
+      paint.setAlpha(255);
+      setLayerType(View.LAYER_TYPE_NONE, null);
+    }
     invalidate();
   }
 
@@ -186,7 +190,9 @@ public class FlutterMutatorView extends FrameLayout {
           onScrollChanged(getScrollX(), getScrollY(), getScrollX(), getScrollY());
         }
       }
-      invalidate();
+      if (drawToWindow) {
+        invalidate();
+      }
     }
     setWillNotDraw(false);
   }
@@ -220,8 +226,12 @@ public class FlutterMutatorView extends FrameLayout {
     int newAlpha = (int) (255 * mutatorsStack.getFinalOpacity());
     boolean shouldApplyOpacity = paint.getAlpha() != newAlpha;
     if (shouldApplyOpacity) {
-      paint.setAlpha((int) (255 * mutatorsStack.getFinalOpacity()));
-      this.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+      paint.setAlpha(newAlpha);
+      if (newAlpha < 255) {
+        this.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+      } else {
+        this.setLayerType(View.LAYER_TYPE_NONE, null);
+      }
     }
 
     super.draw(canvas);

@@ -362,6 +362,59 @@ public class FlutterMutatorViewTest {
     assertEquals(0, childDraws[0]);
   }
 
+  @Test
+  public void draw_andSetDrawToWindow_manageHardwareLayerForOpacity() {
+    final FlutterMutatorView view = new FlutterMutatorView(ctx);
+    assertEquals(View.LAYER_TYPE_NONE, view.getLayerType());
+
+    final FlutterMutatorsStack halfOpacityStack = new FlutterMutatorsStack();
+    halfOpacityStack.pushOpacity(0.5f);
+    view.readyToDisplay(halfOpacityStack, /*left=*/ 0, /*top=*/ 0, /*width=*/ 10, /*height=*/ 10);
+    view.draw(new Canvas());
+    assertEquals(View.LAYER_TYPE_HARDWARE, view.getLayerType());
+
+    // Substituting the view clears its hardware layer while drawToWindow is false.
+    view.setDrawToWindow(false);
+    assertEquals(View.LAYER_TYPE_NONE, view.getLayerType());
+
+    // Returning to live window drawing while opacity < 1.0 restores the hardware layer on draw.
+    view.setDrawToWindow(true);
+    view.draw(new Canvas());
+    assertEquals(View.LAYER_TYPE_HARDWARE, view.getLayerType());
+
+    // Returning to full opacity resets the layer type to LAYER_TYPE_NONE.
+    final FlutterMutatorsStack fullOpacityStack = new FlutterMutatorsStack();
+    fullOpacityStack.pushOpacity(1.0f);
+    view.readyToDisplay(fullOpacityStack, /*left=*/ 0, /*top=*/ 0, /*width=*/ 10, /*height=*/ 10);
+    view.draw(new Canvas());
+    assertEquals(View.LAYER_TYPE_NONE, view.getLayerType());
+  }
+
+  @Test
+  public void readyToDisplay_doesNotInvalidateWhenSubstitutedAndSizeUnchanged() {
+    final int[] invalidateCalls = new int[1];
+    final FlutterMutatorView view =
+        new FlutterMutatorView(ctx) {
+          @Override
+          public void invalidate() {
+            super.invalidate();
+            invalidateCalls[0]++;
+          }
+        };
+    final FlutterMutatorsStack mutatorStack = new FlutterMutatorsStack();
+    view.readyToDisplay(mutatorStack, /*left=*/ 0, /*top=*/ 0, /*width=*/ 10, /*height=*/ 10);
+    view.setDrawToWindow(false);
+    invalidateCalls[0] = 0;
+
+    view.readyToDisplay(mutatorStack, /*left=*/ 5, /*top=*/ 5, /*width=*/ 10, /*height=*/ 10);
+    assertEquals(0, invalidateCalls[0]);
+
+    view.setDrawToWindow(true);
+    invalidateCalls[0] = 0;
+    view.readyToDisplay(mutatorStack, /*left=*/ 10, /*top=*/ 10, /*width=*/ 10, /*height=*/ 10);
+    assertEquals(1, invalidateCalls[0]);
+  }
+
   @Implements(ViewGroup.class)
   public static class ShadowViewGroup extends org.robolectric.shadows.ShadowViewGroup {
     @Implementation
