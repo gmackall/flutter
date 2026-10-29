@@ -10,7 +10,10 @@
 #include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
 #include "flutter/display_list/effects/image_filters/dl_color_filter_image_filter.h"
 #include "flutter/display_list/image/dl_image_skia.h"
+#include "flutter/display_list/skia/dl_sk_canvas.h"
 #include "flutter/flow/embedded_views.h"
+#include "flutter/flow/layers/image_filter_layer.h"
+#include "flutter/flow/layers/platform_view_layer.h"
 #include "flutter/flow/surface.h"
 #include "flutter/fml/make_copyable.h"
 #include "flutter/fml/message_loop.h"
@@ -790,6 +793,147 @@ TEST(AndroidExternalViewEmbedder2Capture,
   EXPECT_TRUE(embedder->IsSubstitutedForTesting(2));
   EXPECT_EQ(source1->acquire_count, 1);
   EXPECT_EQ(source2->acquire_count, 1);
+}
+
+TEST(AndroidExternalViewEmbedder2Capture,
+     ImageFilterLayerSubstitutesAndStretchesChildPlatformViewInPlace) {
+  using ::testing::_;
+  using ::testing::ByMove;
+  using ::testing::ElementsAre;
+  using ::testing::Return;
+
+  auto jni_mock = std::make_shared<JNIMock>();
+  auto android_context =
+      std::make_shared<AndroidContext>(AndroidRenderingAPI::kSoftware);
+  ThreadHost thread_host("io.flutter.test.ImageFilterLayerStretch.",
+                         ThreadHost::Type::kPlatform | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi | ThreadHost::Type::kRaster);
+  TaskRunners task_runners(
+      "test",
+      thread_host.platform_thread->GetTaskRunner(),  // platform
+      thread_host.raster_thread->GetTaskRunner(),    // raster
+      thread_host.ui_thread->GetTaskRunner(),        // ui
+      thread_host.io_thread->GetTaskRunner()         // io
+  );
+
+  const DlISize frame_size(100, 100);
+  SurfaceFrame::FramebufferInfo framebuffer_info;
+  auto surface_mock = std::make_unique<SurfaceMock>();
+  EXPECT_CALL(*surface_mock, AcquireFrame(_)).Times(0);
+
+  auto surface_factory = std::make_shared<TestAndroidSurfaceFactory>(
+      fml::MakeCopyable([surface_mock = std::move(surface_mock)]() mutable {
+        auto android_surface = std::make_unique<AndroidSurfaceMock>();
+        EXPECT_CALL(*android_surface, IsValid()).WillRepeatedly(Return(true));
+        EXPECT_CALL(*android_surface, SetNativeWindow(_, _))
+            .WillRepeatedly(Return(true));
+        EXPECT_CALL(*android_surface, CreateGPUSurface(_))
+            .WillOnce(Return(ByMove(std::move(surface_mock))));
+        return android_surface;
+      }));
+
+  fml::RefPtr<AndroidNativeWindow> window =
+      fml::MakeRefCounted<AndroidNativeWindow>(nullptr);
+  EXPECT_CALL(*jni_mock, MaybeResizeSurfaceView(100, 100));
+  EXPECT_CALL(*jni_mock, createOverlaySurface2())
+      .WillOnce(Return(
+          ByMove(std::make_unique<PlatformViewAndroidJNI::OverlayMetadata>(
+              0, window))));
+  EXPECT_CALL(*jni_mock, showOverlaySurface2()).Times(0);
+  EXPECT_CALL(*jni_mock, sealFrameTransactions());
+  EXPECT_CALL(*jni_mock, onDisplayPlatformView2(1, 0, 0, 40, 40, 40, 40, _));
+  EXPECT_CALL(*jni_mock, swapTransaction());
+  EXPECT_CALL(*jni_mock, onEndFrame2());
+
+  auto delegate = std::make_shared<MockCaptureDelegate>();
+  EXPECT_CALL(*delegate, RequestCapture(1, true, _)).WillOnce(Return(nullptr));
+
+  auto embedder = std::make_unique<AndroidExternalViewEmbedder2>(
+      *android_context, jni_mock, surface_factory, task_runners, delegate);
+
+  sk_sp<SkSurface> snapshot_surface =
+      SkSurfaces::Raster(SkImageInfo::MakeN32Premul(40, 40));
+  snapshot_surface->getCanvas()->clear(SK_ColorBLUE);
+  embedder->SetSnapshotSourceForTesting(
+      1, std::make_shared<FakeSnapshotSource>(
+             DlImageSkia::Make(snapshot_surface->makeImageSnapshot())));
+
+  sk_sp<SkSurface> background_sk_surface =
+      SkSurfaces::Raster(SkImageInfo::MakeN32Premul(100, 100));
+  background_sk_surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+
+  PostTaskSync(task_runners.GetRasterTaskRunner(), [&]() {
+    embedder->PrepareFlutterView(frame_size, 1.0);
+
+    // Build an ImageFilterLayer (such as StretchEffect) that stretches its
+    // 40x40 PlatformViewLayer child 2x vertically to 40x80.
+    auto stretch_filter = DlImageFilter::MakeMatrix(
+        DlMatrix::MakeScale({1.0f, 2.0f, 1.0f}), DlImageSampling::kLinear);
+    auto image_filter_layer =
+        std::make_shared<ImageFilterLayer>(stretch_filter);
+    auto pv_layer =
+        std::make_shared<PlatformViewLayer>(DlPoint(), DlSize(40, 40), 1);
+    image_filter_layer->Add(pv_layer);
+
+    LayerStateStack preroll_state_stack;
+    preroll_state_stack.set_preroll_delegate(DlRect::MakeSize(frame_size),
+                                             DlMatrix());
+    FixedRefreshRateStopwatch raster_time;
+    FixedRefreshRateStopwatch ui_time;
+    std::shared_ptr<TextureRegistry> texture_registry =
+        std::make_shared<TextureRegistry>();
+    PrerollContext preroll_context{
+        .raster_cache = nullptr,
+        .gr_context = nullptr,
+        .view_embedder = embedder.get(),
+        .state_stack = preroll_state_stack,
+        .dst_color_space = nullptr,
+        .surface_needs_readback = false,
+        .raster_time = raster_time,
+        .ui_time = ui_time,
+        .texture_registry = texture_registry,
+    };
+    image_filter_layer->Preroll(&preroll_context);
+    EXPECT_THAT(embedder->GetViewsToCaptureForTesting(), ElementsAre(1));
+
+    DlSkCanvasAdapter root_canvas(background_sk_surface->getCanvas());
+    LayerStateStack paint_state_stack;
+    paint_state_stack.set_delegate(&root_canvas);
+    PaintContext paint_context{
+        .state_stack = paint_state_stack,
+        .canvas = &root_canvas,
+        .gr_context = nullptr,
+        .dst_color_space = nullptr,
+        .view_embedder = embedder.get(),
+        .raster_time = raster_time,
+        .ui_time = ui_time,
+        .texture_registry = texture_registry,
+        .raster_cache = nullptr,
+    };
+    image_filter_layer->Paint(paint_context);
+    EXPECT_TRUE(embedder->IsSubstitutedForTesting(1));
+
+    auto main_frame = std::make_unique<SurfaceFrame>(
+        background_sk_surface, framebuffer_info,
+        [](const SurfaceFrame&, DlCanvas*) { return true; },
+        [](const SurfaceFrame&) { return true; }, frame_size);
+    embedder->SubmitFlutterView(0, nullptr, nullptr, std::move(main_frame));
+  });
+  PostTaskSync(task_runners.GetPlatformTaskRunner(), []() {});
+
+  // The 40x40 blue platform view snapshot was drawn inside ImageFilterLayer's
+  // SaveLayer and stretched 2x vertically to cover y = 0..80 on the background
+  // surface without creating an overlay layer.
+  SkBitmap bg_bitmap;
+  bg_bitmap.allocN32Pixels(100, 100);
+  ASSERT_TRUE(background_sk_surface->readPixels(bg_bitmap, 0, 0));
+  EXPECT_EQ(bg_bitmap.getColor(20, 20), SK_ColorBLUE);
+  EXPECT_EQ(bg_bitmap.getColor(20, 70), SK_ColorBLUE);
+  EXPECT_EQ(bg_bitmap.getColor(20, 90), SK_ColorTRANSPARENT);
+
+  EXPECT_CALL(*jni_mock, destroyOverlaySurface2());
+  embedder->Teardown();
+  embedder.reset();
 }
 
 }  // namespace testing

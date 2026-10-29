@@ -81,6 +81,13 @@ void ImageFilterLayer::Preroll(PrerollContext* context) {
   const DlIRect filter_in_bounds = DlIRect::RoundOut(child_bounds);
   DlIRect filter_out_bounds;
   filter_->map_device_bounds(filter_in_bounds, DlMatrix(), filter_out_bounds);
+  if (subtree_has_platform_view() && context->view_embedder != nullptr) {
+    const DlRect filter_bounds =
+        child_bounds.Union(DlRect::Make(filter_out_bounds));
+    context->view_embedder->PushFilterToVisitedPlatformViews(
+        filter_,
+        filter_bounds.TransformAndClipBounds(context->state_stack.matrix()));
+  }
   child_bounds = DlRect::Make(filter_out_bounds).Shift(offset_);
 
   set_paint_bounds(child_bounds);

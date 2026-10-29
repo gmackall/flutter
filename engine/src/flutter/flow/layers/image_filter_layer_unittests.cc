@@ -7,9 +7,11 @@
 #include "flutter/display_list/dl_tile_mode.h"
 #include "flutter/display_list/effects/dl_image_filter.h"
 #include "flutter/flow/layers/layer_tree.h"
+#include "flutter/flow/layers/platform_view_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/flow/testing/diff_context_test.h"
 #include "flutter/flow/testing/layer_test.h"
+#include "flutter/flow/testing/mock_embedder.h"
 #include "flutter/flow/testing/mock_layer.h"
 #include "flutter/fml/macros.h"
 #include "gtest/gtest.h"
@@ -725,6 +727,48 @@ TEST_F(ImageFilterLayerTest, EmptyFilterWithOffset) {
 
   layer->Preroll(preroll_context());
   EXPECT_EQ(layer->paint_bounds(), child_bounds.Shift(offset));
+}
+
+TEST_F(ImageFilterLayerTest, PushesFilterToVisitedPlatformViewsInSubtree) {
+  class FilterTrackingEmbedder : public MockViewEmbedder {
+   public:
+    void PushFilterToVisitedPlatformViews(
+        const std::shared_ptr<DlImageFilter>& filter,
+        const DlRect& filter_rect) override {
+      pushed_filters.emplace_back(filter, filter_rect);
+    }
+    std::vector<std::pair<std::shared_ptr<DlImageFilter>, DlRect>>
+        pushed_filters;
+  };
+
+  FilterTrackingEmbedder embedder;
+  preroll_context()->view_embedder = &embedder;
+  preroll_context()->state_stack.set_preroll_delegate(
+      DlMatrix::MakeScale({2.0f, 2.0f, 1.0f}));
+
+  auto filter = DlImageFilter::MakeMatrix(
+      DlMatrix::MakeScale({1.0f, 1.5f, 1.0f}), DlImageSampling::kLinear);
+
+  // Without a platform view in the subtree, ImageFilterLayer does not notify
+  // the view embedder.
+  auto non_pv_layer =
+      std::make_shared<ImageFilterLayer>(filter, DlPoint(10.0f, 20.0f));
+  non_pv_layer->Add(
+      std::make_shared<MockLayer>(DlPath::MakeRect(DlRect::MakeWH(30, 40))));
+  non_pv_layer->Preroll(preroll_context());
+  EXPECT_TRUE(embedder.pushed_filters.empty());
+
+  // With a platform view in the subtree, ImageFilterLayer pushes its filter
+  // and device-space bounds to the view embedder.
+  auto pv_filter_layer =
+      std::make_shared<ImageFilterLayer>(filter, DlPoint(10.0f, 20.0f));
+  pv_filter_layer->Add(
+      std::make_shared<PlatformViewLayer>(DlPoint(), DlSize(30.0f, 40.0f), 1));
+  pv_filter_layer->Preroll(preroll_context());
+  ASSERT_EQ(embedder.pushed_filters.size(), 1u);
+  EXPECT_EQ(embedder.pushed_filters[0].first, filter);
+  EXPECT_EQ(embedder.pushed_filters[0].second,
+            DlRect::MakeLTRB(20.0f, 40.0f, 80.0f, 160.0f));
 }
 
 }  // namespace testing
