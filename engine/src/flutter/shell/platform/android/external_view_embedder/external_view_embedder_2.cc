@@ -103,16 +103,11 @@ DlCanvas* AndroidExternalViewEmbedder2::CompositeEmbeddedView(
   // stops drawing itself (see FlutterMutatorView#setDrawToWindow) and no
   // longer takes part in slicing.
   substituted_views_.insert(view_id);
-  if (current_canvas != nullptr) {
-    current_canvas->DrawImageRect(
-        snapshots_.at(view_id),
-        DlRect::MakeSize(view_params_.at(view_id).sizePoints()),
-        DlImageSampling::kLinear, paint);
-    return current_canvas;
-  }
-  DrawPlatformViewSnapshot(*slice_canvas, view_params_.at(view_id),
-                           snapshots_.at(view_id));
-  return slice_canvas;
+  DlCanvas* target = current_canvas != nullptr ? current_canvas : slice_canvas;
+  target->DrawImageRect(snapshots_.at(view_id),
+                        DlRect::MakeSize(view_params_.at(view_id).sizePoints()),
+                        DlImageSampling::kLinear, paint);
+  return target;
 }
 
 bool AndroidExternalViewEmbedder2::ShouldSubstitute(int64_t view_id) const {
@@ -259,47 +254,6 @@ void AndroidExternalViewEmbedder2::AcquireSnapshots() {
       snapshots_[view_id] = std::move(image);
     }
   }
-}
-
-void AndroidExternalViewEmbedder2::DrawPlatformViewSnapshot(
-    DlCanvas& canvas,
-    const EmbeddedViewParams& params,
-    const sk_sp<DlImage>& image) {
-  DlAutoCanvasRestore restore(&canvas, /*do_save=*/true);
-  DlScalar opacity = 1.0f;
-  const MutatorsStack& mutators = params.mutatorsStack();
-  for (auto it = mutators.Begin(); it != mutators.End(); ++it) {
-    const Mutator& mutator = **it;
-    switch (mutator.GetType()) {
-      case MutatorType::kTransform:
-        canvas.Transform(mutator.GetMatrix());
-        break;
-      case MutatorType::kClipRect:
-        canvas.ClipRect(mutator.GetRect(), DlClipOp::kIntersect, true);
-        break;
-      case MutatorType::kClipRRect:
-        canvas.ClipRoundRect(mutator.GetRRect(), DlClipOp::kIntersect, true);
-        break;
-      case MutatorType::kClipRSE:
-        canvas.ClipRoundSuperellipse(mutator.GetRSE(), DlClipOp::kIntersect,
-                                     true);
-        break;
-      case MutatorType::kClipPath:
-        canvas.ClipPath(mutator.GetPath(), DlClipOp::kIntersect, true);
-        break;
-      case MutatorType::kOpacity:
-        opacity *= mutator.GetAlphaFloat();
-        break;
-      default:
-        // Backdrop filters and their clips do not affect how the platform
-        // view itself is drawn.
-        break;
-    }
-  }
-  DlPaint paint;
-  paint.setOpacity(opacity);
-  canvas.DrawImageRect(image, DlRect::MakeSize(params.sizePoints()),
-                       DlImageSampling::kLinear, &paint);
 }
 
 // static

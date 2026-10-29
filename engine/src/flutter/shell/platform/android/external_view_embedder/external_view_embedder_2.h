@@ -248,12 +248,6 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   // Whether |view_id| is under a backdrop filter and has a capture this frame.
   bool ShouldSubstitute(int64_t view_id) const;
 
-  // Draws |image|, a capture of a platform view, as the platform view with
-  // |params| would be composited.
-  static void DrawPlatformViewSnapshot(DlCanvas& canvas,
-                                       const EmbeddedViewParams& params,
-                                       const sk_sp<DlImage>& image);
-
   // Null if capturing platform views is not supported.
   const std::shared_ptr<PlatformViewCaptureDelegate> capture_delegate_;
 
