@@ -390,8 +390,17 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
           }
         }
         if (!joined.IsEmpty()) {
-          overlay_rects.push_back(joined);
           frame->Canvas()->ClipRect(joined, DlClipOp::kDifference);
+          for (auto it = overlay_rects.begin(); it != overlay_rects.end();) {
+            if (it->Expand(0.5f, 0.5f).IntersectsWithRect(joined)) {
+              joined = joined.Union(*it);
+              overlay_rects.erase(it);
+              it = overlay_rects.begin();
+            } else {
+              ++it;
+            }
+          }
+          overlay_rects.push_back(joined);
         }
       }
       if (!overlay_rects.empty()) {
@@ -436,17 +445,10 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       }
 
       DlCanvas* overlay_canvas = overlay_frame->Canvas();
-      for (size_t m = 0; m < overlay->second.size(); ++m) {
+      for (const DlRect& overlay_rect : overlay->second) {
         int restore_count = overlay_canvas->GetSaveCount();
         overlay_canvas->Save();
-        overlay_canvas->ClipRect(overlay->second[m]);
-
-        // Avoid double-drawing where two earlier unsubstituted platform views
-        // overlap each other.
-        for (size_t prev = 0; prev < m; ++prev) {
-          overlay_canvas->ClipRect(overlay->second[prev],
-                                   DlClipOp::kDifference);
-        }
+        overlay_canvas->ClipRect(overlay_rect);
 
         // For all following platform views that would cover this overlay,
         // emulate the effect by adding a difference clip. This makes the
