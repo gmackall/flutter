@@ -200,6 +200,34 @@ public class DartExecutor implements BinaryMessenger {
     return binaryMessenger;
   }
 
+  /**
+   * Optional handler invoked synchronously on the UI thread for incoming Dart platform messages
+   * before falling back to {@link PlatformTaskQueue} dispatch.
+   */
+  public interface SynchronousMessageHandler {
+    /**
+     * Attempts to handle {@code message} synchronously on the UI thread.
+     *
+     * <p>If this method returns {@code true} and {@code reply != null}, the implementation must
+     * submit a response via {@code reply}. If {@code reply == null}, the caller in Dart did not
+     * request a response callback. If this method returns {@code false}, {@code message} will be
+     * dispatched through the channel's normal queue.
+     */
+    @UiThread
+    boolean tryHandleSynchronously(
+        @Nullable ByteBuffer message, @Nullable BinaryMessenger.BinaryReply reply);
+  }
+
+  /**
+   * Registers an optional {@link SynchronousMessageHandler} for {@code channel} on a previously
+   * registered UI-thread message handler.
+   */
+  @UiThread
+  public void setSynchronousMessageHandler(
+      @NonNull String channel, @Nullable SynchronousMessageHandler handler) {
+    dartMessenger.setSynchronousMessageHandler(channel, handler);
+  }
+
   // ------ START BinaryMessenger (Deprecated: use getBinaryMessenger() instead) -----
   /** @deprecated Use {@link #getBinaryMessenger()} instead. */
   @Deprecated

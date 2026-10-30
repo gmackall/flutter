@@ -471,8 +471,22 @@ public class FlutterRenderer implements TextureRegistry {
     private final long id;
 
     private boolean released;
-    // Will be true in tests and on Android API < 33.
-    private boolean ignoringFence = false;
+    // Impeller's AHB import and Skia's EGLImage import handle GPU synchronization natively;
+    // skipping the synchronous CPU SyncFence.awaitForever() on the Raster thread avoids
+    // blocking frame rasterization on RenderThread completion.
+    private boolean ignoringFence = true;
+    private volatile boolean hasBeenAcquiredWithImage = false;
+
+    private void scheduleTextureFrame() {
+      if (!flutterJNI.isAttached()) {
+        return;
+      }
+      if (isDisplayingFlutterUi && hasBeenAcquiredWithImage) {
+        flutterJNI.markTextureFrameAvailable(id);
+      } else {
+        scheduleEngineFrame();
+      }
+    }
 
     private static final boolean trimOnMemoryPressure = CLEANUP_ON_MEMORY_PRESSURE;
 
@@ -529,17 +543,18 @@ public class FlutterRenderer implements TextureRegistry {
         ImageReader.OnImageAvailableListener onImageAvailableListener =
             r -> {
               Image image = null;
-              try {
-                image = r.acquireLatestImage();
-              } catch (IllegalStateException e) {
-                Log.e(TAG, "onImageAvailable acquireLatestImage failed: " + e);
-              }
-              if (image == null) {
-                return;
-              }
-              if (released || closed) {
-                image.close();
-                return;
+              synchronized (lock) {
+                if (released || closed) {
+                  return;
+                }
+                try {
+                  image = r.acquireLatestImage();
+                } catch (IllegalStateException e) {
+                  Log.e(TAG, "onImageAvailable acquireLatestImage failed: " + e);
+                }
+                if (image == null) {
+                  return;
+                }
               }
               onImage(r, image);
             };
@@ -565,6 +580,17 @@ public class FlutterRenderer implements TextureRegistry {
       }
 
       PerImage dequeueImage() {
+        if (imageQueue.isEmpty() && hasBeenAcquiredWithImage && !closed && !released) {
+          Image image = null;
+          try {
+            image = reader.acquireLatestImage();
+          } catch (IllegalStateException e) {
+            Log.e(TAG, "dequeueImage acquireLatestImage failed: " + e);
+          }
+          if (image != null) {
+            queueImage(image);
+          }
+        }
         if (imageQueue.isEmpty()) {
           return null;
         }
@@ -657,7 +683,7 @@ public class FlutterRenderer implements TextureRegistry {
           lastQueueTime = System.nanoTime();
         }
       }
-      scheduleEngineFrame();
+      scheduleTextureFrame();
     }
 
     PerImage dequeueImage() {
@@ -727,7 +753,7 @@ public class FlutterRenderer implements TextureRegistry {
         handler.post(
             () -> {
               if (!released) {
-                scheduleEngineFrame();
+                scheduleTextureFrame();
               }
             });
       }
@@ -762,6 +788,7 @@ public class FlutterRenderer implements TextureRegistry {
     }
 
     private void cleanup() {
+      hasBeenAcquiredWithImage = false;
       synchronized (lock) {
         for (PerImageReader pir : perImageReaders.values()) {
           if (lastReaderDequeuedFrom == pir) {
@@ -889,7 +916,7 @@ public class FlutterRenderer implements TextureRegistry {
         }
         lastScheduleTime = now;
       }
-      scheduleEngineFrame();
+      scheduleTextureFrame();
     }
 
     @Override
@@ -899,6 +926,7 @@ public class FlutterRenderer implements TextureRegistry {
       if (r == null) {
         return null;
       }
+      hasBeenAcquiredWithImage = true;
       maybeWaitOnFence(r.image);
       return r.image;
     }

@@ -4,6 +4,7 @@
 
 package io.flutter.embedding.engine.dart;
 
+import android.os.Looper;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
@@ -105,12 +106,21 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
   private static class HandlerInfo {
     @NonNull public final BinaryMessenger.BinaryMessageHandler handler;
     @Nullable public final DartMessengerTaskQueue taskQueue;
+    @Nullable public final DartExecutor.SynchronousMessageHandler synchronousHandler;
 
     HandlerInfo(
         @NonNull BinaryMessenger.BinaryMessageHandler handler,
         @Nullable DartMessengerTaskQueue taskQueue) {
+      this(handler, taskQueue, null);
+    }
+
+    HandlerInfo(
+        @NonNull BinaryMessenger.BinaryMessageHandler handler,
+        @Nullable DartMessengerTaskQueue taskQueue,
+        @Nullable DartExecutor.SynchronousMessageHandler synchronousHandler) {
       this.handler = handler;
       this.taskQueue = taskQueue;
+      this.synchronousHandler = synchronousHandler;
     }
   }
 
@@ -230,6 +240,17 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
     }
   }
 
+  void setSynchronousMessageHandler(
+      @NonNull String channel, @Nullable DartExecutor.SynchronousMessageHandler syncHandler) {
+    synchronized (handlersLock) {
+      final HandlerInfo existing = messageHandlers.get(channel);
+      if (existing != null) {
+        messageHandlers.put(
+            channel, new HandlerInfo(existing.handler, existing.taskQueue, syncHandler));
+      }
+    }
+  }
+
   @Override
   public void enableBufferingIncomingMessages() {
     enableBufferingIncomingMessages.set(true);
@@ -326,6 +347,46 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
     nonnullTaskQueue.dispatch(myRunnable);
   }
 
+  private boolean tryHandleSynchronously(
+      @NonNull HandlerInfo handlerInfo,
+      @Nullable ByteBuffer message,
+      int replyId,
+      long messageData) {
+    final DartExecutor.SynchronousMessageHandler syncHandler = handlerInfo.synchronousHandler;
+    if (syncHandler == null) {
+      return false;
+    }
+    final int initialPosition = message != null ? message.position() : 0;
+    boolean handled = false;
+    try (TraceSection e = TraceSection.scoped("DartMessenger#handleMessageFromDartSync")) {
+      final BinaryMessenger.BinaryReply reply =
+          replyId != 0 ? new Reply(flutterJNI, replyId) : null;
+      handled = syncHandler.tryHandleSynchronously(message, reply);
+      if (!handled && message != null) {
+        message.position(initialPosition);
+      }
+      return handled;
+    } catch (Exception ex) {
+      Log.e(TAG, "Uncaught exception in synchronous binary message listener", ex);
+      if (replyId != 0) {
+        flutterJNI.invokePlatformMessageEmptyResponseCallback(replyId);
+      }
+      handled = true;
+      return true;
+    } catch (Error err) {
+      handled = true;
+      handleError(err);
+      return true;
+    } finally {
+      if (handled) {
+        if (message != null && message.isDirect()) {
+          message.limit(0);
+        }
+        flutterJNI.cleanupMessageData(messageData);
+      }
+    }
+  }
+
   @Override
   public void handleMessageFromDart(
       @NonNull String channel, @Nullable ByteBuffer message, int replyId, long messageData) {
@@ -334,6 +395,7 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
 
     HandlerInfo handlerInfo;
     boolean messageDeferred;
+    boolean canRunSynchronously;
     // This lock can potentially be a bottleneck and could replaced with a
     // read/write lock.
     synchronized (handlersLock) {
@@ -353,6 +415,17 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
         }
         List<BufferedMessageInfo> buffer = bufferedMessages.get(channel);
         buffer.add(new BufferedMessageInfo(message, replyId, messageData));
+      }
+      canRunSynchronously =
+          !messageDeferred
+              && handlerInfo != null
+              && handlerInfo.synchronousHandler != null
+              && handlerInfo.taskQueue == null
+              && !bufferedMessages.containsKey(channel);
+    }
+    if (canRunSynchronously && Looper.myLooper() == Looper.getMainLooper()) {
+      if (tryHandleSynchronously(handlerInfo, message, replyId, messageData)) {
+        return;
       }
     }
     if (!messageDeferred) {

@@ -43,7 +43,7 @@ public class FlutterMutatorViewTest {
       view.layout(1, 2, 1, 2);
       view.onTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0.0f, 0.0f, 0));
       final ArgumentCaptor<Matrix> matrixCaptor = ArgumentCaptor.forClass(Matrix.class);
-      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture());
+      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture(), anyBoolean());
 
       final Matrix screenMatrix = new Matrix();
       screenMatrix.postTranslate(1, 2);
@@ -57,7 +57,7 @@ public class FlutterMutatorViewTest {
       view.layout(3, 4, 3, 4);
       view.onTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_MOVE, 0.0f, 0.0f, 0));
       final ArgumentCaptor<Matrix> matrixCaptor = ArgumentCaptor.forClass(Matrix.class);
-      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture());
+      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture(), anyBoolean());
 
       final Matrix screenMatrix = new Matrix();
       screenMatrix.postTranslate(3, 4);
@@ -71,7 +71,7 @@ public class FlutterMutatorViewTest {
       view.layout(5, 6, 5, 6);
       view.onTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_MOVE, 0.0f, 0.0f, 0));
       final ArgumentCaptor<Matrix> matrixCaptor = ArgumentCaptor.forClass(Matrix.class);
-      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture());
+      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture(), anyBoolean());
 
       final Matrix screenMatrix = new Matrix();
       screenMatrix.postTranslate(5, 6);
@@ -85,7 +85,7 @@ public class FlutterMutatorViewTest {
       view.layout(7, 8, 7, 8);
       view.onTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0.0f, 0.0f, 0));
       final ArgumentCaptor<Matrix> matrixCaptor = ArgumentCaptor.forClass(Matrix.class);
-      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture());
+      verify(touchProcessor).onTouchEvent(any(), matrixCaptor.capture(), anyBoolean());
 
       final Matrix screenMatrix = new Matrix();
       screenMatrix.postTranslate(7, 8);
@@ -281,4 +281,58 @@ public class FlutterMutatorViewTest {
   @Implements(FrameLayout.class)
   public static class ShadowFrameLayout
       extends io.flutter.plugin.platform.PlatformViewWrapperTest.ShadowViewGroup {}
+
+  /** Child view that records the MotionEvents it receives. */
+  private static class RecordingView extends View {
+    final java.util.ArrayList<MotionEvent> events = new java.util.ArrayList<>();
+
+    RecordingView(Context context) {
+      super(context);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+      events.add(MotionEvent.obtain(event));
+      return true;
+    }
+  }
+
+  @Test
+  public void directDispatch_deliversRemainderOfGestureAfterPlatformViewWins() {
+    final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
+    final FlutterMutatorView view = new FlutterMutatorView(ctx, 1.0f, touchProcessor);
+    final RecordingView child = new RecordingView(ctx);
+    view.addView(child);
+
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 1f, 1f, 0);
+    view.onTouchEvent(down);
+    assertEquals(0, child.events.size());
+    assertFalse(view.isDirectDispatchActive());
+
+    // Framework echo with matching coordinates: the platform view won.
+    view.onPlatformViewWonGesture(
+        MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 1.4f, 1f, 0));
+    assertTrue(view.isDirectDispatchActive());
+
+    final MotionEvent move = MotionEvent.obtain(100, 101, MotionEvent.ACTION_MOVE, 5f, 5f, 0);
+    view.onTouchEvent(move);
+    assertEquals(1, child.events.size());
+    assertTrue(view.isDirectlyDispatched(move));
+    verify(touchProcessor, times(1)).onTouchEvent(eq(down), any(Matrix.class), eq(true));
+    verify(touchProcessor, times(1)).onTouchEvent(eq(move), any(Matrix.class), eq(false));
+
+    final MotionEvent up = MotionEvent.obtain(100, 102, MotionEvent.ACTION_UP, 5f, 5f, 0);
+    view.onTouchEvent(up);
+    assertEquals(2, child.events.size());
+    assertFalse(view.isDirectDispatchActive());
+
+    // A scaled platform view (framework coordinates differ) keeps the round trip.
+    final MotionEvent down2 = MotionEvent.obtain(200, 200, MotionEvent.ACTION_DOWN, 10f, 10f, 0);
+    view.onTouchEvent(down2);
+    view.onPlatformViewWonGesture(
+        MotionEvent.obtain(200, 200, MotionEvent.ACTION_DOWN, 20f, 20f, 0));
+    assertFalse(view.isDirectDispatchActive());
+    view.onTouchEvent(MotionEvent.obtain(200, 201, MotionEvent.ACTION_MOVE, 11f, 11f, 0));
+    assertEquals(2, child.events.size());
+  }
 }
