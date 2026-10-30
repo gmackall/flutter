@@ -213,6 +213,26 @@ TEST_P(TypographerTest, GlyphAtlasIsRecycledIfUnchanged) {
                        MakeTextFrameFromTextBlobSkia(blob));
   ASSERT_EQ(atlas, next_atlas);
   ASSERT_EQ(atlas_context->GetGlyphAtlas(), atlas);
+
+  // Re-using the same TextFrame instance at the same transform records and hits
+  // the verified TextFrame fast-path on the GlyphAtlas.
+  auto reused_frame = MakeTextFrameFromTextBlobSkia(blob);
+  EXPECT_GT(reused_frame->GetUniqueId(), 0u);
+  EXPECT_FALSE(
+      atlas->HasVerifiedTextFrame(reused_frame->GetUniqueId(), Matrix(), {}));
+  auto third_atlas = CreateGlyphAtlas(
+      *GetContext(), context.get(), *data_host_buffer,
+      GlyphAtlas::Type::kAlphaBitmap, Matrix(), atlas_context, reused_frame);
+  ASSERT_EQ(atlas, third_atlas);
+  EXPECT_TRUE(
+      atlas->HasVerifiedTextFrame(reused_frame->GetUniqueId(), Matrix(), {}));
+  // Different transform is not falsely marked as verified.
+  EXPECT_FALSE(atlas->HasVerifiedTextFrame(
+      reused_frame->GetUniqueId(), Matrix::MakeTranslation({0.25f, 0.0f}), {}));
+  // Updating atlas generation clears verified frames.
+  atlas->SetAtlasGeneration(atlas->GetAtlasGeneration() + 1);
+  EXPECT_FALSE(
+      atlas->HasVerifiedTextFrame(reused_frame->GetUniqueId(), Matrix(), {}));
 }
 
 TEST_P(TypographerTest, GlyphAtlasWithLotsOfdUniqueGlyphSize) {

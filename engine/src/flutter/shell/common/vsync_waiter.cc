@@ -67,6 +67,23 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
   if (callback) {
     const uint64_t flow_identifier = fml::tracing::TraceNonce();
 
+    if (task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread()) {
+      TRACE_EVENT0_WITH_FLOW_IDS("flutter", "VsyncFireCallback",
+                                 /*flow_id_count=*/1,
+                                 /*flow_ids=*/&flow_identifier);
+      TRACE_FLOW_BEGIN("flutter", kVsyncFlowName, flow_identifier);
+      FML_TRACE_EVENT_WITH_FLOW_IDS(
+          "flutter", kVsyncTraceName, /*flow_id_count=*/1,
+          /*flow_ids=*/&flow_identifier, "StartTime", frame_start_time,
+          "TargetTime", frame_target_time);
+      std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder =
+          std::make_unique<FrameTimingsRecorder>();
+      frame_timings_recorder->RecordVsync(frame_start_time, frame_target_time);
+      callback(std::move(frame_timings_recorder));
+      TRACE_FLOW_END("flutter", kVsyncFlowName, flow_identifier);
+      return;
+    }
+
     PauseDartEventLoopTasks();
 
     // The base trace ensures that flows have a root to begin from if one does

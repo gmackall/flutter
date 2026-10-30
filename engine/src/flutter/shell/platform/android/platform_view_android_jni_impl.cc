@@ -15,6 +15,7 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/flow/embedded_views.h"
+#include "flutter/fml/cpu_affinity.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/platform/android/jni_util.h"
@@ -26,6 +27,7 @@
 #include "flutter/shell/platform/android/apk_asset_provider.h"
 #include "flutter/shell/platform/android/flutter_main.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
+#include "flutter/shell/platform/android/ndk_surface_producer.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 #define ANDROID_SHELL_HOLDER \
@@ -45,6 +47,9 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_texture_wrapper_class = nullptr;
 
 static fml::jni::ScopedJavaGlobalRef<jclass>*
     g_image_consumer_texture_registry_interface = nullptr;
+
+static fml::jni::ScopedJavaGlobalRef<jclass>*
+    g_image_reader_surface_producer_class = nullptr;
 
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_image_class = nullptr;
 
@@ -136,6 +141,8 @@ static jmethodID g_get_transform_matrix_method = nullptr;
 static jmethodID g_detach_from_gl_context_method = nullptr;
 
 static jmethodID g_acquire_latest_image_method = nullptr;
+
+static jmethodID g_acquire_latest_hardware_buffer_method = nullptr;
 
 static jmethodID g_image_get_hardware_buffer_method = nullptr;
 
@@ -587,6 +594,27 @@ static void RegisterImageTexture(JNIEnv* env,
   );
 }
 
+static void RegisterNdkSurfaceProducerTexture(JNIEnv* env,
+                                              jobject jcaller,
+                                              jlong shell_holder,
+                                              jlong texture_id,
+                                              jobject image_texture_entry,
+                                              jboolean reset_on_background,
+                                              jlong ndk_producer_ptr) {
+  ImageExternalTexture::ImageLifecycle lifecycle =
+      reset_on_background ? ImageExternalTexture::ImageLifecycle::kReset
+                          : ImageExternalTexture::ImageLifecycle::kKeepAlive;
+  std::shared_ptr<NdkSurfaceProducer> ndk_producer;
+  if (ndk_producer_ptr != 0) {
+    ndk_producer = *reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(
+        ndk_producer_ptr);
+  }
+  ANDROID_SHELL_HOLDER->GetPlatformView()->RegisterImageTexture(
+      static_cast<int64_t>(texture_id),
+      fml::jni::ScopedJavaGlobalRef<jobject>(env, image_texture_entry),
+      lifecycle, std::move(ndk_producer));
+}
+
 static void UnregisterTexture(JNIEnv* env,
                               jobject jcaller,
                               jlong shell_holder,
@@ -750,6 +778,138 @@ static void UpdateJavaAssetManager(JNIEnv* env,
   ANDROID_SHELL_HOLDER->GetPlatformView()->UpdateAssetResolverByType(
       std::move(asset_resolver),
       AssetResolver::AssetResolverType::kApkAssetProvider);
+}
+
+static jboolean RequestNotEfficiencyAffinity(JNIEnv* env, jclass clazz) {
+  return fml::RequestAffinity(fml::CpuAffinity::kNotEfficiency) ? JNI_TRUE
+                                                                : JNI_FALSE;
+}
+
+static jint GetLastRasterThreadTid(JNIEnv* env, jclass clazz) {
+  return static_cast<jint>(AndroidShellHolder::GetLastRasterThreadTid());
+}
+
+static jint GetNdkImageReaderTid(JNIEnv* env, jclass clazz) {
+  return static_cast<jint>(NdkSurfaceProducer::GetLastReaderThreadTid());
+}
+
+static jlong CreateNdkSurfaceProducer(JNIEnv* env,
+                                      jobject jcaller,
+                                      jlong shell_holder,
+                                      jlong texture_id,
+                                      jboolean is_displaying_ui) {
+  if (shell_holder == 0 || !NdkSurfaceProducer::IsAvailable()) {
+    return 0;
+  }
+  auto platform_view = ANDROID_SHELL_HOLDER->GetPlatformView();
+  if (!platform_view) {
+    return 0;
+  }
+  auto producer = std::make_shared<NdkSurfaceProducer>(
+      static_cast<int64_t>(texture_id), platform_view,
+      platform_view->GetPlatformTaskRunner(), is_displaying_ui == JNI_TRUE);
+  auto* handle = new std::shared_ptr<NdkSurfaceProducer>(std::move(producer));
+  return reinterpret_cast<jlong>(handle);
+}
+
+static void DestroyNdkSurfaceProducer(JNIEnv* env, jclass clazz, jlong ptr) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->Release();
+  }
+  delete handle;
+}
+
+static void NdkSurfaceProducerSetSize(JNIEnv* env,
+                                      jclass clazz,
+                                      jlong ptr,
+                                      jint width,
+                                      jint height) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->SetSize(width, height);
+  }
+}
+
+static jobject NdkSurfaceProducerGetSurface(JNIEnv* env,
+                                            jclass clazz,
+                                            jlong ptr,
+                                            jboolean force_new) {
+  if (ptr == 0) {
+    return nullptr;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (!(*handle)) {
+    return nullptr;
+  }
+  return (*handle)->GetSurface(env, force_new == JNI_TRUE).Release();
+}
+
+static void NdkSurfaceProducerScheduleFrame(JNIEnv* env,
+                                            jclass clazz,
+                                            jlong ptr,
+                                            jboolean is_displaying_ui) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->ScheduleFrameFromPlatform(is_displaying_ui == JNI_TRUE);
+  }
+}
+
+static void NdkSurfaceProducerSetDisplayingUi(JNIEnv* env,
+                                              jclass clazz,
+                                              jlong ptr,
+                                              jboolean is_displaying_ui) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->SetDisplayingFlutterUi(is_displaying_ui == JNI_TRUE);
+  }
+}
+
+static void NdkSurfaceProducerOnTrimMemory(JNIEnv* env,
+                                           jclass clazz,
+                                           jlong ptr) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->OnTrimMemoryCleanup();
+  }
+}
+
+static jint NdkSurfaceProducerGetCount(JNIEnv* env,
+                                       jclass clazz,
+                                       jlong ptr,
+                                       jint kind) {
+  if (ptr == 0) {
+    return 0;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (!(*handle)) {
+    return 0;
+  }
+  switch (kind) {
+    case 0:
+      return (*handle)->GetNumImageReadersForTest();
+    case 1:
+      return (*handle)->GetNumQueuedImagesForTest();
+    case 2:
+      return (*handle)->GetPendingDequeuedImagesForTest();
+    default:
+      return 0;
+  }
 }
 
 bool RegisterApi(JNIEnv* env) {
@@ -956,6 +1116,66 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeIsSurfaceControlEnabled",
           .signature = "(J)Z",
           .fnPtr = reinterpret_cast<void*>(&IsSurfaceControlEnabled),
+      },
+      {
+          .name = "nativeRequestNotEfficiencyAffinity",
+          .signature = "()Z",
+          .fnPtr = reinterpret_cast<void*>(&RequestNotEfficiencyAffinity),
+      },
+      {
+          .name = "nativeGetLastRasterThreadTid",
+          .signature = "()I",
+          .fnPtr = reinterpret_cast<void*>(&GetLastRasterThreadTid),
+      },
+      {
+          .name = "nativeGetNdkImageReaderTid",
+          .signature = "()I",
+          .fnPtr = reinterpret_cast<void*>(&GetNdkImageReaderTid),
+      },
+      {
+          .name = "nativeRegisterNdkSurfaceProducerTexture",
+          .signature = "(JJLjava/lang/ref/WeakReference;ZJ)V",
+          .fnPtr = reinterpret_cast<void*>(&RegisterNdkSurfaceProducerTexture),
+      },
+      {
+          .name = "nativeCreateNdkSurfaceProducer",
+          .signature = "(JJZ)J",
+          .fnPtr = reinterpret_cast<void*>(&CreateNdkSurfaceProducer),
+      },
+      {
+          .name = "nativeDestroyNdkSurfaceProducer",
+          .signature = "(J)V",
+          .fnPtr = reinterpret_cast<void*>(&DestroyNdkSurfaceProducer),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerSetSize",
+          .signature = "(JII)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerSetSize),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerGetSurface",
+          .signature = "(JZ)Landroid/view/Surface;",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerGetSurface),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerScheduleFrame",
+          .signature = "(JZ)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerScheduleFrame),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerSetDisplayingUi",
+          .signature = "(JZ)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerSetDisplayingUi),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerOnTrimMemory",
+          .signature = "(J)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerOnTrimMemory),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerGetCount",
+          .signature = "(JI)I",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerGetCount),
       }};
 
   if (env->RegisterNatives(g_flutter_jni_class->obj(), flutter_jni_methods,
@@ -1249,6 +1469,20 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
         env->GetMethodID(g_hardware_buffer_class->obj(), "close", "()V");
     if (g_hardware_buffer_close_method == nullptr) {
       // Continue on as this class may not exist at API <= 26.
+      fml::jni::ClearException(env, true);
+    }
+    g_image_reader_surface_producer_class =
+        new fml::jni::ScopedJavaGlobalRef<jclass>(
+            env, env->FindClass("io/flutter/embedding/engine/renderer/"
+                                "FlutterRenderer$ImageReaderSurfaceProducer"));
+    if (!g_image_reader_surface_producer_class->is_null()) {
+      g_acquire_latest_hardware_buffer_method = env->GetMethodID(
+          g_image_reader_surface_producer_class->obj(),
+          "acquireLatestHardwareBuffer", "()Landroid/hardware/HardwareBuffer;");
+      if (g_acquire_latest_hardware_buffer_method == nullptr) {
+        fml::jni::ClearException(env, true);
+      }
+    } else {
       fml::jni::ClearException(env, true);
     }
   } else {
@@ -1708,6 +1942,75 @@ PlatformViewAndroidJNIImpl::ImageProducerTextureEntryAcquireLatestImage(
   }
   // Return null.
   return JavaLocalRef();
+}
+
+PlatformViewAndroidJNI::AcquiredHardwareBuffer PlatformViewAndroidJNIImpl::
+    ImageProducerTextureEntryAcquireLatestHardwareBuffer(
+        JavaLocalRef image_producer_texture_entry,
+        fml::jni::JavaObjectWeakGlobalRef* cached_consumer,
+        bool* cached_is_surface_producer) {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+
+  fml::jni::ScopedJavaLocalRef<jobject> consumer_local_ref;
+  bool is_surface_producer = false;
+
+  if (cached_consumer != nullptr && cached_is_surface_producer != nullptr) {
+    consumer_local_ref = cached_consumer->get(env);
+    if (!consumer_local_ref.is_null()) {
+      is_surface_producer = *cached_is_surface_producer;
+    } else if (!image_producer_texture_entry.is_null()) {
+      consumer_local_ref = fml::jni::ScopedJavaLocalRef<jobject>(
+          env, env->CallObjectMethod(image_producer_texture_entry.obj(),
+                                     g_java_weak_reference_get_method));
+      if (!fml::jni::CheckException(env) || consumer_local_ref.is_null()) {
+        return {};
+      }
+      *cached_consumer =
+          fml::jni::JavaObjectWeakGlobalRef(env, consumer_local_ref.obj());
+      is_surface_producer =
+          g_acquire_latest_hardware_buffer_method != nullptr &&
+          g_image_reader_surface_producer_class != nullptr &&
+          !g_image_reader_surface_producer_class->is_null() &&
+          env->IsInstanceOf(consumer_local_ref.obj(),
+                            g_image_reader_surface_producer_class->obj());
+      *cached_is_surface_producer = is_surface_producer;
+    } else {
+      return {};
+    }
+  } else {
+    if (image_producer_texture_entry.is_null()) {
+      return {};
+    }
+    consumer_local_ref = fml::jni::ScopedJavaLocalRef<jobject>(
+        env, env->CallObjectMethod(image_producer_texture_entry.obj(),
+                                   g_java_weak_reference_get_method));
+    if (!fml::jni::CheckException(env) || consumer_local_ref.is_null()) {
+      return {};
+    }
+    is_surface_producer =
+        g_acquire_latest_hardware_buffer_method != nullptr &&
+        g_image_reader_surface_producer_class != nullptr &&
+        !g_image_reader_surface_producer_class->is_null() &&
+        env->IsInstanceOf(consumer_local_ref.obj(),
+                          g_image_reader_surface_producer_class->obj());
+  }
+
+  if (is_surface_producer) {
+    JavaLocalRef hb(
+        env, env->CallObjectMethod(consumer_local_ref.obj(),
+                                   g_acquire_latest_hardware_buffer_method));
+    if (!fml::jni::CheckException(env) || hb.is_null()) {
+      return {};
+    }
+    return {std::move(hb), true};
+  }
+
+  JavaLocalRef image(env, env->CallObjectMethod(consumer_local_ref.obj(),
+                                                g_acquire_latest_image_method));
+  if (!fml::jni::CheckException(env) || image.is_null()) {
+    return {};
+  }
+  return {ImageGetHardwareBuffer(std::move(image)), false};
 }
 
 JavaLocalRef PlatformViewAndroidJNIImpl::ImageGetHardwareBuffer(

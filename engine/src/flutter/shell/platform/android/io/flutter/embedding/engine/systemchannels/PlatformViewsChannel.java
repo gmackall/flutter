@@ -6,12 +6,15 @@ package io.flutter.embedding.engine.systemchannels;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
 import io.flutter.embedding.engine.dart.DartExecutor;
+import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.StandardMethodCodec;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +27,13 @@ import java.util.Map;
  */
 public class PlatformViewsChannel {
   private static final String TAG = "PlatformViewsChannel";
+  private static final int SYNC_OFFSET_MESSAGE_BYTES = 56;
+
+  /**
+   * Whether incoming {@code offset} calls on the UI thread are handled synchronously before {@code
+   * Choreographer} traversal instead of posting to {@code PlatformTaskQueue}.
+   */
+  @VisibleForTesting public static boolean enableSynchronousOffset = true;
 
   private final MethodChannel channel;
   private PlatformViewsHandler handler;
@@ -33,6 +43,24 @@ public class PlatformViewsChannel {
       return;
     }
     channel.invokeMethod("viewFocused", viewId);
+  }
+
+  /**
+   * Tells the framework that the remainder of the given touch gesture is being delivered directly
+   * to the platform view by the embedding, so the framework can stop echoing the gesture's
+   * single-pointer {@code ACTION_MOVE} events back through the {@code touch} method.
+   *
+   * @param viewId The platform view.
+   * @param downTime The {@code MotionEvent#getDownTime()} of the gesture.
+   */
+  public void invokeDirectTouchDispatch(int viewId, long downTime) {
+    if (channel == null) {
+      return;
+    }
+    final Map<String, Object> args = new HashMap<>();
+    args.put("id", viewId);
+    args.put("downTime", downTime);
+    channel.invokeMethod("directTouchDispatch", args);
   }
 
   private static String detailedExceptionString(Exception exception) {
@@ -288,6 +316,70 @@ public class PlatformViewsChannel {
     channel =
         new MethodChannel(dartExecutor, "flutter/platform_views", StandardMethodCodec.INSTANCE);
     channel.setMethodCallHandler(parsingHandler);
+    dartExecutor.setSynchronousMessageHandler(
+        "flutter/platform_views", this::tryHandleSynchronousOffset);
+  }
+
+  @VisibleForTesting
+  boolean tryHandleSynchronousOffset(
+      @Nullable ByteBuffer message, @Nullable BinaryMessenger.BinaryReply reply) {
+    if (!enableSynchronousOffset || handler == null || message == null) {
+      return false;
+    }
+    if (message.position() != 0 || message.remaining() != SYNC_OFFSET_MESSAGE_BYTES) {
+      return false;
+    }
+    // Match the StandardMethodCodec encoding of:
+    // MethodCall("offset", {"id": int32, "top": float64, "left": float64})
+    if (message.get(0) != 7
+        || message.get(1) != 6
+        || message.get(2) != 'o'
+        || message.get(3) != 'f'
+        || message.get(4) != 'f'
+        || message.get(5) != 's'
+        || message.get(6) != 'e'
+        || message.get(7) != 't'
+        || message.get(8) != 13
+        || message.get(9) != 3
+        || message.get(10) != 7
+        || message.get(11) != 2
+        || message.get(12) != 'i'
+        || message.get(13) != 'd'
+        || message.get(14) != 3
+        || message.get(19) != 7
+        || message.get(20) != 3
+        || message.get(21) != 't'
+        || message.get(22) != 'o'
+        || message.get(23) != 'p'
+        || message.get(24) != 6
+        || message.get(40) != 7
+        || message.get(41) != 4
+        || message.get(42) != 'l'
+        || message.get(43) != 'e'
+        || message.get(44) != 'f'
+        || message.get(45) != 't'
+        || message.get(46) != 6) {
+      return false;
+    }
+    message.order(ByteOrder.nativeOrder());
+    final int viewId = message.getInt(15);
+    final double top = message.getDouble(32);
+    final double left = message.getDouble(48);
+    try {
+      handler.offset(viewId, top, left);
+      if (reply != null) {
+        reply.reply(StandardMethodCodec.INSTANCE.encodeSuccessEnvelope(null));
+      }
+    } catch (IllegalStateException exception) {
+      if (reply != null) {
+        reply.reply(
+            StandardMethodCodec.INSTANCE.encodeErrorEnvelope(
+                "error", detailedExceptionString(exception), null));
+      } else {
+        Log.e(TAG, detailedExceptionString(exception));
+      }
+    }
+    return true;
   }
 
   /**

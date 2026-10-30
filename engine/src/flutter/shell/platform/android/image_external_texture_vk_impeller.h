@@ -32,6 +32,8 @@ class ImageExternalTextureVKImpeller : public ImageExternalTexture {
   void Attach(PaintContext& context) override;
   void ProcessFrame(PaintContext& context, const SkRect& bounds) override;
   void Detach() override;
+  void ImportOrWaitAcquireFence(fml::UniqueFD acquire_fence_fd,
+                                impeller::vk::PipelineStageFlags wait_stage);
 
   const std::shared_ptr<impeller::ContextVK> impeller_context_;
 };

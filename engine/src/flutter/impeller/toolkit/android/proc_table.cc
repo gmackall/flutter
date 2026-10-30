@@ -42,6 +42,9 @@ ProcTable::ProcTable() {
 
   libraries_.push_back(std::move(lib_android));
   libraries_.push_back(std::move(lib_egl));
+  if (auto lib_mediandk = fml::NativeLibrary::Create("libmediandk.so")) {
+    libraries_.push_back(std::move(lib_mediandk));
+  }
 
 #define RESOLVE_PROC(proc, api) ResolveAndroidProc(proc, libraries_);
   FOR_EACH_ANDROID_PROC(RESOLVE_PROC);

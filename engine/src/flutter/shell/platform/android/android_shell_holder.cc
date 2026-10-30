@@ -7,6 +7,8 @@
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -29,6 +31,8 @@
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
+
+static std::atomic<int> g_last_raster_tid{0};
 
 /// Inheriting ThreadConfigurer and use Android platform thread API to configure
 /// the thread priorities
@@ -53,6 +57,8 @@ static void AndroidPlatformThreadConfigSetter(
       break;
     }
     case fml::Thread::ThreadPriority::kRaster: {
+      g_last_raster_tid.store(static_cast<int>(gettid()),
+                              std::memory_order_relaxed);
       fml::RequestAffinity(fml::CpuAffinity::kNotEfficiency);
       // Android describes -8 as "most important display threads, for
       // compositing the screen and retrieving input events". Conservatively
@@ -142,6 +148,11 @@ AndroidShellHolder::AndroidShellHolder(
   raster_runner = thread_host_->raster_thread->GetTaskRunner();
   if (settings.merged_platform_ui_thread ==
       Settings::MergedPlatformUIThread::kEnabled) {
+    // When UI and platform threads are merged, ThreadHost does not spawn a
+    // dedicated kDisplay UI thread, so AndroidPlatformThreadConfigSetter does
+    // not run for it. Request kNotEfficiency affinity on the merged thread so
+    // Dart UI + Android View/WebView traversals avoid little efficiency cores.
+    fml::RequestAffinity(fml::CpuAffinity::kNotEfficiency);
     ui_runner = platform_runner;
   } else {
     ui_runner = thread_host_->ui_thread->GetTaskRunner();
@@ -217,6 +228,10 @@ bool AndroidShellHolder::IsValid() const {
 
 const flutter::Settings& AndroidShellHolder::GetSettings() const {
   return settings_;
+}
+
+int AndroidShellHolder::GetLastRasterThreadTid() {
+  return g_last_raster_tid.load(std::memory_order_relaxed);
 }
 
 std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(

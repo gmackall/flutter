@@ -641,9 +641,70 @@ void ContextVK::Shutdown() {
   //
   // tl;dr: Without it, we get thread::join failures on shutdown.
   fence_waiter_->Terminate();
+  if (device_holder_ && device_holder_->device) {
+    [[maybe_unused]] auto wait_res = device_holder_->device->waitIdle();
+  }
+  {
+    Lock lock(pending_wait_semaphores_mutex_);
+    pending_wait_semaphores_.clear();
+    retired_wait_semaphores_.clear();
+  }
   resource_manager_.reset();
 
   raster_message_loop_->Terminate();
+}
+
+void ContextVK::EnqueueExternalWaitSemaphore(
+    vk::UniqueSemaphore semaphore,
+    vk::PipelineStageFlags wait_stage) {
+  if (!semaphore) {
+    return;
+  }
+  Lock lock(pending_wait_semaphores_mutex_);
+  pending_wait_semaphores_.push_back(PendingWaitSemaphore{
+      .semaphore = std::move(semaphore),
+      .wait_stage = wait_stage,
+  });
+}
+
+std::vector<ContextVK::PendingWaitSemaphore>
+ContextVK::TakePendingWaitSemaphores() {
+  Lock lock(pending_wait_semaphores_mutex_);
+  if (pending_wait_semaphores_.empty()) {
+    return {};
+  }
+  std::vector<PendingWaitSemaphore> result;
+  result.swap(pending_wait_semaphores_);
+  return result;
+}
+
+void ContextVK::RetireCompletedWaitSemaphores(
+    std::vector<vk::UniqueSemaphore>& semaphores) {
+  if (semaphores.empty()) {
+    return;
+  }
+  // On ARM Mali CSF GPUs (libGLES_mali.so), importing a sync_file FD into a
+  // VkSemaphore registers an async callback on Mali's user-space event thread
+  // (`mali-event-hand` / `basep_cpu_queue_process`). When the kernel sync_file
+  // signals, the GPU submission fence can wake `IplrVkFenceWait` before
+  // `mali-event-hand` finishes unlocking its internal `fence_internal` mutex.
+  // Retaining a bounded FIFO of completed semaphores prevents calling
+  // `vkDestroySemaphore` while `mali-event-hand` is still signalling.
+  constexpr size_t kMaxRetiredWaitSemaphores = 64u;
+  std::vector<vk::UniqueSemaphore> expired;
+  {
+    Lock lock(pending_wait_semaphores_mutex_);
+    for (auto& sem : semaphores) {
+      if (sem) {
+        retired_wait_semaphores_.push_back(std::move(sem));
+      }
+    }
+    semaphores.clear();
+    while (retired_wait_semaphores_.size() > kMaxRetiredWaitSemaphores) {
+      expired.push_back(std::move(retired_wait_semaphores_.front()));
+      retired_wait_semaphores_.pop_front();
+    }
+  }
 }
 
 std::shared_ptr<SurfaceContextVK> ContextVK::CreateSurfaceContext() {

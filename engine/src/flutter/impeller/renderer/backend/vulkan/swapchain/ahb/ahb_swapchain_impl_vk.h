@@ -30,6 +30,7 @@ struct AHBFrameSynchronizerVK {
   vk::UniqueFence acquire;
   bool acquire_fence_pending = false;
   vk::UniqueSemaphore render_ready = {};
+  std::vector<vk::UniqueSemaphore> external_wait_semaphores;
   std::shared_ptr<ExternalSemaphoreVK> present_ready;
   std::shared_ptr<CommandBuffer> final_cmd_buffer;
   bool is_valid = false;

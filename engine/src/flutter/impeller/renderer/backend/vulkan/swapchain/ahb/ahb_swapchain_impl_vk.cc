@@ -147,6 +147,8 @@ std::unique_ptr<Surface> AHBSwapchainImplVK::AcquireNextDrawable() {
           ContextVK::Cast(*context).GetDevice())) {
     return nullptr;
   }
+  ContextVK::Cast(*context).RetireCompletedWaitSemaphores(
+      frame_data_[frame_index_]->external_wait_semaphores);
 
   if (!is_valid_) {
     return nullptr;
@@ -268,21 +270,35 @@ AHBSwapchainImplVK::SubmitSignalForPresentReady(
   }
   sync->present_ready = present_ready;
 
+  auto& context_vk = ContextVK::Cast(*context);
+  auto pending_waits = context_vk.TakePendingWaitSemaphores();
   vk::SubmitInfo submit_info;
-  vk::PipelineStageFlags wait_stage =
-      vk::PipelineStageFlagBits::eColorAttachmentOutput;
+  std::vector<vk::Semaphore> wait_semaphores;
+  std::vector<vk::PipelineStageFlags> wait_stages;
+  wait_semaphores.reserve((sync->render_ready ? 1u : 0u) +
+                          pending_waits.size());
+  wait_stages.reserve((sync->render_ready ? 1u : 0u) + pending_waits.size());
   if (sync->render_ready) {
-    submit_info.setPWaitSemaphores(&sync->render_ready.get());
-    submit_info.setWaitSemaphoreCount(1);
-    submit_info.setWaitDstStageMask(wait_stage);
+    wait_semaphores.push_back(*sync->render_ready);
+    wait_stages.push_back(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+  }
+  for (auto& item : pending_waits) {
+    wait_semaphores.push_back(*item.semaphore);
+    wait_stages.push_back(item.wait_stage);
+    sync->external_wait_semaphores.push_back(std::move(item.semaphore));
+  }
+  if (!wait_semaphores.empty()) {
+    submit_info.setWaitSemaphores(wait_semaphores);
+    submit_info.setWaitDstStageMask(wait_stages);
   }
   submit_info.setCommandBuffers(command_encoder_vk);
   submit_info.setPSignalSemaphores(&sync->present_ready->GetHandle());
   submit_info.setSignalSemaphoreCount(1);
 
-  auto result = ContextVK::Cast(*context).GetGraphicsQueue()->Submit(
-      submit_info, *sync->acquire);
+  auto result =
+      context_vk.GetGraphicsQueue()->Submit(submit_info, *sync->acquire);
   if (result != vk::Result::eSuccess) {
+    sync->external_wait_semaphores.clear();
     return nullptr;
   }
   sync->acquire_fence_pending = true;

@@ -6,6 +6,10 @@
 
 #include <android/hardware_buffer_jni.h>
 #include <android/sensor.h>
+#include <errno.h>
+#include <poll.h>
+
+#include <cstring>
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/impeller/core/formats.h"
@@ -41,14 +45,26 @@ void ImageExternalTextureGL::Attach(PaintContext& context) {
   }
 }
 
-void ImageExternalTextureGL::UpdateImage(JavaLocalRef& hardware_buffer,
-                                         const SkRect& bounds,
-                                         PaintContext& context) {
-  AHardwareBuffer* latest_hardware_buffer = AHardwareBufferFor(hardware_buffer);
+void ImageExternalTextureGL::UpdateImage(
+    AHardwareBuffer* latest_hardware_buffer,
+    const SkRect& bounds,
+    PaintContext& context) {
   std::optional<HardwareBufferKey> key =
       impeller::android::HardwareBuffer::GetSystemUniqueID(
           latest_hardware_buffer);
-  auto existing_image = image_lru_.FindImage(key);
+  auto evict_cb = [this](HardwareBufferKey evicted_key) {
+    gl_entries_.erase(evicted_key);
+  };
+  if (auto cached_image = image_lru_.TryFindImage(key, evict_cb)) {
+    dl_image_ = std::move(cached_image);
+    return;
+  }
+  auto descriptor =
+      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
+  if (!descriptor.has_value()) {
+    return;
+  }
+  auto existing_image = image_lru_.FindImage(key, descriptor.value(), evict_cb);
   if (existing_image != nullptr) {
     dl_image_ = existing_image;
     return;
@@ -59,24 +75,86 @@ void ImageExternalTextureGL::UpdateImage(JavaLocalRef& hardware_buffer,
     return;
   }
 
-  dl_image_ = CreateDlImage(context, bounds, key, std::move(egl_image));
+  auto image = CreateDlImage(context, bounds, key, std::move(egl_image));
+  if (!image) {
+    return;
+  }
+  dl_image_ = std::move(image);
   if (key.has_value()) {
     gl_entries_.erase(image_lru_.AddImage(dl_image_, key.value()));
   }
 }
 
+namespace {
+
+void WaitAcquireFenceOnGL(fml::UniqueFD acquire_fence_fd) {
+  if (!acquire_fence_fd.is_valid()) {
+    return;
+  }
+  EGLDisplay display = eglGetCurrentDisplay();
+  if (display != EGL_NO_DISPLAY) {
+    static const auto create_sync = reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(
+        eglGetProcAddress("eglCreateSyncKHR"));
+    static const auto wait_sync = reinterpret_cast<PFNEGLWAITSYNCKHRPROC>(
+        eglGetProcAddress("eglWaitSyncKHR"));
+    static const auto destroy_sync = reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(
+        eglGetProcAddress("eglDestroySyncKHR"));
+    if (create_sync && wait_sync && destroy_sync) {
+      thread_local EGLDisplay t_checked_display = EGL_NO_DISPLAY;
+      thread_local bool t_has_native_fence = false;
+      if (t_checked_display != display) {
+        t_checked_display = display;
+        const char* exts = eglQueryString(display, EGL_EXTENSIONS);
+        t_has_native_fence =
+            exts != nullptr &&
+            std::strstr(exts, "EGL_ANDROID_native_fence_sync") != nullptr &&
+            std::strstr(exts, "EGL_KHR_wait_sync") != nullptr;
+      }
+      if (t_has_native_fence) {
+        // Release Bionic fdsan ownership BEFORE eglCreateSyncKHR, because the
+        // EGL driver takes ownership of (and may close/dup) the sync_file FD
+        // inside the call on success. Reclaim on failure for poll() fallback.
+        const int raw_fd = acquire_fence_fd.release();
+        const EGLint attribs[] = {
+            EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
+            raw_fd,
+            EGL_NONE,
+        };
+        EGLSyncKHR sync =
+            create_sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+        if (sync != EGL_NO_SYNC_KHR) {
+          wait_sync(display, sync, 0);
+          destroy_sync(display, sync);
+          return;
+        }
+        acquire_fence_fd.reset(raw_fd);
+      }
+    }
+  }
+  struct pollfd pfd = {
+      .fd = acquire_fence_fd.get(),
+      .events = POLLIN,
+      .revents = 0,
+  };
+  int ret = 0;
+  do {
+    ret = ::poll(&pfd, 1, -1);
+  } while (ret == -1 && errno == EINTR);
+}
+
+}  // namespace
+
 void ImageExternalTextureGL::ProcessFrame(PaintContext& context,
                                           const SkRect& bounds) {
-  JavaLocalRef image = AcquireLatestImage();
-  if (image.is_null()) {
+  auto acquired = AcquireLatestFrame();
+  if (acquired.ahardware_buffer == nullptr) {
     return;
   }
-  JavaLocalRef hardware_buffer = HardwareBufferFor(image);
-  if (hardware_buffer.is_null()) {
-    return;
+  WaitAcquireFenceOnGL(std::move(acquired.acquire_fence_fd));
+  UpdateImage(acquired.ahardware_buffer, bounds, context);
+  if (!acquired.owned_by_producer) {
+    CloseHardwareBuffer(acquired.java_hardware_buffer);
   }
-  UpdateImage(hardware_buffer, bounds, context);
-  CloseHardwareBuffer(hardware_buffer);
 }
 
 void ImageExternalTextureGL::Detach() {
@@ -108,11 +186,18 @@ impeller::UniqueEGLImageKHR ImageExternalTextureGL::CreateEGLImage(
 
   impeller::EGLImageKHRWithDisplay maybe_image =
       impeller::EGLImageKHRWithDisplay{
-          eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
-                            client_buffer, 0),
-          display};
+          CreateEGLImageKHR(display, client_buffer), display};
 
+  if (maybe_image.image == EGL_NO_IMAGE_KHR) {
+    return {};
+  }
   return impeller::UniqueEGLImageKHR(maybe_image);
+}
+
+EGLImageKHR ImageExternalTextureGL::CreateEGLImageKHR(EGLDisplay display,
+                                                      EGLClientBuffer buffer) {
+  return eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
+                           buffer, nullptr);
 }
 
 }  // namespace flutter

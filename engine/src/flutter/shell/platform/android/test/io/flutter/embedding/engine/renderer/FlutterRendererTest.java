@@ -1132,4 +1132,279 @@ public class FlutterRendererTest {
     producer.waitOnFence(image);
     verify(fence, times(1)).close();
   }
+
+  @Test
+  public void scheduleFrame_latestFrameOnlyCapsQueueAtOneWhenUnconsumed() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+    texture.disableFenceForTest();
+    texture.setSize(1, 1);
+
+    Surface surface = texture.getSurface();
+    assertNotNull(surface);
+    assertEquals(surface, texture.getSurface());
+
+    for (int i = 0; i < 4; i++) {
+      Canvas canvas = surface.lockHardwareCanvas();
+      canvas.drawARGB(255, i * 40, 0, 0);
+      surface.unlockCanvasAndPost(canvas);
+      texture.scheduleFrame();
+      shadowMainLooper().idle();
+    }
+
+    assertEquals(1, texture.numImages());
+    assertNotNull(texture.acquireLatestImage());
+    assertEquals(0, texture.numImages());
+    texture.release();
+  }
+
+  @Test
+  public void acquireLatestHardwareBuffer_cachesHardwareBufferAndClosesOnEvict() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+    texture.disableFenceForTest();
+    ImageReader mockReader = mock(ImageReader.class);
+    Surface mockSurface = mock(Surface.class);
+    when(mockReader.getSurface()).thenReturn(mockSurface);
+
+    Image firstImage = mock(Image.class);
+    android.hardware.HardwareBuffer firstHb = mock(android.hardware.HardwareBuffer.class);
+    when(firstImage.getHardwareBuffer()).thenReturn(firstHb);
+
+    texture.onImage(mockReader, firstImage);
+    assertEquals(firstHb, texture.acquireLatestHardwareBuffer());
+    verify(firstImage, times(1)).getHardwareBuffer();
+
+    for (int i = 0; i < 3; i++) {
+      Image nextImage = mock(Image.class);
+      android.hardware.HardwareBuffer nextHb = mock(android.hardware.HardwareBuffer.class);
+      when(nextImage.getHardwareBuffer()).thenReturn(nextHb);
+      texture.onImage(mockReader, nextImage);
+      assertEquals(nextHb, texture.acquireLatestHardwareBuffer());
+    }
+
+    verify(firstHb, times(1)).close();
+    verify(firstImage, times(1)).close();
+    texture.release();
+  }
+
+  @Test
+  public void backgroundImageReaderThread_usesDedicatedLooperAndCoalescesMainSchedule() {
+    FlutterRenderer.debugUseBackgroundImageReaderThread = true;
+    try {
+      FlutterRenderer flutterRenderer = spy(engineRule.getFlutterEngine().getRenderer());
+      FlutterRenderer.ImageReaderSurfaceProducer rawTexture =
+          (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+      FlutterRenderer.ImageReaderSurfaceProducer texture = spy(rawTexture);
+      texture.disableFenceForTest();
+
+      assertNotEquals(android.os.Looper.getMainLooper(), texture.getImageReaderLooperForTest());
+
+      ImageReader mockReader = mock(ImageReader.class);
+      Surface mockSurface = mock(Surface.class);
+      when(mockSurface.isValid()).thenReturn(true);
+      when(mockReader.getSurface()).thenReturn(mockSurface);
+      when(texture.createImageReader()).thenReturn(mockReader);
+
+      final org.mockito.ArgumentCaptor<ImageReader.OnImageAvailableListener> listenerCaptor =
+          org.mockito.ArgumentCaptor.forClass(ImageReader.OnImageAvailableListener.class);
+      final org.mockito.ArgumentCaptor<android.os.Handler> handlerCaptor =
+          org.mockito.ArgumentCaptor.forClass(android.os.Handler.class);
+
+      Image img1 = mock(Image.class);
+      Image img2 = mock(Image.class);
+      android.hardware.HardwareBuffer hb1 = mock(android.hardware.HardwareBuffer.class);
+      android.hardware.HardwareBuffer hb2 = mock(android.hardware.HardwareBuffer.class);
+      when(img1.getHardwareBuffer()).thenReturn(hb1);
+      when(img2.getHardwareBuffer()).thenReturn(hb2);
+      when(mockReader.acquireLatestImage()).thenReturn(img1, img2);
+
+      // Mark consumer as HardwareBuffer-backed so background listener preloads HardwareBuffers.
+      assertNull(texture.acquireLatestHardwareBuffer());
+      assertEquals(mockSurface, texture.getSurface());
+      verify(mockReader)
+          .setOnImageAvailableListener(listenerCaptor.capture(), handlerCaptor.capture());
+      assertEquals(texture.getImageReaderLooperForTest(), handlerCaptor.getValue().getLooper());
+
+      // Simulate two back-to-back callbacks on a non-main thread before MainLooper drains.
+      Thread bgSim =
+          new Thread(
+              () -> {
+                listenerCaptor.getValue().onImageAvailable(mockReader);
+                listenerCaptor.getValue().onImageAvailable(mockReader);
+              });
+      bgSim.start();
+      try {
+        bgSim.join();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+
+      // Main looper has not run yet, so scheduleEngineFrame has not run on the wrong thread;
+      // meanwhile HardwareBuffers were already preloaded off the main thread.
+      verify(flutterRenderer, never()).scheduleEngineFrame();
+      verify(img1, times(1)).getHardwareBuffer();
+      verify(img2, times(1)).getHardwareBuffer();
+
+      shadowMainLooper().idle();
+      // Coalesced into a single main-looper scheduleEngineFrame wakeup!
+      verify(flutterRenderer, times(1)).scheduleEngineFrame();
+
+      assertEquals(hb1, texture.acquireLatestHardwareBuffer());
+      assertEquals(hb2, texture.acquireLatestHardwareBuffer());
+      assertTrue(FlutterRenderer.getSharedImageReaderTid() > 0);
+      texture.release();
+    } finally {
+      FlutterRenderer.debugUseBackgroundImageReaderThread = false;
+    }
+  }
+
+  @Test
+  public void backgroundImageReaderThread_drainsEvictedImagesOnNextAcquire() {
+    FlutterRenderer.debugUseBackgroundImageReaderThread = true;
+    try {
+      FlutterRenderer flutterRenderer = spy(engineRule.getFlutterEngine().getRenderer());
+      FlutterRenderer.ImageReaderSurfaceProducer rawTexture =
+          (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+      FlutterRenderer.ImageReaderSurfaceProducer texture = spy(rawTexture);
+      texture.disableFenceForTest();
+
+      ImageReader mockReader = mock(ImageReader.class);
+      Surface mockSurface = mock(Surface.class);
+      when(mockSurface.isValid()).thenReturn(true);
+      when(mockReader.getSurface()).thenReturn(mockSurface);
+      when(texture.createImageReader()).thenReturn(mockReader);
+
+      final org.mockito.ArgumentCaptor<ImageReader.OnImageAvailableListener> listenerCaptor =
+          org.mockito.ArgumentCaptor.forClass(ImageReader.OnImageAvailableListener.class);
+      assertNull(texture.acquireLatestHardwareBuffer());
+      assertEquals(mockSurface, texture.getSurface());
+      verify(mockReader).setOnImageAvailableListener(listenerCaptor.capture(), any());
+
+      Image[] imgs = new Image[5];
+      android.hardware.HardwareBuffer[] hbs = new android.hardware.HardwareBuffer[5];
+      for (int i = 0; i < 5; i++) {
+        imgs[i] = mock(Image.class);
+        hbs[i] = mock(android.hardware.HardwareBuffer.class);
+        when(imgs[i].getHardwareBuffer()).thenReturn(hbs[i]);
+      }
+      when(mockReader.acquireLatestImage()).thenReturn(imgs[0], imgs[1], imgs[2], imgs[3], imgs[4]);
+
+      // Dequeue 4 images so lastDequeuedImage exceeds MAX_DEQUEUED_IMAGES (2 + current = 3) on the
+      // 4th dequeue, queueing imgs[0] into asyncImagesToClose.
+      for (int i = 0; i < 4; i++) {
+        listenerCaptor.getValue().onImageAvailable(mockReader);
+        assertEquals(hbs[i], texture.acquireLatestHardwareBuffer());
+      }
+      // imgs[0] is deferred for background close (not closed synchronously on Raster thread).
+      verify(imgs[0], never()).close();
+
+      // Next onImageAvailable drains asyncImagesToClose immediately before acquireLatestImage()!
+      listenerCaptor.getValue().onImageAvailable(mockReader);
+      verify(hbs[0], times(1)).close();
+      verify(imgs[0], times(1)).close();
+      assertEquals(hbs[4], texture.acquireLatestHardwareBuffer());
+
+      texture.release();
+    } finally {
+      FlutterRenderer.debugUseBackgroundImageReaderThread = false;
+    }
+  }
+
+  @Test
+  public void
+      backgroundImageReaderThread_dequeueWaitsForInFlightAcquireAndSuppressesRedundantWakeup()
+          throws Exception {
+    FlutterRenderer.debugUseBackgroundImageReaderThread = true;
+    try {
+      FlutterRenderer flutterRenderer = spy(engineRule.getFlutterEngine().getRenderer());
+      FlutterRenderer.ImageReaderSurfaceProducer rawTexture =
+          (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+      FlutterRenderer.ImageReaderSurfaceProducer texture = spy(rawTexture);
+      texture.disableFenceForTest();
+
+      ImageReader mockReader = mock(ImageReader.class);
+      Surface mockSurface = mock(Surface.class);
+      when(mockSurface.isValid()).thenReturn(true);
+      when(mockReader.getSurface()).thenReturn(mockSurface);
+      when(texture.createImageReader()).thenReturn(mockReader);
+
+      final org.mockito.ArgumentCaptor<ImageReader.OnImageAvailableListener> listenerCaptor =
+          org.mockito.ArgumentCaptor.forClass(ImageReader.OnImageAvailableListener.class);
+      assertNull(texture.acquireLatestHardwareBuffer());
+      assertEquals(mockSurface, texture.getSurface());
+      verify(mockReader).setOnImageAvailableListener(listenerCaptor.capture(), any());
+
+      Image img = mock(Image.class);
+      android.hardware.HardwareBuffer hb = mock(android.hardware.HardwareBuffer.class);
+      when(img.getHardwareBuffer()).thenReturn(hb);
+
+      final CountDownLatch acquireStarted = new CountDownLatch(1);
+      final CountDownLatch allowAcquireComplete = new CountDownLatch(1);
+      when(mockReader.acquireLatestImage())
+          .thenAnswer(
+              invocation -> {
+                acquireStarted.countDown();
+                allowAcquireComplete.await();
+                return img;
+              });
+
+      Thread readerSim = new Thread(() -> listenerCaptor.getValue().onImageAvailable(mockReader));
+      readerSim.start();
+      acquireStarted.await();
+
+      final android.hardware.HardwareBuffer[] dequeuedOnRaster =
+          new android.hardware.HardwareBuffer[1];
+      final CountDownLatch rasterEntered = new CountDownLatch(1);
+      Thread rasterSim =
+          new Thread(
+              () -> {
+                rasterEntered.countDown();
+                dequeuedOnRaster[0] = texture.acquireLatestHardwareBuffer();
+              });
+      rasterSim.start();
+      rasterEntered.await();
+      // Give rasterSim a brief moment to enter lock.wait(...) while inFlightAcquire > 0, then
+      // allow acquireLatestImage() to complete on the background reader thread.
+      Thread.sleep(1);
+      allowAcquireComplete.countDown();
+      readerSim.join();
+      rasterSim.join();
+
+      assertEquals(hb, dequeuedOnRaster[0]);
+      // Because the waiting dequeueImage() consumed the frame directly, onImageAvailable must not
+      // post a redundant scheduleFromReaderRunnable wakeup to the Main Looper.
+      shadowMainLooper().idle();
+      verify(flutterRenderer, times(0)).scheduleEngineFrame();
+
+      texture.release();
+    } finally {
+      FlutterRenderer.debugUseBackgroundImageReaderThread = false;
+    }
+  }
+
+  @Test
+  public void ndkSurfaceProducer_fallsBackGracefullyWhenNativeLibraryNotLoaded() {
+    FlutterRenderer.debugEnableNdkSurfaceProducer = true;
+    try {
+      FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+      FlutterRenderer.ImageReaderSurfaceProducer rawTexture =
+          (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+      FlutterRenderer.ImageReaderSurfaceProducer texture = spy(rawTexture);
+      ImageReader mockReader = mock(ImageReader.class);
+      Surface mockSurface = mock(Surface.class);
+      when(mockSurface.isValid()).thenReturn(true);
+      when(mockReader.getSurface()).thenReturn(mockSurface);
+      when(texture.createImageReader()).thenReturn(mockReader);
+
+      texture.setSize(320, 240);
+      assertEquals(mockSurface, texture.getSurface());
+      assertEquals(1, texture.numImageReaders());
+      texture.release();
+    } finally {
+      FlutterRenderer.debugEnableNdkSurfaceProducer = false;
+    }
+  }
 }

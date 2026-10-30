@@ -29,7 +29,10 @@ VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 void VsyncWaiterAndroid::AwaitVSync() {
   const static bool use_choreographer =
       impeller::android::Choreographer::IsAvailableOnPlatform();
-  if (use_choreographer) {
+  if (use_choreographer &&
+      (g_vsync_waiter_class == nullptr ||
+       g_async_wait_for_vsync_method_ == nullptr ||
+       !task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread())) {
     auto* weak_this = new std::weak_ptr<VsyncWaiter>(shared_from_this());
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     fml::TaskRunner::RunNowOrPostTask(
@@ -45,18 +48,17 @@ void VsyncWaiterAndroid::AwaitVSync() {
           });
         });
   } else {
-    // TODO(99798): Remove it when we drop support for API level < 29 and 32-bit
-    // devices.
     auto* weak_this = new std::weak_ptr<VsyncWaiter>(shared_from_this());
     jlong java_baton = reinterpret_cast<jlong>(weak_this);
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-    task_runners_.GetPlatformTaskRunner()->PostTask([java_baton]() {
-      JNIEnv* env = fml::jni::AttachCurrentThread();
-      env->CallStaticVoidMethod(g_vsync_waiter_class->obj(),     //
-                                g_async_wait_for_vsync_method_,  //
-                                java_baton                       //
-      );
-    });
+    fml::TaskRunner::RunNowOrPostTask(
+        task_runners_.GetPlatformTaskRunner(), [java_baton]() {
+          JNIEnv* env = fml::jni::AttachCurrentThread();
+          env->CallStaticVoidMethod(g_vsync_waiter_class->obj(),     //
+                                    g_async_wait_for_vsync_method_,  //
+                                    java_baton                       //
+          );
+        });
   }
 }
 

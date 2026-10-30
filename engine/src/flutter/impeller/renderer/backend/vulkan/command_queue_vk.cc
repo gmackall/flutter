@@ -60,10 +60,32 @@ absl::Status CommandQueueVK::Submit(
                         "Failed to create fence.");
   }
 
+  auto pending_waits = context->TakePendingWaitSemaphores();
+  std::shared_ptr<std::vector<vk::UniqueSemaphore>> external_wait_semaphores;
+  std::vector<vk::Semaphore> raw_wait_semaphores;
+  std::vector<vk::PipelineStageFlags> wait_stages;
+  if (!pending_waits.empty()) {
+    external_wait_semaphores =
+        std::make_shared<std::vector<vk::UniqueSemaphore>>();
+    external_wait_semaphores->reserve(pending_waits.size());
+    raw_wait_semaphores.reserve(pending_waits.size());
+    wait_stages.reserve(pending_waits.size());
+    for (auto& item : pending_waits) {
+      raw_wait_semaphores.push_back(*item.semaphore);
+      wait_stages.push_back(item.wait_stage);
+      external_wait_semaphores->push_back(std::move(item.semaphore));
+    }
+  }
+
   // This will be called immediately by FenceWaiterVK::AddFence.
-  auto submit_callback = [&context, &vk_buffers](vk::Fence submit_fence) {
+  auto submit_callback = [&context, &vk_buffers, &raw_wait_semaphores,
+                          &wait_stages](vk::Fence submit_fence) {
     vk::SubmitInfo submit_info;
     submit_info.setCommandBuffers(vk_buffers);
+    if (!raw_wait_semaphores.empty()) {
+      submit_info.setWaitSemaphores(raw_wait_semaphores);
+      submit_info.setWaitDstStageMask(wait_stages);
+    }
     auto status =
         context->GetGraphicsQueue()->Submit(submit_info, submit_fence);
     if (status != vk::Result::eSuccess) {
@@ -80,17 +102,30 @@ absl::Status CommandQueueVK::Submit(
   uint64_t submission_id = tracker->RecordSubmission();
 
   // This will be called later when the command completes.
-  auto fence_complete_callback = [completion_callback, tracker, submission_id,
-                                  tracked_objects =
-                                      std::move(tracked_objects)]() mutable {
-    // Ensure tracked objects are destructed before calling any final
-    // callbacks.
-    tracked_objects.clear();
-    tracker->RecordCompletion(submission_id);
-    if (completion_callback) {
-      completion_callback(CommandBuffer::Status::kCompleted);
-    }
-  };
+  std::weak_ptr<Context> weak_context = context;
+  auto fence_complete_callback =
+      [completion_callback, tracker, submission_id, weak_context,
+       tracked_objects = std::move(tracked_objects),
+       external_wait_semaphores =
+           std::move(external_wait_semaphores)]() mutable {
+        // Defer vkDestroySemaphore through ContextVK's bounded retirement FIFO
+        // so Mali's `mali-event-hand` thread finishes `signal_internal()`
+        // first.
+        if (external_wait_semaphores && !external_wait_semaphores->empty()) {
+          if (auto strong_ctx = weak_context.lock()) {
+            ContextVK::Cast(*strong_ctx)
+                .RetireCompletedWaitSemaphores(*external_wait_semaphores);
+          } else {
+            external_wait_semaphores->clear();
+          }
+          external_wait_semaphores.reset();
+        }
+        tracked_objects.clear();
+        tracker->RecordCompletion(submission_id);
+        if (completion_callback) {
+          completion_callback(CommandBuffer::Status::kCompleted);
+        }
+      };
 
   // Submit will proceed, call callback with true when it is done and do not
   // call when `reset` is collected.

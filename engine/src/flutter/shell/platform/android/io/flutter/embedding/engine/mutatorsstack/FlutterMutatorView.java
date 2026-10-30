@@ -22,6 +22,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.embedding.android.AndroidTouchProcessor;
+import io.flutter.plugin.platform.PlatformViewDirectTouchDispatcher;
 import io.flutter.plugin.platform.PlatformViewGestureTracker;
 import io.flutter.util.ViewUtils;
 
@@ -226,6 +227,45 @@ public class FlutterMutatorView extends FrameLayout {
     requestUnbufferedDispatch(event);
   }
 
+  /**
+   * Delivers the remainder of a gesture synchronously to the embedded view once the framework has
+   * resolved the gesture arena in the platform view's favour. See {@link
+   * PlatformViewDirectTouchDispatcher}.
+   */
+  private final PlatformViewDirectTouchDispatcher directTouchDispatcher =
+      new PlatformViewDirectTouchDispatcher();
+
+  /**
+   * Informs this view that the Flutter framework started forwarding the given gesture to the
+   * platform view (the platform view won the gesture arena).
+   *
+   * @param forwardedEvent The first event of the gesture forwarded by the framework, with the
+   *     framework's PV-local coordinates.
+   */
+  public void onPlatformViewWonGesture(@NonNull MotionEvent forwardedEvent) {
+    directTouchDispatcher.onPlatformViewWonGesture(
+        gestureTracker.isGestureActive(), gestureTracker.getCurrentDownTime(), forwardedEvent);
+  }
+
+  /** See {@link PlatformViewDirectTouchDispatcher#isDirectlyDispatched(MotionEvent)}. */
+  public boolean isDirectlyDispatched(@NonNull MotionEvent echoedEvent) {
+    return directTouchDispatcher.isDirectlyDispatched(echoedEvent);
+  }
+
+  /** See {@link PlatformViewDirectTouchDispatcher#verifyDirectlyDispatchedEcho(MotionEvent)}. */
+  public void verifyDirectlyDispatchedEcho(@NonNull MotionEvent echoedEvent) {
+    directTouchDispatcher.verifyDirectlyDispatchedEcho(echoedEvent);
+  }
+
+  /** Whether the active gesture is currently delivered directly to the embedded view. */
+  public boolean isDirectDispatchActive() {
+    return directTouchDispatcher.isActive();
+  }
+
+  private Matrix cachedScreenMatrix = null;
+  private int cachedScreenMatrixLeft = Integer.MIN_VALUE;
+  private int cachedScreenMatrixTop = Integer.MIN_VALUE;
+
   @Override
   @SuppressLint("ClickableViewAccessibility")
   public boolean onTouchEvent(MotionEvent event) {
@@ -233,8 +273,17 @@ public class FlutterMutatorView extends FrameLayout {
       return super.onTouchEvent(event);
     }
     gestureTracker.onTouchEvent(event, this::requestUnbuffered);
-    final Matrix screenMatrix = new Matrix();
-    screenMatrix.postTranslate(getLeft(), getTop());
-    return androidTouchProcessor.onTouchEvent(event, screenMatrix);
+    final boolean deliveredDirectly = directTouchDispatcher.onTouchEvent(event, getChildAt(0));
+    if (cachedScreenMatrix == null
+        || getLeft() != cachedScreenMatrixLeft
+        || getTop() != cachedScreenMatrixTop) {
+      cachedScreenMatrix = new Matrix();
+      cachedScreenMatrix.postTranslate(getLeft(), getTop());
+      cachedScreenMatrixLeft = getLeft();
+      cachedScreenMatrixTop = getTop();
+    }
+    // See PlatformViewWrapper#onTouchEvent.
+    return androidTouchProcessor.onTouchEvent(
+        event, cachedScreenMatrix, /*trackEvent=*/ !deliveredDirectly);
   }
 }

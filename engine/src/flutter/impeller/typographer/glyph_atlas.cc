@@ -72,7 +72,34 @@ size_t GlyphAtlas::GetAtlasGeneration() const {
 }
 
 void GlyphAtlas::SetAtlasGeneration(size_t generation) {
+  if (generation_ != generation) {
+    verified_text_frames_.clear();
+  }
   generation_ = generation;
+}
+
+bool GlyphAtlas::HasVerifiedTextFrame(uint64_t text_frame_id,
+                                      const Matrix& origin_transform,
+                                      const GlyphProperties& properties) const {
+  if (text_frame_id == 0 || verified_text_frames_.empty()) {
+    return false;
+  }
+  return verified_text_frames_.contains(
+      VerifiedTextFrameKey{text_frame_id, origin_transform, properties});
+}
+
+void GlyphAtlas::RecordVerifiedTextFrame(uint64_t text_frame_id,
+                                         const Matrix& origin_transform,
+                                         const GlyphProperties& properties) {
+  if (text_frame_id == 0) {
+    return;
+  }
+  constexpr size_t kMaxVerifiedTextFrames = 512;
+  if (verified_text_frames_.size() >= kMaxVerifiedTextFrames) {
+    verified_text_frames_.clear();
+  }
+  verified_text_frames_.emplace(
+      VerifiedTextFrameKey{text_frame_id, origin_transform, properties}, true);
 }
 
 void GlyphAtlas::AddTypefaceGlyphPositionAndBounds(const FontGlyphPair& pair,

@@ -55,7 +55,10 @@ executable("flutter_shell_native_unittests") {
     "platform_view_android_unittests.cc",
   ]
   if (!slimpeller) {
-    sources += [ "android_context_gl_unittests.cc" ]
+    sources += [
+      "android_context_gl_unittests.cc",
+      "image_external_texture_gl_unittests.cc",
+    ]
   }
   public_configs = [ "//flutter:config" ]
   defines = [ "TESTING" ]
@@ -126,6 +129,8 @@ source_set("flutter_shell_native_src") {
     "image_lru.cc",
     "image_lru.h",
     "library_loader.cc",
+    "ndk_surface_producer.cc",
+    "ndk_surface_producer.h",
     "platform_message_handler_android.cc",
     "platform_message_handler_android.h",
     "platform_message_response_android.cc",
@@ -363,6 +368,7 @@ android_java_sources = [
   "io/flutter/plugin/platform/PlatformOverlayView.java",
   "io/flutter/plugin/platform/PlatformPlugin.java",
   "io/flutter/plugin/platform/PlatformView.java",
+  "io/flutter/plugin/platform/PlatformViewDirectTouchDispatcher.java",
   "io/flutter/plugin/platform/PlatformViewFactory.java",
   "io/flutter/plugin/platform/PlatformViewGestureTracker.java",
   "io/flutter/plugin/platform/PlatformViewRegistry.java",

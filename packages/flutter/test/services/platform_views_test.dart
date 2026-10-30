@@ -497,6 +497,106 @@ void main() {
       expect(moveArgs[kAndroidMotionEventListIndexPointerCount], equals(pointerCount));
     });
 
+    testWidgets('directTouchDispatch suppresses single-pointer move echoes until the gesture ends', (
+      WidgetTester tester,
+    ) async {
+      final log = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform_views,
+        (MethodCall methodCall) async {
+          log.add(methodCall);
+          return null;
+        },
+      );
+      final AndroidViewController viewController = PlatformViewsService.initSurfaceAndroidView(
+        id: 9,
+        viewType: 'web',
+        layoutDirection: TextDirection.ltr,
+      );
+      viewController.pointTransformer = (Offset offset) => offset;
+      const kIndexAction = 3;
+      List<int> touchActions() => log
+          .where((MethodCall call) => call.method == 'touch')
+          .map<int>((MethodCall call) => (call.arguments as List<dynamic>)[kIndexAction] as int)
+          .toList();
+
+      Future<void> notifyDirectDispatch(int id, int downTime) async {
+        final ByteData message = SystemChannels.platform_views.codec.encodeMethodCall(
+          MethodCall('directTouchDispatch', <String, dynamic>{'id': id, 'downTime': downTime}),
+        );
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          SystemChannels.platform_views.name,
+          message,
+          (_) {},
+        );
+      }
+
+      // Gesture 1: the embedding takes over after the down event.
+      const Duration down1 = Duration(milliseconds: 1000);
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 1, position: Offset(10, 10), timeStamp: down1),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(11, 11), timeStamp: Duration(milliseconds: 1004)),
+      );
+      // A notification for another view or another gesture is ignored.
+      await notifyDirectDispatch(8, 1000);
+      await notifyDirectDispatch(9, 999);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(12, 12), timeStamp: Duration(milliseconds: 1008)),
+      );
+      await notifyDirectDispatch(9, 1000);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(13, 13), timeStamp: Duration(milliseconds: 1012)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(14, 14), timeStamp: Duration(milliseconds: 1016)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerUpEvent(pointer: 1, position: Offset(14, 14), timeStamp: Duration(milliseconds: 1020)),
+      );
+      expect(touchActions(), <int>[
+        AndroidViewController.kActionDown,
+        AndroidViewController.kActionMove,
+        AndroidViewController.kActionMove,
+        // Moves after the notification are delivered by the embedding and not echoed.
+        AndroidViewController.kActionUp,
+      ]);
+
+      // Gesture 2: a second pointer hands the gesture back to the framework.
+      log.clear();
+      const Duration down2 = Duration(milliseconds: 2000);
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 2, position: Offset(10, 10), timeStamp: down2),
+      );
+      await notifyDirectDispatch(9, 2000);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 2, position: Offset(11, 11), timeStamp: Duration(milliseconds: 2004)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 3, position: Offset(50, 50), timeStamp: Duration(milliseconds: 2008)),
+      );
+      const kPointerDataFlagMultiple = 2;
+      const int platformData = kPointerDataFlagMultiple | (2 << 8);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 2, position: Offset(12, 12), timeStamp: Duration(milliseconds: 2012), platformData: platformData),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 3, position: Offset(51, 51), timeStamp: Duration(milliseconds: 2012), platformData: platformData),
+      );
+      expect(touchActions(), <int>[
+        AndroidViewController.kActionDown,
+        // Single-pointer move during direct dispatch: not echoed.
+        AndroidViewController.pointerAction(1, AndroidViewController.kActionPointerDown),
+        // Multi-pointer moves are echoed again.
+        AndroidViewController.kActionMove,
+      ]);
+
+      // Gesture 3: after dispose the notification is ignored (no callback registered).
+      await viewController.dispose();
+      await notifyDirectDispatch(9, 3000);
+    });
+
     // Regression test for https://github.com/flutter/flutter/issues/191105.
     testWidgets('motion event converter orders pointers by Android pointer id', (
       WidgetTester tester,
@@ -854,4 +954,45 @@ void main() {
       expect(calls.first.arguments, <String, dynamic>{'id': 45});
     },
   );
+
+  test('TextureAndroidViewController.setOffset encodes exact 56-byte StandardMethodCodec bytes', () async {
+    final rawMessages = <ByteData>[];
+    const codec = StandardMethodCodec();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMessageHandler(
+      SystemChannels.platform_views.name,
+      (ByteData? message) async {
+        final MethodCall call = codec.decodeMethodCall(message);
+        if (call.method == 'create') {
+          return codec.encodeSuccessEnvelope(1);
+        }
+        rawMessages.add(message!);
+        return codec.encodeSuccessEnvelope(null);
+      },
+    );
+
+    final AndroidViewController controller = PlatformViewsService.initAndroidView(
+      id: 0x7fffffff,
+      viewType: 'webview',
+      layoutDirection: TextDirection.ltr,
+    );
+    await controller.create(size: const Size(100.0, 100.0));
+
+    const testOffset = Offset(-37.125, 412.875);
+    await controller.setOffset(testOffset);
+
+    expect(rawMessages, hasLength(1));
+    final ByteData actual = rawMessages.single;
+    final ByteData expected = codec.encodeMethodCall(
+      const MethodCall('offset', <String, dynamic>{
+        'id': 0x7fffffff,
+        'top': 412.875,
+        'left': -37.125,
+      }),
+    );
+    expect(actual.lengthInBytes, 56);
+    expect(
+      actual.buffer.asUint8List(actual.offsetInBytes, actual.lengthInBytes),
+      expected.buffer.asUint8List(expected.offsetInBytes, expected.lengthInBytes),
+    );
+  });
 }

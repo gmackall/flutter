@@ -17,7 +17,9 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.Process;
 import android.view.Surface;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
@@ -26,6 +28,7 @@ import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
 import io.flutter.embedding.engine.FlutterJNI;
+import io.flutter.util.HandlerCompat;
 import io.flutter.view.TextureRegistry;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
@@ -91,13 +94,81 @@ public class FlutterRenderer implements TextureRegistry {
   /** Whether to disable clearing of the Surface used to render platform views. */
   @VisibleForTesting public static boolean debugDisableSurfaceClear = false;
 
+  /**
+   * Whether {@link ImageReaderSurfaceProducer} runs {@link ImageReader.OnImageAvailableListener}
+   * and buffer release work on a dedicated background {@link HandlerThread} instead of the main UI
+   * looper. Disabled by default under Robolectric so single-looper unit tests using {@code
+   * shadowMainLooper().idle()} execute deterministically; background-thread unit tests enable it
+   * explicitly.
+   */
+  @VisibleForTesting
+  public static boolean debugUseBackgroundImageReaderThread =
+      !"robolectric".equals(Build.FINGERPRINT);
+
+  @VisibleForTesting
+  public static boolean debugEnableNdkSurfaceProducer = !"robolectric".equals(Build.FINGERPRINT);
+
+  private static final Object sharedImageReaderLock = new Object();
+  @Nullable private static HandlerThread sharedImageReaderThread = null;
+  @Nullable private static Handler sharedImageReaderHandler = null;
+  private static volatile boolean sharedImageReaderAffinityApplied = false;
+
+  @NonNull
+  private static Handler getOrCreateSharedImageReaderHandler() {
+    synchronized (sharedImageReaderLock) {
+      if (sharedImageReaderHandler == null) {
+        HandlerThread thread =
+            new HandlerThread("FlutterImageReader", Process.THREAD_PRIORITY_DISPLAY);
+        thread.start();
+        sharedImageReaderThread = thread;
+        sharedImageReaderHandler = HandlerCompat.createAsyncHandler(thread.getLooper());
+        ensureSharedImageReaderAffinity(sharedImageReaderHandler);
+      }
+      return sharedImageReaderHandler;
+    }
+  }
+
+  private static void ensureSharedImageReaderAffinity(@NonNull Handler readerLooperHandler) {
+    if (!sharedImageReaderAffinityApplied) {
+      readerLooperHandler.post(
+          () -> {
+            if (!sharedImageReaderAffinityApplied && FlutterJNI.requestNotEfficiencyCpuAffinity()) {
+              sharedImageReaderAffinityApplied = true;
+            }
+          });
+    }
+  }
+
+  private static volatile int cachedNdkReaderTid = 0;
+
+  /**
+   * Returns the Linux TID of the shared background {@code FlutterImageReader} thread if running, or
+   * {@code 0} if it has not been started.
+   */
+  public static int getSharedImageReaderTid() {
+    int cached = cachedNdkReaderTid;
+    if (cached != 0) {
+      return cached;
+    }
+    int ndkTid = FlutterJNI.getNdkImageReaderTid();
+    if (ndkTid != 0) {
+      cachedNdkReaderTid = ndkTid;
+      return ndkTid;
+    }
+    synchronized (sharedImageReaderLock) {
+      return sharedImageReaderThread != null ? sharedImageReaderThread.getThreadId() : 0;
+    }
+  }
+
   private static final String TAG = "FlutterRenderer";
 
   @NonNull private final FlutterJNI flutterJNI;
   @NonNull private final AtomicLong nextTextureId = new AtomicLong(0L);
   @Nullable private Surface surface;
   private boolean isDisplayingFlutterUi = false;
-  private final Handler handler = new Handler();
+  private final Handler handler =
+      HandlerCompat.createAsyncHandler(
+          Looper.myLooper() != null ? Looper.myLooper() : Looper.getMainLooper());
 
   @NonNull
   private final Set<WeakReference<TextureRegistry.OnTrimMemoryListener>> onTrimMemoryListeners =
@@ -111,11 +182,17 @@ public class FlutterRenderer implements TextureRegistry {
         @Override
         public void onFlutterUiDisplayed() {
           isDisplayingFlutterUi = true;
+          for (ImageReaderSurfaceProducer producer : imageReaderProducers) {
+            producer.onFlutterUiDisplayStateChanged(true);
+          }
         }
 
         @Override
         public void onFlutterUiNoLongerDisplayed() {
           isDisplayingFlutterUi = false;
+          for (ImageReaderSurfaceProducer producer : imageReaderProducers) {
+            producer.onFlutterUiDisplayStateChanged(false);
+          }
         }
       };
 
@@ -230,7 +307,11 @@ public class FlutterRenderer implements TextureRegistry {
       final long id = nextTextureId.getAndIncrement();
       final ImageReaderSurfaceProducer producer = new ImageReaderSurfaceProducer(id);
       boolean reset = lifecycle == SurfaceLifecycle.resetInBackground;
-      registerImageTexture(id, producer, reset);
+      if (producer.ndkProducerPtr != 0L) {
+        flutterJNI.registerNdkSurfaceProducerTexture(id, producer, reset, producer.ndkProducerPtr);
+      } else {
+        registerImageTexture(id, producer, reset);
+      }
       if (reset) {
         addOnTrimMemoryListener(producer);
       }
@@ -459,7 +540,13 @@ public class FlutterRenderer implements TextureRegistry {
     // the frame that references them has finished rendering can result in
     // tearing or other incorrect rendering.
     private static final int MAX_DEQUEUED_IMAGES = 2;
-    private static final int MAX_IMAGES = 5 + MAX_DEQUEUED_IMAGES;
+    private static final int MAX_IMAGES = 6 + MAX_DEQUEUED_IMAGES;
+    // Idle fallback delay for draining evicted images/readers when scrolling stops and no further
+    // onImageAvailable callback arrives to piggyback the release.
+    private static final long ASYNC_CLOSE_IDLE_DELAY_MS = 32L;
+    // Maximum time the Raster thread will wait in dequeueImage() when FlutterImageReader is
+    // actively acquiring an in-flight buffer in onImageAvailable().
+    private static final long DEQUEUE_WAIT_TIMEOUT_NANOS = 2_000_000L;
 
     // Flip when debugging to see verbose logs.
     private static final boolean VERBOSE_LOGS = false;
@@ -469,10 +556,25 @@ public class FlutterRenderer implements TextureRegistry {
     private static final boolean CLEANUP_ON_MEMORY_PRESSURE = true;
 
     private final long id;
+    private long ndkProducerPtr = 0L;
+    private final Handler readerHandler;
+    private final boolean asyncReaderThread;
 
     private boolean released;
-    // Will be true in tests and on Android API < 33.
-    private boolean ignoringFence = false;
+    // Impeller's AHB import and Skia's EGLImage import handle GPU synchronization natively;
+    // skipping the synchronous CPU SyncFence.awaitForever() on the Raster thread avoids
+    // blocking frame rasterization on RenderThread completion.
+    private boolean ignoringFence = true;
+    private volatile boolean hasBeenAcquiredWithImage = false;
+    private volatile boolean usesHardwareBuffer = false;
+
+    private void scheduleTextureFrame() {
+      if (isDisplayingFlutterUi && hasBeenAcquiredWithImage && flutterJNI.isAttached()) {
+        flutterJNI.markTextureFrameAvailable(id);
+      } else {
+        scheduleEngineFrame();
+      }
+    }
 
     private static final boolean trimOnMemoryPressure = CLEANUP_ON_MEMORY_PRESSURE;
 
@@ -483,7 +585,12 @@ public class FlutterRenderer implements TextureRegistry {
     // create a new ImageReader (inside getSurface) with the correct width and height.
     // We use this flag so that we lazily create the ImageReader only when a frame
     // will be produced at that size.
-    private boolean createNewReader = true;
+    private volatile boolean createNewReader = true;
+    @Nullable private volatile Surface cachedSurface = null;
+    private volatile boolean latestFrameOnlyMode = false;
+    private boolean armNextVsyncPosted = false;
+    private boolean scheduleFromReaderPosted = false;
+    private boolean asyncClosePosted = false;
 
     /**
      * Stores whether {@link Callback#onSurfaceCleanup()} ()} was previously invoked.
@@ -504,6 +611,100 @@ public class FlutterRenderer implements TextureRegistry {
     private final HashMap<ImageReader, PerImageReader> perImageReaders = new HashMap<>();
     private ArrayList<PerImage> lastDequeuedImage = new ArrayList<PerImage>();
     private PerImageReader lastReaderDequeuedFrom = null;
+    private final ArrayDeque<PerImage> asyncImagesToClose = new ArrayDeque<>(4);
+    private final ArrayDeque<PerImageReader> asyncReadersToClose = new ArrayDeque<>(2);
+    private int waitingDequeueCount = 0;
+
+    private boolean hasQueuedImagesLocked() {
+      for (PerImageReader reader : imageReaderQueue) {
+        if (!reader.closed && !reader.imageQueueIsEmpty()) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    private boolean hasInFlightAcquireLocked() {
+      for (PerImageReader reader : imageReaderQueue) {
+        if (!reader.closed && reader.inFlightAcquire > 0) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    private final Runnable armNextVsyncRunnable =
+        () -> {
+          boolean shouldSchedule = false;
+          synchronized (lock) {
+            armNextVsyncPosted = false;
+            if (released) {
+              return;
+            }
+            shouldSchedule = hasQueuedImagesLocked();
+          }
+          if (shouldSchedule) {
+            scheduleTextureFrame();
+          }
+        };
+
+    private final Runnable scheduleFromReaderRunnable =
+        () -> {
+          boolean shouldSchedule = false;
+          synchronized (lock) {
+            scheduleFromReaderPosted = false;
+            if (released) {
+              return;
+            }
+            shouldSchedule = hasQueuedImagesLocked();
+          }
+          if (shouldSchedule) {
+            scheduleTextureFrame();
+          }
+        };
+
+    private final Runnable asyncCloseRunnable =
+        () -> {
+          for (; ; ) {
+            PerImage img;
+            PerImageReader rdr;
+            synchronized (lock) {
+              img = asyncImagesToClose.pollFirst();
+              rdr = (img == null) ? asyncReadersToClose.pollFirst() : null;
+              if (img == null && rdr == null) {
+                asyncClosePosted = false;
+                return;
+              }
+            }
+            if (img != null) {
+              img.close();
+            } else {
+              rdr.close();
+            }
+          }
+        };
+
+    private void requestScheduleTextureFrame() {
+      if (Looper.myLooper() == handler.getLooper()) {
+        scheduleTextureFrame();
+        return;
+      }
+      boolean shouldPost = false;
+      synchronized (lock) {
+        if (!released && !scheduleFromReaderPosted) {
+          scheduleFromReaderPosted = true;
+          shouldPost = true;
+        }
+      }
+      if (shouldPost) {
+        handler.post(scheduleFromReaderRunnable);
+      }
+    }
+
+    @VisibleForTesting
+    public Looper getImageReaderLooperForTest() {
+      return readerHandler.getLooper();
+    }
 
     @VisibleForTesting Callback callback = null;
 
@@ -511,69 +712,219 @@ public class FlutterRenderer implements TextureRegistry {
     private class PerImage {
       public final Image image;
       public final long queuedTime;
+      @Nullable private HardwareBuffer hardwareBuffer;
 
       public PerImage(Image image, long queuedTime) {
+        this(image, queuedTime, null);
+      }
+
+      public PerImage(Image image, long queuedTime, @Nullable HardwareBuffer hardwareBuffer) {
         this.image = image;
         this.queuedTime = queuedTime;
+        this.hardwareBuffer = hardwareBuffer;
+      }
+
+      @Nullable
+      @RequiresApi(API_LEVELS.API_29)
+      HardwareBuffer getOrCreateHardwareBuffer() {
+        if (hardwareBuffer == null) {
+          hardwareBuffer = image.getHardwareBuffer();
+        }
+        return hardwareBuffer;
+      }
+
+      void close() {
+        if (hardwareBuffer != null && Build.VERSION.SDK_INT >= API_LEVELS.API_28) {
+          hardwareBuffer.close();
+          hardwareBuffer = null;
+        }
+        image.close();
       }
     }
 
     /** Internal class: state held per ImageReader. */
     private class PerImageReader {
       public final ImageReader reader;
+      public final Surface surface;
       private final ArrayDeque<PerImage> imageQueue = new ArrayDeque<>();
+      private int inFlightAcquire = 0;
+      private boolean closeWhenIdle = false;
       private boolean closed = false;
+      private boolean readerClosed = false;
 
       public PerImageReader(ImageReader reader) {
         this.reader = reader;
+        this.surface = reader.getSurface();
         ImageReader.OnImageAvailableListener onImageAvailableListener =
             r -> {
+              PerImage asyncImgToClose = null;
+              ArrayList<PerImage> extraAsyncImgs = null;
+              ArrayList<PerImageReader> asyncRdrs = null;
+              boolean abortAcquire = false;
+              synchronized (lock) {
+                if (!asyncImagesToClose.isEmpty()) {
+                  asyncImgToClose = asyncImagesToClose.pollFirst();
+                  while (!asyncImagesToClose.isEmpty()) {
+                    if (extraAsyncImgs == null) {
+                      extraAsyncImgs = new ArrayList<>(2);
+                    }
+                    extraAsyncImgs.add(asyncImagesToClose.pollFirst());
+                  }
+                }
+                while (!asyncReadersToClose.isEmpty()) {
+                  if (asyncRdrs == null) {
+                    asyncRdrs = new ArrayList<>(2);
+                  }
+                  asyncRdrs.add(asyncReadersToClose.pollFirst());
+                }
+                if (released || closed) {
+                  abortAcquire = true;
+                } else {
+                  inFlightAcquire++;
+                }
+              }
+              if (asyncImgToClose != null) {
+                asyncImgToClose.close();
+              }
+              if (extraAsyncImgs != null) {
+                for (int i = 0; i < extraAsyncImgs.size(); i++) {
+                  extraAsyncImgs.get(i).close();
+                }
+              }
+              if (asyncRdrs != null) {
+                for (int i = 0; i < asyncRdrs.size(); i++) {
+                  asyncRdrs.get(i).close();
+                }
+              }
+              if (abortAcquire) {
+                return;
+              }
               Image image = null;
               try {
                 image = r.acquireLatestImage();
               } catch (IllegalStateException e) {
                 Log.e(TAG, "onImageAvailable acquireLatestImage failed: " + e);
               }
+              PerImageReader deferredClose = null;
               if (image == null) {
+                synchronized (lock) {
+                  inFlightAcquire--;
+                  if (waitingDequeueCount > 0 && inFlightAcquire == 0) {
+                    lock.notifyAll();
+                  }
+                  if (closeWhenIdle && inFlightAcquire == 0) {
+                    closeWhenIdle = false;
+                    deferredClose = PerImageReader.this;
+                  }
+                }
+                if (deferredClose != null) {
+                  deferredClose.close();
+                }
                 return;
               }
-              if (released || closed) {
+              HardwareBuffer preloadedHb = null;
+              if (usesHardwareBuffer && Build.VERSION.SDK_INT >= API_LEVELS.API_29) {
+                try {
+                  preloadedHb = image.getHardwareBuffer();
+                } catch (RuntimeException e) {
+                  Log.e(TAG, "onImageAvailable getHardwareBuffer failed: " + e);
+                }
+              }
+              PerImage queuedImage = null;
+              ArrayList<PerImage> evicted = null;
+              boolean isClosedOrReleased = false;
+              boolean wokeWaitingDequeue = false;
+              synchronized (lock) {
+                inFlightAcquire--;
+                if (closeWhenIdle && inFlightAcquire == 0) {
+                  closeWhenIdle = false;
+                  deferredClose = PerImageReader.this;
+                }
+                if (released || closed) {
+                  isClosedOrReleased = true;
+                } else {
+                  PerImage[] outQueued = new PerImage[1];
+                  evicted = queueImage(image, preloadedHb, null, outQueued);
+                  queuedImage = outQueued[0];
+                }
+                if (waitingDequeueCount > 0) {
+                  wokeWaitingDequeue = (queuedImage != null);
+                  lock.notifyAll();
+                }
+              }
+              if (evicted != null) {
+                for (int i = 0; i < evicted.size(); i++) {
+                  evicted.get(i).close();
+                }
+              }
+              if (isClosedOrReleased || queuedImage == null) {
+                if (preloadedHb != null && Build.VERSION.SDK_INT >= API_LEVELS.API_28) {
+                  preloadedHb.close();
+                }
                 image.close();
+                if (deferredClose != null) {
+                  deferredClose.close();
+                }
                 return;
               }
-              onImage(r, image);
+              if (deferredClose != null) {
+                deferredClose.close();
+              }
+              if (VERBOSE_LOGS) {
+                if (lastQueueTime != 0) {
+                  long now = System.nanoTime();
+                  long queueDelta = now - lastQueueTime;
+                  Log.i(
+                      TAG,
+                      r.hashCode()
+                          + " enqueued image="
+                          + queuedImage.image.hashCode()
+                          + " queueDelta="
+                          + deltaMillis(queueDelta));
+                  lastQueueTime = now;
+                } else {
+                  lastQueueTime = System.nanoTime();
+                }
+              }
+              if (!wokeWaitingDequeue) {
+                requestScheduleTextureFrame();
+              }
             };
-        reader.setOnImageAvailableListener(
-            onImageAvailableListener, new Handler(Looper.getMainLooper()));
+        reader.setOnImageAvailableListener(onImageAvailableListener, readerHandler);
       }
 
-      PerImage queueImage(Image image) {
+      @Nullable
+      ArrayList<PerImage> queueImage(
+          Image image,
+          @Nullable HardwareBuffer preloadedHb,
+          @Nullable ArrayList<PerImage> evictedOut,
+          @Nullable PerImage[] outQueued) {
         if (closed) {
-          return null;
+          return evictedOut;
         }
-        PerImage perImage = new PerImage(image, System.nanoTime());
+        PerImage perImage = new PerImage(image, VERBOSE_LOGS ? System.nanoTime() : 0L, preloadedHb);
         imageQueue.add(perImage);
+        final int maxQueued = latestFrameOnlyMode ? 1 : 2;
         // If we fall too far behind we will skip some frames.
-        while (imageQueue.size() > 2) {
+        while (imageQueue.size() > maxQueued) {
           PerImage r = imageQueue.removeFirst();
           if (VERBOSE_LOGS) {
             Log.i(TAG, reader.hashCode() + " force closed image=" + r.image.hashCode());
           }
-          r.image.close();
+          if (evictedOut == null) {
+            evictedOut = new ArrayList<>(2);
+          }
+          evictedOut.add(r);
         }
-        return perImage;
-      }
-
-      PerImage dequeueImage() {
-        if (imageQueue.isEmpty()) {
-          return null;
+        if (outQueued != null) {
+          outQueued[0] = perImage;
         }
-        return imageQueue.removeFirst();
+        return evictedOut;
       }
 
       /** returns true if we can prune this reader */
       boolean canPrune() {
-        return imageQueue.isEmpty() && lastReaderDequeuedFrom != this;
+        return imageQueue.isEmpty() && inFlightAcquire == 0 && lastReaderDequeuedFrom != this;
       }
 
       boolean imageQueueIsEmpty() {
@@ -581,12 +932,24 @@ public class FlutterRenderer implements TextureRegistry {
       }
 
       void close() {
-        closed = true;
+        synchronized (lock) {
+          closed = true;
+          if (waitingDequeueCount > 0) {
+            lock.notifyAll();
+          }
+          if (readerClosed) {
+            return;
+          }
+          readerClosed = true;
+        }
         if (VERBOSE_LOGS) {
           Log.i(TAG, "Closing reader=" + reader.hashCode());
         }
-        reader.close();
+        for (PerImage p : imageQueue) {
+          p.close();
+        }
         imageQueue.clear();
+        reader.close();
       }
     }
 
@@ -612,7 +975,7 @@ public class FlutterRenderer implements TextureRegistry {
       return new PerImageReader(reader);
     }
 
-    void pruneImageReaderQueue() {
+    void collectPrunableImageReaders(@NonNull java.util.Collection<PerImageReader> prunedOut) {
       boolean change = false;
       // Prune nodes from the head of the ImageReader queue.
       while (imageReaderQueue.size() > 1) {
@@ -623,7 +986,8 @@ public class FlutterRenderer implements TextureRegistry {
         }
         imageReaderQueue.removeFirst();
         perImageReaders.remove(r.reader);
-        r.close();
+        r.closed = true;
+        prunedOut.add(r);
         change = true;
       }
       if (change && VERBOSE_LOGS) {
@@ -632,13 +996,32 @@ public class FlutterRenderer implements TextureRegistry {
     }
 
     void onImage(ImageReader reader, Image image) {
-      PerImage queuedImage;
+      PerImage queuedImage = null;
+      boolean isReleased = false;
+      boolean wokeWaitingDequeue = false;
+      ArrayList<PerImage> evicted = null;
       synchronized (lock) {
-        PerImageReader perReader = getOrCreatePerImageReader(reader);
-        queuedImage = perReader.queueImage(image);
+        if (released) {
+          isReleased = true;
+        } else {
+          PerImageReader perReader = getOrCreatePerImageReader(reader);
+          PerImage[] outQueued = new PerImage[1];
+          evicted = perReader.queueImage(image, null, null, outQueued);
+          queuedImage = outQueued[0];
+        }
+        if (waitingDequeueCount > 0) {
+          wokeWaitingDequeue = (queuedImage != null);
+          lock.notifyAll();
+        }
       }
-      if (queuedImage == null) {
+      if (evicted != null) {
+        for (int i = 0; i < evicted.size(); i++) {
+          evicted.get(i).close();
+        }
+      }
+      if (isReleased || queuedImage == null) {
         // We got a late image.
+        image.close();
         return;
       }
       if (VERBOSE_LOGS) {
@@ -657,79 +1040,262 @@ public class FlutterRenderer implements TextureRegistry {
           lastQueueTime = System.nanoTime();
         }
       }
-      scheduleEngineFrame();
+      if (!wokeWaitingDequeue) {
+        requestScheduleTextureFrame();
+      }
+    }
+
+    private void recordDequeuedLocked(@NonNull PerImageReader reader, @NonNull PerImage r) {
+      if (VERBOSE_LOGS) {
+        if (lastDequeueTime != 0) {
+          long now = System.nanoTime();
+          long dequeueDelta = now - lastDequeueTime;
+          long queuedFor = now - r.queuedTime;
+          long scheduleDelay = now - lastScheduleTime;
+          Log.i(
+              TAG,
+              reader.reader.hashCode()
+                  + " dequeued image="
+                  + r.image.hashCode()
+                  + " queuedFor= "
+                  + deltaMillis(queuedFor)
+                  + " dequeueDelta="
+                  + deltaMillis(dequeueDelta)
+                  + " scheduleDelay="
+                  + deltaMillis(scheduleDelay));
+          lastDequeueTime = now;
+        } else {
+          lastDequeueTime = System.nanoTime();
+        }
+      }
+      // Remember the last image and reader dequeued from. We do this because we must
+      // keep both of these alive until we are done presenting the image.
+      lastDequeuedImage.add(r);
+      lastReaderDequeuedFrom = reader;
     }
 
     PerImage dequeueImage() {
       PerImage r = null;
       boolean hasPendingImages = false;
+      boolean postAsyncClose = false;
+      PerImage singleEvicted = null;
+      ArrayList<PerImage> extraEvicted = null;
+      ArrayList<PerImageReader> prunedReaders = null;
+      PerImageReader deferredCloseReader = null;
+      Image lateAcquiredImage = null;
+      PerImageReader acquireTarget = null;
+
       synchronized (lock) {
-        for (PerImageReader reader : imageReaderQueue) {
-          r = reader.dequeueImage();
-          if (r == null) {
-            // This reader is probably about to get pruned.
-            continue;
-          }
-          if (VERBOSE_LOGS) {
-            if (lastDequeueTime != 0) {
-              long now = System.nanoTime();
-              long dequeueDelta = now - lastDequeueTime;
-              long queuedFor = now - r.queuedTime;
-              long scheduleDelay = now - lastScheduleTime;
-              Log.i(
-                  TAG,
-                  reader.reader.hashCode()
-                      + " dequeued image="
-                      + r.image.hashCode()
-                      + " queuedFor= "
-                      + deltaMillis(queuedFor)
-                      + " dequeueDelta="
-                      + deltaMillis(dequeueDelta)
-                      + " scheduleDelay="
-                      + deltaMillis(scheduleDelay));
-              lastDequeueTime = now;
-            } else {
-              lastDequeueTime = System.nanoTime();
+        if (!released) {
+          if (asyncReaderThread && Looper.myLooper() != handler.getLooper()) {
+            long nowNanos = System.nanoTime();
+            long deadlineNanos = nowNanos + DEQUEUE_WAIT_TIMEOUT_NANOS;
+            while (!released && !hasQueuedImagesLocked() && hasInFlightAcquireLocked()) {
+              long remainingNanos = deadlineNanos - nowNanos;
+              if (remainingNanos <= 0L) {
+                break;
+              }
+              waitingDequeueCount++;
+              try {
+                long waitMillis = remainingNanos / 1_000_000L;
+                int waitNanos = (int) (remainingNanos % 1_000_000L);
+                lock.wait(waitMillis, waitNanos);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+              } finally {
+                waitingDequeueCount--;
+              }
+              nowNanos = System.nanoTime();
             }
           }
-          while (lastDequeuedImage.size() > MAX_DEQUEUED_IMAGES) {
-            // We must keep the last image dequeued open until we are done presenting
-            // it. We have just dequeued a new image (r). Close the previously dequeued
-            // image. This is a very conservative check, we know based on the max frames
-            // in flight being 2 that dequing a 4th images implies that the driver is done
-            // reading from the 1st image.
-            PerImage last = lastDequeuedImage.remove(0);
-            if (VERBOSE_LOGS) {
-              Log.i(
-                  TAG,
-                  lastReaderDequeuedFrom.reader.hashCode()
-                      + " closing image="
-                      + last.image.hashCode());
+          PerImageReader tail = imageReaderQueue.peekLast();
+          for (PerImageReader reader : imageReaderQueue) {
+            if (reader.closed) {
+              continue;
             }
-            last.image.close();
+            if (!reader.imageQueue.isEmpty()) {
+              r = reader.imageQueue.removeFirst();
+              while (lastDequeuedImage.size() > MAX_DEQUEUED_IMAGES) {
+                PerImage last = lastDequeuedImage.remove(0);
+                if (asyncReaderThread) {
+                  asyncImagesToClose.addLast(last);
+                  if (!asyncClosePosted) {
+                    asyncClosePosted = true;
+                    postAsyncClose = true;
+                  }
+                } else if (singleEvicted == null) {
+                  singleEvicted = last;
+                } else {
+                  if (extraEvicted == null) {
+                    extraEvicted = new ArrayList<>(2);
+                  }
+                  extraEvicted.add(last);
+                }
+              }
+              recordDequeuedLocked(reader, r);
+              break;
+            }
+            if (!asyncReaderThread && hasBeenAcquiredWithImage && reader == tail) {
+              acquireTarget = reader;
+              reader.inFlightAcquire++;
+              break;
+            }
           }
-          // Remember the last image and reader dequeued from. We do this because we must
-          // keep both of these alive until we are done presenting the image.
-          lastDequeuedImage.add(r);
-          lastReaderDequeuedFrom = reader;
-          break;
         }
-        pruneImageReaderQueue();
-        for (PerImageReader reader : imageReaderQueue) {
-          if (!reader.imageQueueIsEmpty()) {
-            hasPendingImages = true;
-            break;
+        if (acquireTarget == null) {
+          if (imageReaderQueue.size() > 1) {
+            if (asyncReaderThread && !released) {
+              int before = asyncReadersToClose.size();
+              collectPrunableImageReaders(asyncReadersToClose);
+              if (asyncReadersToClose.size() > before && !asyncClosePosted) {
+                asyncClosePosted = true;
+                postAsyncClose = true;
+              }
+            } else {
+              prunedReaders = new ArrayList<>(2);
+              collectPrunableImageReaders(prunedReaders);
+            }
+          }
+          for (PerImageReader reader : imageReaderQueue) {
+            if (!reader.imageQueueIsEmpty()) {
+              hasPendingImages = true;
+              break;
+            }
+          }
+          if (hasPendingImages && !released && !armNextVsyncPosted) {
+            armNextVsyncPosted = true;
+          } else {
+            hasPendingImages = false;
           }
         }
       }
+
+      if (acquireTarget != null) {
+        Image acquiredImage = null;
+        try {
+          acquiredImage = acquireTarget.reader.acquireLatestImage();
+        } catch (IllegalStateException e) {
+          Log.e(TAG, "dequeueImage acquireLatestImage failed: " + e);
+        }
+
+        synchronized (lock) {
+          acquireTarget.inFlightAcquire--;
+          if (acquireTarget.closeWhenIdle && acquireTarget.inFlightAcquire == 0) {
+            acquireTarget.closeWhenIdle = false;
+            deferredCloseReader = acquireTarget;
+          }
+          if (acquireTarget.closed || released) {
+            lateAcquiredImage = acquiredImage;
+          } else if (acquiredImage != null) {
+            while (!acquireTarget.imageQueue.isEmpty()) {
+              PerImage stale = acquireTarget.imageQueue.removeFirst();
+              if (asyncReaderThread) {
+                asyncImagesToClose.addLast(stale);
+                if (!asyncClosePosted) {
+                  asyncClosePosted = true;
+                  postAsyncClose = true;
+                }
+              } else {
+                if (extraEvicted == null) {
+                  extraEvicted = new ArrayList<>(2);
+                }
+                extraEvicted.add(stale);
+              }
+            }
+            r = new PerImage(acquiredImage, VERBOSE_LOGS ? System.nanoTime() : 0L);
+            while (lastDequeuedImage.size() > MAX_DEQUEUED_IMAGES) {
+              PerImage last = lastDequeuedImage.remove(0);
+              if (asyncReaderThread) {
+                asyncImagesToClose.addLast(last);
+                if (!asyncClosePosted) {
+                  asyncClosePosted = true;
+                  postAsyncClose = true;
+                }
+              } else if (singleEvicted == null) {
+                singleEvicted = last;
+              } else {
+                if (extraEvicted == null) {
+                  extraEvicted = new ArrayList<>(2);
+                }
+                extraEvicted.add(last);
+              }
+            }
+            recordDequeuedLocked(acquireTarget, r);
+          } else if (!acquireTarget.imageQueue.isEmpty()) {
+            r = acquireTarget.imageQueue.removeFirst();
+            while (lastDequeuedImage.size() > MAX_DEQUEUED_IMAGES) {
+              PerImage last = lastDequeuedImage.remove(0);
+              if (asyncReaderThread) {
+                asyncImagesToClose.addLast(last);
+                if (!asyncClosePosted) {
+                  asyncClosePosted = true;
+                  postAsyncClose = true;
+                }
+              } else if (singleEvicted == null) {
+                singleEvicted = last;
+              } else {
+                if (extraEvicted == null) {
+                  extraEvicted = new ArrayList<>(2);
+                }
+                extraEvicted.add(last);
+              }
+            }
+            recordDequeuedLocked(acquireTarget, r);
+          }
+
+          if (imageReaderQueue.size() > 1) {
+            if (asyncReaderThread && !released) {
+              int before = asyncReadersToClose.size();
+              collectPrunableImageReaders(asyncReadersToClose);
+              if (asyncReadersToClose.size() > before && !asyncClosePosted) {
+                asyncClosePosted = true;
+                postAsyncClose = true;
+              }
+            } else {
+              prunedReaders = new ArrayList<>(2);
+              collectPrunableImageReaders(prunedReaders);
+            }
+          }
+          for (PerImageReader reader : imageReaderQueue) {
+            if (!reader.imageQueueIsEmpty()) {
+              hasPendingImages = true;
+              break;
+            }
+          }
+          if (hasPendingImages && !released && !armNextVsyncPosted) {
+            armNextVsyncPosted = true;
+          } else {
+            hasPendingImages = false;
+          }
+        }
+      }
+
+      if (lateAcquiredImage != null) {
+        lateAcquiredImage.close();
+      }
+      if (singleEvicted != null) {
+        singleEvicted.close();
+      }
+      if (extraEvicted != null) {
+        for (int i = 0; i < extraEvicted.size(); i++) {
+          extraEvicted.get(i).close();
+        }
+      }
+      if (prunedReaders != null) {
+        for (int i = 0; i < prunedReaders.size(); i++) {
+          prunedReaders.get(i).close();
+        }
+      }
+      if (deferredCloseReader != null) {
+        deferredCloseReader.close();
+      }
+      if (postAsyncClose) {
+        readerHandler.postDelayed(asyncCloseRunnable, ASYNC_CLOSE_IDLE_DELAY_MS);
+      }
       if (hasPendingImages) {
         // Request another frame to ensure that images are consumed until the queue is empty.
-        handler.post(
-            () -> {
-              if (!released) {
-                scheduleEngineFrame();
-              }
-            });
+        handler.post(armNextVsyncRunnable);
       }
       return r;
     }
@@ -756,31 +1322,77 @@ public class FlutterRenderer implements TextureRegistry {
 
     private void releaseInternal() {
       cleanup();
+      if (ndkProducerPtr != 0L) {
+        long ptr = ndkProducerPtr;
+        ndkProducerPtr = 0L;
+        cachedNdkReaderTid = 0;
+        FlutterJNI.destroyNdkSurfaceProducer(ptr);
+      }
       released = true;
       removeOnTrimMemoryListener(this);
       imageReaderProducers.remove(this);
     }
 
     private void cleanup() {
+      if (ndkProducerPtr != 0L) {
+        hasBeenAcquiredWithImage = false;
+        cachedSurface = null;
+        cachedNdkReaderTid = 0;
+        FlutterJNI.ndkSurfaceProducerOnTrimMemory(ndkProducerPtr);
+        return;
+      }
+      hasBeenAcquiredWithImage = false;
+      cachedSurface = null;
+      handler.removeCallbacks(armNextVsyncRunnable);
+      handler.removeCallbacks(scheduleFromReaderRunnable);
+      if (asyncReaderThread) {
+        readerHandler.removeCallbacks(asyncCloseRunnable);
+      }
+      ArrayList<PerImageReader> readersToClose = new ArrayList<>();
+      ArrayList<PerImage> imagesToClose;
       synchronized (lock) {
+        armNextVsyncPosted = false;
+        scheduleFromReaderPosted = false;
+        asyncClosePosted = false;
+        if (waitingDequeueCount > 0) {
+          lock.notifyAll();
+        }
+        readersToClose.addAll(asyncReadersToClose);
+        asyncReadersToClose.clear();
         for (PerImageReader pir : perImageReaders.values()) {
           if (lastReaderDequeuedFrom == pir) {
             lastReaderDequeuedFrom = null;
           }
-          pir.close();
+          pir.closed = true;
+          if (pir.inFlightAcquire > 0) {
+            pir.closeWhenIdle = true;
+          } else {
+            readersToClose.add(pir);
+          }
         }
         perImageReaders.clear();
-        if (lastDequeuedImage.size() > 0) {
-          for (PerImage image : lastDequeuedImage) {
-            image.image.close();
-          }
-          lastDequeuedImage.clear();
-        }
+        imagesToClose = new ArrayList<>(asyncImagesToClose.size() + lastDequeuedImage.size());
+        imagesToClose.addAll(asyncImagesToClose);
+        asyncImagesToClose.clear();
+        imagesToClose.addAll(lastDequeuedImage);
+        lastDequeuedImage.clear();
         if (lastReaderDequeuedFrom != null) {
-          lastReaderDequeuedFrom.close();
+          PerImageReader extra = lastReaderDequeuedFrom;
           lastReaderDequeuedFrom = null;
+          extra.closed = true;
+          if (extra.inFlightAcquire > 0) {
+            extra.closeWhenIdle = true;
+          } else {
+            readersToClose.add(extra);
+          }
         }
         imageReaderQueue.clear();
+      }
+      for (int i = 0; i < imagesToClose.size(); i++) {
+        imagesToClose.get(i).close();
+      }
+      for (int i = 0; i < readersToClose.size(); i++) {
+        readersToClose.get(i).close();
       }
     }
 
@@ -813,6 +1425,28 @@ public class FlutterRenderer implements TextureRegistry {
 
     ImageReaderSurfaceProducer(long id) {
       this.id = id;
+      if (debugEnableNdkSurfaceProducer
+          && Build.VERSION.SDK_INT >= API_LEVELS.API_29
+          && flutterJNI.isAttached()) {
+        this.ndkProducerPtr = flutterJNI.createNdkSurfaceProducer(id, isDisplayingFlutterUi);
+      }
+      if (this.ndkProducerPtr != 0L) {
+        this.readerHandler = handler;
+        this.asyncReaderThread = false;
+      } else {
+        this.readerHandler =
+            debugUseBackgroundImageReaderThread ? getOrCreateSharedImageReaderHandler() : handler;
+        this.asyncReaderThread = this.readerHandler != handler;
+        if (asyncReaderThread) {
+          ensureSharedImageReaderAffinity(readerHandler);
+        }
+      }
+    }
+
+    void onFlutterUiDisplayStateChanged(boolean displayed) {
+      if (ndkProducerPtr != 0L) {
+        FlutterJNI.ndkSurfaceProducerSetDisplayingUi(ndkProducerPtr, displayed);
+      }
     }
 
     @Override
@@ -850,8 +1484,12 @@ public class FlutterRenderer implements TextureRegistry {
         return;
       }
       this.createNewReader = true;
+      this.cachedSurface = null;
       this.requestedHeight = height;
       this.requestedWidth = width;
+      if (ndkProducerPtr != 0L) {
+        FlutterJNI.ndkSurfaceProducerSetSize(ndkProducerPtr, width, height);
+      }
     }
 
     @Override
@@ -866,21 +1504,40 @@ public class FlutterRenderer implements TextureRegistry {
 
     @Override
     public Surface getSurface() {
+      final Surface current = this.cachedSurface;
+      if (!createNewReader && current != null && current.isValid()) {
+        return current;
+      }
+      if (ndkProducerPtr != 0L) {
+        final boolean forceNew = this.createNewReader;
+        this.createNewReader = false;
+        final Surface s = FlutterJNI.ndkSurfaceProducerGetSurface(ndkProducerPtr, forceNew);
+        this.cachedSurface = s;
+        return s;
+      }
       PerImageReader pir = getActiveReader();
       if (VERBOSE_LOGS) {
         Log.i(TAG, pir.reader.hashCode() + " returning surface to render a new frame.");
       }
-      return pir.reader.getSurface();
+      final Surface s = pir.surface;
+      this.cachedSurface = s;
+      return s;
     }
 
     @Override
     public Surface getForcedNewSurface() {
       createNewReader = true;
+      cachedSurface = null;
       return getSurface();
     }
 
     @Override
     public void scheduleFrame() {
+      latestFrameOnlyMode = true;
+      if (ndkProducerPtr != 0L) {
+        FlutterJNI.ndkSurfaceProducerScheduleFrame(ndkProducerPtr, isDisplayingFlutterUi);
+        return;
+      }
       if (VERBOSE_LOGS) {
         long now = System.nanoTime();
         if (lastScheduleTime != 0) {
@@ -889,7 +1546,7 @@ public class FlutterRenderer implements TextureRegistry {
         }
         lastScheduleTime = now;
       }
-      scheduleEngineFrame();
+      scheduleTextureFrame();
     }
 
     @Override
@@ -899,8 +1556,23 @@ public class FlutterRenderer implements TextureRegistry {
       if (r == null) {
         return null;
       }
+      hasBeenAcquiredWithImage = true;
       maybeWaitOnFence(r.image);
       return r.image;
+    }
+
+    @Keep
+    @Nullable
+    @RequiresApi(API_LEVELS.API_29)
+    public HardwareBuffer acquireLatestHardwareBuffer() {
+      usesHardwareBuffer = true;
+      PerImage r = dequeueImage();
+      if (r == null) {
+        return null;
+      }
+      hasBeenAcquiredWithImage = true;
+      maybeWaitOnFence(r.image);
+      return r.getOrCreateHardwareBuffer();
     }
 
     private PerImageReader getActiveReader() {
@@ -908,9 +1580,7 @@ public class FlutterRenderer implements TextureRegistry {
         if (!createNewReader) {
           // Verify we don't need a new ImageReader anyway because its Surface has been invalidated.
           PerImageReader lastPerImageReader = imageReaderQueue.peekLast();
-          Surface lastImageReaderSurface = lastPerImageReader.reader.getSurface();
-          boolean lastImageReaderHasValidSurface = lastImageReaderSurface.isValid();
-          if (lastImageReaderHasValidSurface) {
+          if (lastPerImageReader != null && lastPerImageReader.surface.isValid()) {
             return lastPerImageReader;
           }
         }
@@ -984,6 +1654,9 @@ public class FlutterRenderer implements TextureRegistry {
 
     @VisibleForTesting
     public int numImageReaders() {
+      if (ndkProducerPtr != 0L) {
+        return FlutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 0);
+      }
       synchronized (lock) {
         return imageReaderQueue.size();
       }
@@ -998,6 +1671,9 @@ public class FlutterRenderer implements TextureRegistry {
 
     @VisibleForTesting
     public int numImages() {
+      if (ndkProducerPtr != 0L) {
+        return FlutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 1);
+      }
       int r = 0;
       synchronized (lock) {
         for (PerImageReader reader : imageReaderQueue) {
@@ -1009,6 +1685,9 @@ public class FlutterRenderer implements TextureRegistry {
 
     @VisibleForTesting
     public int pendingDequeuedImages() {
+      if (ndkProducerPtr != 0L) {
+        return FlutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 2);
+      }
       return lastDequeuedImage.size();
     }
   }

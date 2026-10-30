@@ -170,6 +170,121 @@ public class FlutterJNI {
 
   private static boolean loadLibraryCalled = false;
 
+  private static native boolean nativeRequestNotEfficiencyAffinity();
+
+  private static native int nativeGetLastRasterThreadTid();
+
+  /**
+   * Requests {@code CpuAffinity::kNotEfficiency} for the calling thread when the native library is
+   * loaded, preventing critical rendering/pipeline threads from being scheduled on little cores.
+   */
+  public static boolean requestNotEfficiencyCpuAffinity() {
+    if (!FlutterJNI.loadLibraryCalled) {
+      return false;
+    }
+    return nativeRequestNotEfficiencyAffinity();
+  }
+
+  /**
+   * Returns the Linux TID of the most recently configured engine raster thread, or {@code 0} if the
+   * native library is not loaded or no raster thread has been initialized yet.
+   */
+  public static int getLastRasterThreadTid() {
+    if (!FlutterJNI.loadLibraryCalled) {
+      return 0;
+    }
+    return nativeGetLastRasterThreadTid();
+  }
+
+  private static native int nativeGetNdkImageReaderTid();
+
+  public static int getNdkImageReaderTid() {
+    if (!FlutterJNI.loadLibraryCalled) {
+      return 0;
+    }
+    return nativeGetNdkImageReaderTid();
+  }
+
+  private native long nativeCreateNdkSurfaceProducer(
+      long nativeShellHolderId, long textureId, boolean isDisplayingUi);
+
+  private static native void nativeDestroyNdkSurfaceProducer(long ptr);
+
+  private static native void nativeNdkSurfaceProducerSetSize(long ptr, int width, int height);
+
+  @Nullable
+  private static native Surface nativeNdkSurfaceProducerGetSurface(long ptr, boolean forceNew);
+
+  private static native void nativeNdkSurfaceProducerScheduleFrame(
+      long ptr, boolean isDisplayingUi);
+
+  private static native void nativeNdkSurfaceProducerSetDisplayingUi(
+      long ptr, boolean isDisplayingUi);
+
+  private static native void nativeNdkSurfaceProducerOnTrimMemory(long ptr);
+
+  private static native int nativeNdkSurfaceProducerGetCount(long ptr, int kind);
+
+  @UiThread
+  public long createNdkSurfaceProducer(long textureId, boolean isDisplayingUi) {
+    if (!FlutterJNI.loadLibraryCalled || !isAttached()) {
+      return 0L;
+    }
+    return nativeCreateNdkSurfaceProducer(nativeShellHolderId, textureId, isDisplayingUi);
+  }
+
+  public static void destroyNdkSurfaceProducer(long ptr) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeDestroyNdkSurfaceProducer(ptr);
+    }
+  }
+
+  public static void ndkSurfaceProducerSetSize(long ptr, int width, int height) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerSetSize(ptr, width, height);
+    }
+  }
+
+  @Nullable
+  public static Surface ndkSurfaceProducerGetSurface(long ptr, boolean forceNew) {
+    if (!FlutterJNI.loadLibraryCalled || ptr == 0L) {
+      return null;
+    }
+    return nativeNdkSurfaceProducerGetSurface(ptr, forceNew);
+  }
+
+  public static void ndkSurfaceProducerScheduleFrame(long ptr, boolean isDisplayingUi) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerScheduleFrame(ptr, isDisplayingUi);
+    }
+  }
+
+  public static void ndkSurfaceProducerSetDisplayingUi(long ptr, boolean isDisplayingUi) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerSetDisplayingUi(ptr, isDisplayingUi);
+    }
+  }
+
+  public static void ndkSurfaceProducerOnTrimMemory(long ptr) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerOnTrimMemory(ptr);
+    }
+  }
+
+  public static int ndkSurfaceProducerGetCount(long ptr, int kind) {
+    if (!FlutterJNI.loadLibraryCalled || ptr == 0L) {
+      return 0;
+    }
+    return nativeNdkSurfaceProducerGetCount(ptr, kind);
+  }
+
+  /**
+   * Returns the current display refresh rate in FPS tracked by {@link io.flutter.view.VsyncWaiter}.
+   */
+  public static float getRefreshRateFPS() {
+    return FlutterJNI.refreshRateFPS;
+  }
+
   private static native void nativePrefetchDefaultFontManager();
 
   /**
@@ -1020,6 +1135,33 @@ public class FlutterJNI {
       long textureId,
       @NonNull WeakReference<TextureRegistry.ImageConsumer> imageTexture,
       boolean resetOnBackground);
+
+  @UiThread
+  public void registerNdkSurfaceProducerTexture(
+      long textureId,
+      @NonNull TextureRegistry.ImageConsumer imageTexture,
+      boolean resetOnBackground,
+      long ndkProducerPtr) {
+    if (ndkProducerPtr == 0L) {
+      registerImageTexture(textureId, imageTexture, resetOnBackground);
+      return;
+    }
+    ensureRunningOnMainThread();
+    ensureAttachedToNative();
+    nativeRegisterNdkSurfaceProducerTexture(
+        nativeShellHolderId,
+        textureId,
+        new WeakReference<TextureRegistry.ImageConsumer>(imageTexture),
+        resetOnBackground,
+        ndkProducerPtr);
+  }
+
+  private native void nativeRegisterNdkSurfaceProducerTexture(
+      long nativeShellHolderId,
+      long textureId,
+      @NonNull WeakReference<TextureRegistry.ImageConsumer> imageTexture,
+      boolean resetOnBackground,
+      long ndkProducerPtr);
 
   /**
    * Call this method to inform Flutter that a texture previously registered with {@link

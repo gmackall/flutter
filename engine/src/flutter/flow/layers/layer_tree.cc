@@ -35,6 +35,13 @@ bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
     return false;
   }
 
+  if (preroll_reusable_ && has_valid_preroll_ && ignore_raster_cache &&
+      !root_layer_->subtree_has_platform_view() &&
+      cull_rect == last_preroll_cull_rect_ &&
+      frame.root_surface_transformation() == last_preroll_surface_transform_) {
+    return last_surface_needs_readback_;
+  }
+
   SkColorSpace* color_space = GetColorSpace(frame.canvas());
   LayerStateStack state_stack;
   state_stack.set_preroll_delegate(cull_rect,
@@ -59,6 +66,15 @@ bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
   };
 
   root_layer_->Preroll(&context);
+
+  if (ignore_raster_cache && !root_layer_->subtree_has_platform_view()) {
+    has_valid_preroll_ = true;
+    last_surface_needs_readback_ = context.surface_needs_readback;
+    last_preroll_cull_rect_ = cull_rect;
+    last_preroll_surface_transform_ = frame.root_surface_transformation();
+  } else {
+    has_valid_preroll_ = false;
+  }
 
   return context.surface_needs_readback;
 }

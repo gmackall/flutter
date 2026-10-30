@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -93,5 +94,32 @@ public class VsyncWaiterTest {
     verify(mockDisplayManager, times(1)).registerDisplayListener(any(), isNull());
 
     verify(mockFlutterJNI, times(1)).setRefreshRateFPS(90.0f);
+  }
+
+  @Test
+  public void itReschedulesWhenCalledSynchronouslyInsideOnVsync() {
+    FlutterJNI mockFlutterJNI = mock(FlutterJNI.class);
+    VsyncWaiter waiter = VsyncWaiter.getInstance(120.0f, mockFlutterJNI);
+    waiter.init();
+
+    ArgumentCaptor<FlutterJNI.AsyncWaitForVsyncDelegate> delegateCaptor =
+        ArgumentCaptor.forClass(FlutterJNI.AsyncWaitForVsyncDelegate.class);
+    verify(mockFlutterJNI, times(1)).setAsyncWaitForVsyncDelegate(delegateCaptor.capture());
+    final FlutterJNI.AsyncWaitForVsyncDelegate delegate = delegateCaptor.getValue();
+
+    doAnswer(
+            invocation -> {
+              // Simulate synchronous BeginFrame inside onVsync requesting the next VSync.
+              delegate.asyncWaitForVsync(2L);
+              return null;
+            })
+        .when(mockFlutterJNI)
+        .onVsync(anyLong(), anyLong(), eq(1L));
+
+    delegate.asyncWaitForVsync(1L);
+    shadowMainLooper().idle();
+    verify(mockFlutterJNI, times(1)).onVsync(anyLong(), eq(1000000000L / 120L), eq(1L));
+    shadowMainLooper().idle();
+    verify(mockFlutterJNI, times(1)).onVsync(anyLong(), eq(1000000000L / 120L), eq(2L));
   }
 }

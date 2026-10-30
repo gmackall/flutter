@@ -11,8 +11,11 @@
 #include <android/api-level.h>
 #include <android/hardware_buffer.h>
 #include <android/hardware_buffer_jni.h>
+#include <android/native_window_jni.h>
 #include <android/surface_control.h>
 #include <android/trace.h>
+#include <media/NdkImage.h>
+#include <media/NdkImageReader.h>
 
 #include <functional>
 #include <vector>
@@ -55,10 +58,19 @@ ASurfaceTransaction* ASurfaceTransaction_fromJava(JNIEnv* env,
   INVOKE(AHardwareBuffer_lock, 26)                                 \
   INVOKE(AHardwareBuffer_release, 26)                              \
   INVOKE(AHardwareBuffer_unlock, 26)                               \
+  INVOKE(AImage_delete, 24)                                        \
+  INVOKE(AImage_deleteAsync, 26)                                   \
+  INVOKE(AImage_getHardwareBuffer, 26)                             \
+  INVOKE(AImageReader_acquireNextImageAsync, 26)                   \
+  INVOKE(AImageReader_delete, 24)                                  \
+  INVOKE(AImageReader_getWindow, 24)                               \
+  INVOKE(AImageReader_newWithUsage, 26)                            \
+  INVOKE(AImageReader_setImageListener, 24)                        \
   INVOKE(ANativeWindow_acquire, 0)                                 \
   INVOKE(ANativeWindow_getHeight, 0)                               \
   INVOKE(ANativeWindow_getWidth, 0)                                \
   INVOKE(ANativeWindow_release, 0)                                 \
+  INVOKE(ANativeWindow_toSurface, 26)                              \
   INVOKE(ASurfaceControl_createFromWindow, 29)                     \
   INVOKE(ASurfaceControl_release, 29)                              \
   INVOKE(ASurfaceTransaction_apply, 29)                            \

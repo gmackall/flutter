@@ -106,6 +106,10 @@ class AndroidShellHolder {
 
   void UpdateDisplayMetrics();
 
+  // Returns the Linux TID of the most recently configured raster thread, or 0
+  // if no raster thread has been initialized yet.
+  static int GetLastRasterThreadTid();
+
   // Visible for testing.
   const std::unique_ptr<Shell>& GetShellForTesting() const { return shell_; }
 

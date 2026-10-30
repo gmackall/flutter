@@ -5,6 +5,7 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_CONTEXT_VK_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_CONTEXT_VK_H_
 
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -282,6 +283,20 @@ class ContextVK final : public Context,
     return idle_waiter_vk_;
   }
 
+  struct PendingWaitSemaphore {
+    vk::UniqueSemaphore semaphore;
+    vk::PipelineStageFlags wait_stage =
+        vk::PipelineStageFlagBits::eFragmentShader;
+  };
+
+  void EnqueueExternalWaitSemaphore(vk::UniqueSemaphore semaphore,
+                                    vk::PipelineStageFlags wait_stage);
+
+  std::vector<PendingWaitSemaphore> TakePendingWaitSemaphores();
+
+  void RetireCompletedWaitSemaphores(
+      std::vector<vk::UniqueSemaphore>& semaphores);
+
  private:
   struct DeviceHolderImpl : public DeviceHolderVK {
     // |DeviceHolder|
@@ -333,6 +348,11 @@ class ContextVK final : public Context,
   mutable Mutex desc_pool_mutex_;
   mutable DescriptorPoolMap IPLR_GUARDED_BY(desc_pool_mutex_)
       cached_descriptor_pool_;
+  Mutex pending_wait_semaphores_mutex_;
+  std::vector<PendingWaitSemaphore> IPLR_GUARDED_BY(
+      pending_wait_semaphores_mutex_) pending_wait_semaphores_;
+  std::deque<vk::UniqueSemaphore> IPLR_GUARDED_BY(
+      pending_wait_semaphores_mutex_) retired_wait_semaphores_;
   bool should_enable_surface_control_ = false;
   bool should_batch_cmd_buffers_ = false;
   std::vector<std::shared_ptr<CommandBuffer>> pending_command_buffers_;
