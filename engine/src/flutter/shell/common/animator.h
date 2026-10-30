@@ -127,6 +127,7 @@ class Animator final {
   FramePipeline::ProducerContinuation producer_continuation_;
   bool regenerate_layer_trees_ = false;
   bool frame_scheduled_ = false;
+  fml::TimePoint last_texture_frame_time_;
   std::deque<uint64_t> trace_flow_ids_;
   bool has_rendered_ = false;
 

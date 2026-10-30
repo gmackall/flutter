@@ -13,6 +13,7 @@
 #include "flutter/fml/platform/android/scoped_java_ref.h"
 #include "flutter/fml/trace_event.h"
 #include "impeller/toolkit/android/choreographer.h"
+#include "third_party/dart/runtime/include/dart_api.h"
 
 namespace flutter {
 
@@ -29,7 +30,10 @@ VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 void VsyncWaiterAndroid::AwaitVSync() {
   const static bool use_choreographer =
       impeller::android::Choreographer::IsAvailableOnPlatform();
-  if (use_choreographer) {
+  if (use_choreographer &&
+      (g_vsync_waiter_class == nullptr ||
+       g_async_wait_for_vsync_method_ == nullptr ||
+       !task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread())) {
     auto* weak_this = new std::weak_ptr<VsyncWaiter>(shared_from_this());
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     fml::TaskRunner::RunNowOrPostTask(
@@ -45,18 +49,17 @@ void VsyncWaiterAndroid::AwaitVSync() {
           });
         });
   } else {
-    // TODO(99798): Remove it when we drop support for API level < 29 and 32-bit
-    // devices.
     auto* weak_this = new std::weak_ptr<VsyncWaiter>(shared_from_this());
     jlong java_baton = reinterpret_cast<jlong>(weak_this);
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-    task_runners_.GetPlatformTaskRunner()->PostTask([java_baton]() {
-      JNIEnv* env = fml::jni::AttachCurrentThread();
-      env->CallStaticVoidMethod(g_vsync_waiter_class->obj(),     //
-                                g_async_wait_for_vsync_method_,  //
-                                java_baton                       //
-      );
-    });
+    fml::TaskRunner::RunNowOrPostTask(
+        task_runners_.GetPlatformTaskRunner(), [java_baton]() {
+          JNIEnv* env = fml::jni::AttachCurrentThread();
+          env->CallStaticVoidMethod(g_vsync_waiter_class->obj(),     //
+                                    g_async_wait_for_vsync_method_,  //
+                                    java_baton                       //
+          );
+        });
   }
 }
 
@@ -97,19 +100,22 @@ void VsyncWaiterAndroid::OnVsyncFromJava(JNIEnv* env,
                    target_time.ToEpochDelta().ToMicroseconds());
 
   auto* weak_this = reinterpret_cast<std::weak_ptr<VsyncWaiter>*>(java_baton);
-  ConsumePendingCallback(weak_this, frame_time, target_time);
+  ConsumePendingCallback(weak_this, frame_time, target_time,
+                         Dart_CurrentIsolate() == nullptr);
 }
 
 // static
 void VsyncWaiterAndroid::ConsumePendingCallback(
     std::weak_ptr<VsyncWaiter>* weak_this,
     fml::TimePoint frame_start_time,
-    fml::TimePoint frame_target_time) {
+    fml::TimePoint frame_target_time,
+    bool can_target_current_thread) {
   auto shared_this = weak_this->lock();
   delete weak_this;
 
   if (shared_this) {
-    shared_this->FireCallback(frame_start_time, frame_target_time);
+    shared_this->FireCallback(frame_start_time, frame_target_time,
+                              can_target_current_thread);
   }
 }
 

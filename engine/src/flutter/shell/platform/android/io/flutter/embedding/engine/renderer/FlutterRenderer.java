@@ -473,6 +473,18 @@ public class FlutterRenderer implements TextureRegistry {
     private boolean released;
     // Will be true in tests and on Android API < 33.
     private boolean ignoringFence = false;
+    private volatile boolean hasBeenAcquiredWithImage = false;
+
+    private void scheduleTextureFrame() {
+      if (!flutterJNI.isAttached()) {
+        return;
+      }
+      if (isDisplayingFlutterUi && hasBeenAcquiredWithImage) {
+        flutterJNI.markTextureFrameAvailable(id);
+      } else {
+        scheduleEngineFrame();
+      }
+    }
 
     private static final boolean trimOnMemoryPressure = CLEANUP_ON_MEMORY_PRESSURE;
 
@@ -657,7 +669,7 @@ public class FlutterRenderer implements TextureRegistry {
           lastQueueTime = System.nanoTime();
         }
       }
-      scheduleEngineFrame();
+      scheduleTextureFrame();
     }
 
     PerImage dequeueImage() {
@@ -727,7 +739,7 @@ public class FlutterRenderer implements TextureRegistry {
         handler.post(
             () -> {
               if (!released) {
-                scheduleEngineFrame();
+                scheduleTextureFrame();
               }
             });
       }
@@ -762,6 +774,7 @@ public class FlutterRenderer implements TextureRegistry {
     }
 
     private void cleanup() {
+      hasBeenAcquiredWithImage = false;
       synchronized (lock) {
         for (PerImageReader pir : perImageReaders.values()) {
           if (lastReaderDequeuedFrom == pir) {
@@ -889,7 +902,7 @@ public class FlutterRenderer implements TextureRegistry {
         }
         lastScheduleTime = now;
       }
-      scheduleEngineFrame();
+      scheduleTextureFrame();
     }
 
     @Override
@@ -899,6 +912,7 @@ public class FlutterRenderer implements TextureRegistry {
       if (r == null) {
         return null;
       }
+      hasBeenAcquiredWithImage = true;
       maybeWaitOnFence(r.image);
       return r.image;
     }

@@ -250,6 +250,10 @@ void Rasterizer::DrawLastLayerTrees(
   DoDrawResult result =
       DrawToSurfaces(*frame_timings_recorder, std::move(tasks));
 
+  if (result.status != DoDrawStatus::kGpuUnavailable) {
+    delegate_.OnFrameRasterized(frame_timings_recorder->GetRecordedTime());
+  }
+
   // EndFrame should perform cleanups for the external_view_embedder.
   if (external_view_embedder_ && external_view_embedder_->GetUsedThisFrame()) {
     bool should_resubmit_frame = ShouldResubmitFrame(result);

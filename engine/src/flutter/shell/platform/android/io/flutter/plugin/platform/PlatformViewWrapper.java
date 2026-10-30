@@ -11,6 +11,8 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -48,6 +50,11 @@ public class PlatformViewWrapper extends FrameLayout {
   private final PlatformViewGestureTracker gestureTracker = new PlatformViewGestureTracker();
 
   private ViewTreeObserver.OnGlobalFocusChangeListener activeFocusListener;
+
+  private final Handler mainHandler = new Handler(Looper.getMainLooper());
+  @Nullable private Surface pendingFrameSurface;
+  @Nullable private Canvas pendingFrameCanvas;
+  private final Runnable postPendingFrameRunnable = this::postPendingFrame;
 
   public PlatformViewWrapper(@NonNull Context context) {
     super(context);
@@ -118,6 +125,7 @@ public class PlatformViewWrapper extends FrameLayout {
   }
 
   public void resizeRenderTarget(int width, int height) {
+    postPendingFrame();
     if (renderTarget != null) {
       renderTarget.resize(width, height);
     }
@@ -139,6 +147,7 @@ public class PlatformViewWrapper extends FrameLayout {
 
   /** Releases resources. */
   public void release() {
+    postPendingFrame();
     if (renderTarget != null) {
       renderTarget.release();
       renderTarget = null;
@@ -194,6 +203,8 @@ public class PlatformViewWrapper extends FrameLayout {
       return;
     }
 
+    postPendingFrame();
+
     final Canvas targetCanvas = targetSurface.lockHardwareCanvas();
     if (targetCanvas == null) {
       // Cannot render right now.
@@ -208,8 +219,31 @@ public class PlatformViewWrapper extends FrameLayout {
       // Override the canvas that this subtree of views will use to draw.
       super.draw(targetCanvas);
     } finally {
+      // Defer unlockCanvasAndPost() until immediately after the current Choreographer traversal so
+      // the platform view's RenderThread draw does not block the window's own syncAndDrawFrame().
+      pendingFrameSurface = targetSurface;
+      pendingFrameCanvas = targetCanvas;
+      mainHandler.postAtFrontOfQueue(postPendingFrameRunnable);
+    }
+  }
+
+  private void postPendingFrame() {
+    final Surface surface = pendingFrameSurface;
+    final Canvas canvas = pendingFrameCanvas;
+    if (surface == null || canvas == null) {
+      return;
+    }
+    pendingFrameSurface = null;
+    pendingFrameCanvas = null;
+    mainHandler.removeCallbacks(postPendingFrameRunnable);
+    try {
+      surface.unlockCanvasAndPost(canvas);
+    } catch (IllegalStateException | IllegalArgumentException e) {
+      Log.e(TAG, "Failed to post platform view frame to the render target: " + e);
+      return;
+    }
+    if (renderTarget != null) {
       renderTarget.scheduleFrame();
-      targetSurface.unlockCanvasAndPost(targetCanvas);
     }
   }
 

@@ -189,7 +189,9 @@ void Animator::EndFrame() {
           // If there's a frame scheduled, bail.
           // If there's no frame scheduled, but we're not yet past the last
           // vsync deadline, bail.
-          if (!self->frame_scheduled_) {
+          if (!self->frame_scheduled_ &&
+              fml::TimePoint::Now() - self->last_texture_frame_time_ >
+                  kNotifyIdleTaskWaitTime) {
             auto now =
                 fml::TimeDelta::FromMicroseconds(Dart_TimelineGetMicros());
             if (now > self->dart_frame_deadline_) {
@@ -245,12 +247,14 @@ void Animator::DrawLastLayerTrees(
   // files.
   TRACE_EVENT0("flutter", "Animator::DrawLastLayerTrees");
 
+  frame_scheduled_ = false;
   pending_frame_semaphore_.Signal();
   // In this case BeginFrame doesn't get called, we need to
   // adjust frame timings to update build start and end times,
   // given that the frame doesn't get built in this case, we
   // will use Now() for both start and end times as an indication.
   const auto now = fml::TimePoint::Now();
+  last_texture_frame_time_ = now;
   frame_timings_recorder->RecordBuildStart(now);
   frame_timings_recorder->RecordBuildEnd(now);
   delegate_.OnAnimatorDrawLastLayerTrees(std::move(frame_timings_recorder));

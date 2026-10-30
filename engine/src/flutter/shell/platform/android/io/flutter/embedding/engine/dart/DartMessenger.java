@@ -4,6 +4,7 @@
 
 package io.flutter.embedding.engine.dart;
 
+import android.os.Looper;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
@@ -323,7 +324,32 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
         };
     final DartMessengerTaskQueue nonnullTaskQueue =
         taskQueue == null ? platformTaskQueue : taskQueue;
+    if (isSynchronousPlatformViewsOffset(channel, handlerInfo, taskQueue, message)) {
+      myRunnable.run();
+      return;
+    }
     nonnullTaskQueue.dispatch(myRunnable);
+  }
+
+  private static boolean isSynchronousPlatformViewsOffset(
+      @NonNull String channel,
+      @Nullable HandlerInfo handlerInfo,
+      @Nullable DartMessengerTaskQueue taskQueue,
+      @Nullable ByteBuffer message) {
+    return handlerInfo != null
+        && taskQueue == null
+        && Looper.myLooper() == Looper.getMainLooper()
+        && "flutter/platform_views".equals(channel)
+        && message != null
+        && message.remaining() >= 8
+        && message.get(0) == 7
+        && message.get(1) == 6
+        && message.get(2) == 'o'
+        && message.get(3) == 'f'
+        && message.get(4) == 'f'
+        && message.get(5) == 's'
+        && message.get(6) == 'e'
+        && message.get(7) == 't';
   }
 
   @Override
