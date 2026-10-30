@@ -430,6 +430,30 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
             return;
           }
           final MotionEvent event = toMotionEvent(density, touch, false);
+          final PlatformViewWrapper viewWrapper = viewWrappers.get(viewId);
+          if (viewWrapper != null) {
+            if (viewWrapper.isDirectlyDispatched(event)) {
+              // Already delivered synchronously by the wrapper (or superseded by a newer event
+              // that was); dispatching it again would deliver stale/duplicate motion.
+              viewWrapper.verifyDirectlyDispatchedEcho(event);
+              return;
+            }
+            view.dispatchTouchEvent(event);
+            final int action = event.getActionMasked();
+            if (action != MotionEvent.ACTION_UP
+                && action != MotionEvent.ACTION_CANCEL
+                && event.getPointerCount() == 1) {
+              // The framework only forwards touches once the platform view has won the gesture
+              // arena, so the first forwarded event of a gesture is the signal to switch the
+              // remainder of that gesture to direct dispatch (if the coordinates agree, see
+              // PlatformViewDirectTouchDispatcher).
+              viewWrapper.onPlatformViewWonGesture(event);
+              if (viewWrapper.isDirectDispatchActive()) {
+                platformViewsChannel.invokeDirectTouchDispatch(viewId, event.getDownTime());
+              }
+            }
+            return;
+          }
           view.dispatchTouchEvent(event);
         }
 
@@ -651,6 +675,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
       textureId = -1;
     } else {
       final PlatformViewRenderTarget renderTarget = makePlatformViewRenderTarget(textureRegistry);
+      renderTarget.resize(physicalWidth, physicalHeight);
       viewWrapper = new PlatformViewWrapper(context, renderTarget);
       textureId = renderTarget.getId();
     }

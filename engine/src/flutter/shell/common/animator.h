@@ -122,6 +122,9 @@ class Animator final {
       layer_trees_tasks_;
   uint64_t frame_request_number_ = 1;
   fml::TimeDelta dart_frame_deadline_;
+  fml::TimeDelta last_notified_idle_deadline_;
+  fml::TimePoint last_vsync_start_ = fml::TimePoint::Min();
+  fml::TimePoint last_vsync_target_ = fml::TimePoint::Min();
   std::shared_ptr<FramePipeline> layer_tree_pipeline_;
   fml::Semaphore pending_frame_semaphore_;
   FramePipeline::ProducerContinuation producer_continuation_;

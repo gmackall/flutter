@@ -250,6 +250,10 @@ void Rasterizer::DrawLastLayerTrees(
   DoDrawResult result =
       DrawToSurfaces(*frame_timings_recorder, std::move(tasks));
 
+  if (result.status != DoDrawStatus::kGpuUnavailable) {
+    delegate_.OnFrameRasterized(frame_timings_recorder->GetRecordedTime());
+  }
+
   // EndFrame should perform cleanups for the external_view_embedder.
   if (external_view_embedder_ && external_view_embedder_->GetUsedThisFrame()) {
     bool should_resubmit_frame = ShouldResubmitFrame(result);
@@ -648,6 +652,12 @@ Rasterizer::DoDrawResult Rasterizer::DrawToSurfaces(
               result.status = DoDrawStatus::kGpuUnavailable;
               frame_timings_recorder.RecordRasterStart(fml::TimePoint::Now());
               frame_timings_recorder.RecordRasterEnd();
+              for (auto& task : tasks) {
+                auto& view_record = EnsureViewRecord(task->view_id);
+                if (!view_record.last_successful_task) {
+                  view_record.last_successful_task = std::move(task);
+                }
+              }
             })
             .SetIfFalse([&] {
               result.resubmitted_item = DrawToSurfacesUnsafe(

@@ -17,6 +17,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
+import '_default_binary_messenger.dart';
 import 'asset_bundle.dart';
 import 'binary_messenger.dart';
 import 'debug.dart';
@@ -151,7 +152,7 @@ mixin ServicesBinding on BindingBase, SchedulerBinding {
   /// implementation guarantees FIFO delivery.
   @protected
   BinaryMessenger createBinaryMessenger() {
-    return const _DefaultBinaryMessenger._();
+    return const DefaultBinaryMessenger();
   }
 
   /// Called when the operating system notifies the application of a memory
@@ -604,81 +605,6 @@ mixin ServicesBinding on BindingBase, SchedulerBinding {
 ///
 /// Set by [SystemChrome.setSystemUIChangeCallback].
 typedef SystemUiChangeCallback = Future<void> Function(bool systemOverlaysAreVisible);
-
-/// The default implementation of [BinaryMessenger].
-///
-/// This messenger sends messages from the app-side to the platform-side and
-/// dispatches incoming messages from the platform-side to the appropriate
-/// handler.
-class _DefaultBinaryMessenger extends BinaryMessenger {
-  const _DefaultBinaryMessenger._();
-
-  @override
-  Future<void> handlePlatformMessage(
-    String channel,
-    ByteData? message,
-    ui.PlatformMessageResponseCallback? callback,
-  ) async {
-    ui.channelBuffers.push(channel, message, (ByteData? data) => callback?.call(data));
-  }
-
-  @override
-  Future<ByteData?> send(String channel, ByteData? message) {
-    final completer = Completer<ByteData?>();
-    // ui.PlatformDispatcher.instance is accessed directly instead of using
-    // ServicesBinding.instance.platformDispatcher because this method might be
-    // invoked before any binding is initialized. This issue was reported in
-    // #27541. It is not ideal to statically access
-    // ui.PlatformDispatcher.instance because the PlatformDispatcher may be
-    // dependency injected elsewhere with a different instance. However, static
-    // access at this location seems to be the least bad option.
-    // TODO(ianh): Use ServicesBinding.instance once we have better diagnostics
-    // on that getter.
-    ui.PlatformDispatcher.instance.sendPlatformMessage(channel, message, (ByteData? reply) {
-      try {
-        completer.complete(reply);
-      } catch (exception, stack) {
-        FlutterError.reportError(
-          FlutterErrorDetails(
-            exception: exception,
-            stack: stack,
-            library: 'services library',
-            context: ErrorDescription('during a platform message response callback'),
-          ),
-        );
-      }
-    });
-    return completer.future;
-  }
-
-  @override
-  void setMessageHandler(String channel, MessageHandler? handler) {
-    if (handler == null) {
-      ui.channelBuffers.clearListener(channel);
-    } else {
-      ui.channelBuffers.setListener(channel, (
-        ByteData? data,
-        ui.PlatformMessageResponseCallback callback,
-      ) async {
-        ByteData? response;
-        try {
-          response = await handler(data);
-        } catch (exception, stack) {
-          FlutterError.reportError(
-            FlutterErrorDetails(
-              exception: exception,
-              stack: stack,
-              library: 'services library',
-              context: ErrorDescription('during a platform message callback'),
-            ),
-          );
-        } finally {
-          callback(response);
-        }
-      });
-    }
-  }
-}
 
 /// An interface to receive calls related to the system context menu from the
 /// engine.

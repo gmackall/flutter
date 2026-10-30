@@ -13,7 +13,11 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 
+import '_default_binary_messenger.dart';
+import 'binary_messenger.dart';
+import 'debug.dart';
 import 'message_codec.dart';
+import 'platform_channel.dart';
 import 'system_channels.dart';
 
 export 'dart:ui' show Offset, Size, TextDirection, VoidCallback;
@@ -72,6 +76,7 @@ typedef PlatformViewCreatedCallback = void Function(int id);
 class PlatformViewsService {
   PlatformViewsService._() {
     SystemChannels.platform_views.setMethodCallHandler(_onMethodCall);
+    SystemChannels.platform_views_2.setMethodCallHandler(_onMethodCall);
   }
 
   static final PlatformViewsService _instance = PlatformViewsService._();
@@ -83,6 +88,11 @@ class PlatformViewsService {
         if (_focusCallbacks.containsKey(id)) {
           _focusCallbacks[id]!();
         }
+      case 'directTouchDispatch':
+        // The Android embedding delivers the remainder of this gesture to the platform view
+        // itself; see AndroidViewController._onDirectTouchDispatch.
+        final Map<dynamic, dynamic> args = call.arguments as Map<dynamic, dynamic>;
+        _directTouchDispatchCallbacks[args['id'] as int]?.call(args['downTime'] as int);
       default:
         throw UnimplementedError(
           "${call.method} was invoked but isn't implemented by PlatformViewsService",
@@ -95,6 +105,11 @@ class PlatformViewsService {
   ///
   /// The callbacks are invoked when the platform view asks to be focused.
   final Map<int, VoidCallback> _focusCallbacks = <int, VoidCallback>{};
+
+  /// Maps Android platform view IDs to the callback invoked when the embedding
+  /// starts delivering a touch gesture directly to the platform view.
+  final Map<int, void Function(int downTime)> _directTouchDispatchCallbacks =
+      <int, void Function(int downTime)>{};
 
   /// {@template flutter.services.PlatformViewsService.initAndroidView}
   /// Creates a controller for a new Android view.
@@ -753,7 +768,9 @@ abstract class AndroidViewController extends PlatformViewController {
   }) : assert(creationParams == null || creationParamsCodec != null),
        _creationParams = creationParams == null
            ? null
-           : _CreationParams(creationParams, creationParamsCodec!);
+           : _CreationParams(creationParams, creationParamsCodec!) {
+    PlatformViewsService._instance._directTouchDispatchCallbacks[viewId] = _onDirectTouchDispatch;
+  }
 
   /// Action code for when a primary pointer touched the screen.
   ///
@@ -814,6 +831,23 @@ abstract class AndroidViewController extends PlatformViewController {
 
   // Helps convert PointerEvents to AndroidMotionEvents.
   final _AndroidMotionEventConverter _motionEventConverter = _AndroidMotionEventConverter();
+
+  // The downTime of the gesture whose single-pointer move events the Android embedding is
+  // delivering directly to the platform view, or null.
+  //
+  // Once the gesture arena has been resolved in favour of the platform view, the embedding
+  // (PlatformViewWrapper / FlutterMutatorView) delivers the rest of the gesture to the embedded
+  // Android view synchronously and tells us so via the `directTouchDispatch` method. Echoing those
+  // move events back through the `touch` method would only cost a platform message per event
+  // (the embedding drops them anyway), so they are skipped. Down, pointer-down/up, up and cancel
+  // events keep flowing so the embedding's bookkeeping stays in sync.
+  int? _directTouchDispatchDownTime;
+
+  void _onDirectTouchDispatch(int downTime) {
+    if (_motionEventConverter.downTimeMillis == downTime) {
+      _directTouchDispatchDownTime = downTime;
+    }
+  }
 
   TextDirection _layoutDirection;
 
@@ -1003,14 +1037,34 @@ abstract class AndroidViewController extends PlatformViewController {
   /// The Android MotionEvent object is created with [MotionEvent.obtain](https://developer.android.com/reference/android/view/MotionEvent.html#obtain(long,%20long,%20int,%20float,%20float,%20float,%20float,%20int,%20float,%20float,%20int,%20int)).
   /// See documentation of [MotionEvent.obtain](https://developer.android.com/reference/android/view/MotionEvent.html#obtain(long,%20long,%20int,%20float,%20float,%20float,%20float,%20int,%20float,%20float,%20int,%20int))
   /// for description of the parameters.
+  static final Future<void> _completedFuture = Future<void>.value();
+  PointerMoveEvent? _deferredSinglePointerMove;
+
   @override
-  Future<void> dispatchPointerEvent(PointerEvent event) async {
+  Future<void> dispatchPointerEvent(PointerEvent event) {
     if (event is PointerHoverEvent) {
-      return;
+      return _completedFuture;
     }
 
     if (event is PointerDownEvent) {
       _motionEventConverter.handlePointerDownEvent(event);
+    }
+
+    final bool isSinglePointerMove = event is PointerMoveEvent && _motionEventConverter.pointerProperties.length == 1;
+    final bool deliveredDirectly = isSinglePointerMove &&
+        _directTouchDispatchDownTime != null &&
+        _motionEventConverter.downTimeMillis == _directTouchDispatchDownTime;
+
+    if (deliveredDirectly) {
+      // Fast path: skip matrix transform and object allocation for pure direct touch moves.
+      // We defer updating the coords until an UP event forces us to resolve it.
+      _deferredSinglePointerMove = event;
+      return _completedFuture;
+    }
+
+    if (_deferredSinglePointerMove != null) {
+      _motionEventConverter.updatePointerPositions(_deferredSinglePointerMove!);
+      _deferredSinglePointerMove = null;
     }
 
     _motionEventConverter.updatePointerPositions(event);
@@ -1024,8 +1078,16 @@ abstract class AndroidViewController extends PlatformViewController {
     }
 
     if (androidEvent != null) {
-      await sendMotionEvent(androidEvent);
+      if (_directTouchDispatchDownTime != null &&
+          (_motionEventConverter.downTimeMillis == null ||
+              androidEvent.downTime != _directTouchDispatchDownTime ||
+              androidEvent.pointerCount != 1)) {
+        // The gesture ended, or became a multi-touch gesture that the embedding hands back to us.
+        _directTouchDispatchDownTime = null;
+      }
+      return sendMotionEvent(androidEvent);
     }
+    return _completedFuture;
   }
 
   /// Clears the focus from the Android View if it is focused.
@@ -1044,8 +1106,10 @@ abstract class AndroidViewController extends PlatformViewController {
   /// disposed.
   @override
   Future<void> dispose() async {
+    _deferredSinglePointerMove = null;
     final _AndroidViewState state = _state;
     _state = _AndroidViewState.disposed;
+    PlatformViewsService._instance._directTouchDispatchCallbacks.remove(viewId);
     _platformViewCreatedCallbacks.clear();
     PlatformViewsService._instance._focusCallbacks.remove(viewId);
     if (state == _AndroidViewState.creating || state == _AndroidViewState.created) {
@@ -1450,30 +1514,90 @@ class _TextureAndroidViewControllerInternals extends _AndroidViewControllerInter
     return Size(meta!['width']! as double, meta['height']! as double);
   }
 
+  static final Future<void> _completedFuture = Future<void>.value();
+
+  // Pre-encoded 56-byte StandardMethodCodec template for
+  // MethodCall('offset', <String, dynamic>{'id': int32, 'top': float64, 'left': float64}).
+  static final Uint8List _offsetMessageTemplate = Uint8List.fromList(<int>[
+    7, 6, 0x6f, 0x66, 0x66, 0x73, 0x65, 0x74, // String 'offset' (bytes 0..7)
+    13, 3, // Map of length 3 (bytes 8..9)
+    7, 2, 0x69, 0x64, // String 'id' (bytes 10..13)
+    3, 0, 0, 0, 0, // int32 placeholder at offset 15..18 (bytes 14..18)
+    7, 3, 0x74, 0x6f, 0x70, // String 'top' (bytes 19..23)
+    6, 0, 0, 0, 0, 0, 0, 0, // float64 tag + 7 alignment zero bytes (bytes 24..31)
+    0, 0, 0, 0, 0, 0, 0, 0, // float64 placeholder at offset 32..39
+    7, 4, 0x6c, 0x65, 0x66, 0x74, // String 'left' (bytes 40..45)
+    6, 0, // float64 tag + 1 alignment zero byte (bytes 46..47)
+    0, 0, 0, 0, 0, 0, 0, 0, // float64 placeholder at offset 48..55
+  ]);
+
+  // Reusable scratch buffer for DefaultBinaryMessenger.sendOneWay, which
+  // synchronously copies the ByteData into native memory before returning.
+  static final ByteData _reusableOffsetData = ByteData.sublistView(
+    Uint8List(56)..setRange(0, 56, _offsetMessageTemplate),
+  );
+
+  static void _writeOffsetPayload(ByteData data, int viewId, double top, double left) {
+    data.setInt32(15, viewId, Endian.host);
+    data.setFloat64(32, top, Endian.host);
+    data.setFloat64(48, left, Endian.host);
+  }
+
+  static ByteData _encodeFreshOffsetMethodCall(int viewId, double top, double left) {
+    final bytes = Uint8List(56)..setRange(0, 56, _offsetMessageTemplate);
+    final data = ByteData.sublistView(bytes);
+    _writeOffsetPayload(data, viewId, top, left);
+    return data;
+  }
+
+  static Future<void> _sendOffsetViaMessenger(BinaryMessenger messenger, ByteData input) async {
+    final ByteData? result = await messenger.send('flutter/platform_views', input);
+    if (result == null) {
+      throw MissingPluginException(
+        'No implementation found for method offset on channel flutter/platform_views',
+      );
+    }
+    SystemChannels.platform_views.codec.decodeEnvelope(result);
+  }
+
   @override
   Future<void> setOffset(
     Offset offset, {
     required int viewId,
     required _AndroidViewState viewState,
-  }) async {
+  }) {
     if (offset == _offset) {
-      return;
+      return _completedFuture;
     }
 
     // Don't set the offset unless the Android view has been created.
     // The implementation of this method channel throws if the Android view for this viewId
     // isn't addressable.
     if (viewState != _AndroidViewState.created) {
-      return;
+      return _completedFuture;
     }
 
     _offset = offset;
 
-    await SystemChannels.platform_views.invokeMethod<void>('offset', <String, dynamic>{
-      'id': viewId,
-      'top': offset.dy,
-      'left': offset.dx,
-    });
+    if (shouldProfilePlatformChannels || viewId < -0x80000000 || viewId > 0x7fffffff) {
+      return SystemChannels.platform_views.invokeMethod<void>('offset', <String, dynamic>{
+        'id': viewId,
+        'top': offset.dy,
+        'left': offset.dx,
+      });
+    }
+
+    final BinaryMessenger messenger = SystemChannels.platform_views.binaryMessenger;
+    if (messenger is DefaultBinaryMessenger) {
+      _writeOffsetPayload(_reusableOffsetData, viewId, offset.dy, offset.dx);
+      messenger.sendOneWay('flutter/platform_views', _reusableOffsetData);
+      return _completedFuture;
+    }
+
+    return _sendOffsetViaMessenger(
+      messenger,
+      _encodeFreshOffsetMethodCall(viewId, offset.dy, offset.dx),
+    );
   }
 
   @override

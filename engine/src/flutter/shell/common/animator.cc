@@ -20,6 +20,39 @@ namespace {
 constexpr fml::TimeDelta kNotifyIdleTaskWaitTime =
     fml::TimeDelta::FromMilliseconds(51);
 
+bool ComputeCurrentVsyncWindowWithHeadroom(fml::TimePoint now,
+                                           fml::TimePoint last_vsync_start,
+                                           fml::TimePoint last_vsync_target,
+                                           fml::TimePoint* out_vsync_start,
+                                           fml::TimePoint* out_vsync_target) {
+  if (now < last_vsync_target) {
+    return false;
+  }
+  fml::TimeDelta period = last_vsync_target - last_vsync_start;
+  if (period <= fml::TimeDelta::Zero()) {
+    period = fml::TimeDelta::FromMicroseconds(8333);
+  }
+  fml::TimePoint cur_vsync_start = now;
+  if (last_vsync_start > fml::TimePoint::Min() && now >= last_vsync_start) {
+    const int64_t elapsed_ns = (now - last_vsync_start).ToNanoseconds();
+    const int64_t period_ns = period.ToNanoseconds();
+    const int64_t k = elapsed_ns / period_ns;
+    cur_vsync_start =
+        last_vsync_start + fml::TimeDelta::FromNanoseconds(k * period_ns);
+  }
+  const fml::TimePoint cur_vsync_target = cur_vsync_start + period;
+  if (cur_vsync_target - now < period / 2) {
+    return false;
+  }
+  if (out_vsync_start) {
+    *out_vsync_start = cur_vsync_start;
+  }
+  if (out_vsync_target) {
+    *out_vsync_target = cur_vsync_target;
+  }
+  return true;
+}
+
 }  // namespace
 
 Animator::Animator(Delegate& delegate,
@@ -58,7 +91,7 @@ void Animator::EnqueueTraceFlowId(uint64_t trace_flow_id) {
 }
 
 void Animator::MaybeCleanTraceFlowIds() {
-  if (!frame_scheduled_ && !trace_flow_ids_.empty()) {
+  if (!regenerate_layer_trees_ && !trace_flow_ids_.empty()) {
     size_t flow_id_count = trace_flow_ids_.size();
     std::unique_ptr<uint64_t[]> flow_ids =
         std::make_unique<uint64_t[]>(flow_id_count);
@@ -134,6 +167,8 @@ void Animator::BeginFrame(
   const fml::TimePoint frame_target_time =
       frame_timings_recorder_->GetVsyncTargetTime();
   dart_frame_deadline_ = frame_target_time.ToEpochDelta();
+  last_vsync_start_ = frame_timings_recorder_->GetVsyncStartTime();
+  last_vsync_target_ = frame_target_time;
   uint64_t frame_number = frame_timings_recorder_->GetFrameNumber();
   delegate_.OnAnimatorBeginFrame(frame_target_time, frame_number);
 }
@@ -236,7 +271,7 @@ const std::weak_ptr<VsyncWaiter> Animator::GetVsyncWaiter() const {
 }
 
 bool Animator::CanReuseLastLayerTrees() {
-  return !regenerate_layer_trees_;
+  return !regenerate_layer_trees_ && has_rendered_;
 }
 
 void Animator::DrawLastLayerTrees(
@@ -245,7 +280,10 @@ void Animator::DrawLastLayerTrees(
   // files.
   TRACE_EVENT0("flutter", "Animator::DrawLastLayerTrees");
 
+  frame_scheduled_ = false;
   pending_frame_semaphore_.Signal();
+  last_vsync_start_ = frame_timings_recorder->GetVsyncStartTime();
+  last_vsync_target_ = frame_timings_recorder->GetVsyncTargetTime();
   // In this case BeginFrame doesn't get called, we need to
   // adjust frame timings to update build start and end times,
   // given that the frame doesn't get built in this case, we
@@ -273,15 +311,46 @@ void Animator::RequestFrame(bool regenerate_layer_trees) {
     return;
   }
 
-  AwaitVSync();
   frame_scheduled_ = true;
-  task_runners_.GetUITaskRunner()->PostTask(
-      [self = weak_factory_.GetWeakPtr()]() {
-        if (!self || !self->has_rendered_) {
-          return;
-        }
-        self->delegate_.OnAnimatorNotifyIdle(self->dart_frame_deadline_);
-      });
+  const auto now = fml::TimePoint::Now();
+  if (CanReuseLastLayerTrees() &&
+      ComputeCurrentVsyncWindowWithHeadroom(
+          now, last_vsync_start_, last_vsync_target_, nullptr, nullptr)) {
+    task_runners_.GetUITaskRunner()->PostTask(
+        [self = weak_factory_.GetWeakPtr()]() {
+          if (!self) {
+            return;
+          }
+          const auto task_now = fml::TimePoint::Now();
+          fml::TimePoint cur_vsync_start;
+          fml::TimePoint cur_vsync_target;
+          if (self->CanReuseLastLayerTrees() &&
+              ComputeCurrentVsyncWindowWithHeadroom(
+                  task_now, self->last_vsync_start_, self->last_vsync_target_,
+                  &cur_vsync_start, &cur_vsync_target)) {
+            auto frame_timings_recorder =
+                std::make_unique<FrameTimingsRecorder>();
+            frame_timings_recorder->RecordVsync(cur_vsync_start,
+                                                cur_vsync_target);
+            self->DrawLastLayerTrees(std::move(frame_timings_recorder));
+          } else {
+            self->AwaitVSync();
+          }
+        });
+  } else {
+    AwaitVSync();
+  }
+  if (regenerate_layer_trees ||
+      (has_rendered_ && last_notified_idle_deadline_ != dart_frame_deadline_)) {
+    task_runners_.GetUITaskRunner()->PostTask(
+        [self = weak_factory_.GetWeakPtr()]() {
+          if (!self || !self->has_rendered_) {
+            return;
+          }
+          self->last_notified_idle_deadline_ = self->dart_frame_deadline_;
+          self->delegate_.OnAnimatorNotifyIdle(self->dart_frame_deadline_);
+        });
+  }
 }
 
 void Animator::AwaitVSync() {
