@@ -31,6 +31,10 @@ export 'message_codec.dart' show MessageCodec;
 /// Used by [AndroidViewController.pointTransformer].
 typedef PointTransformer = Offset Function(Offset position);
 
+/// Returns the current transform matrix mapping the platform view's local coordinate system
+/// to global coordinates, or `null` when unavailable (e.g. before layout or after detach).
+typedef LiveTransformProvider = Matrix4? Function();
+
 /// The [PlatformViewsRegistry] responsible for generating unique identifiers for platform views.
 final PlatformViewsRegistry platformViewsRegistry = PlatformViewsRegistry._instance();
 
@@ -75,6 +79,7 @@ typedef PlatformViewCreatedCallback = void Function(int id);
 class PlatformViewsService {
   PlatformViewsService._() {
     SystemChannels.platform_views.setMethodCallHandler(_onMethodCall);
+    SystemChannels.platform_views_2.setMethodCallHandler(_onMethodCall);
   }
 
   static final PlatformViewsService _instance = PlatformViewsService._();
@@ -86,6 +91,15 @@ class PlatformViewsService {
         if (_focusCallbacks.containsKey(id)) {
           _focusCallbacks[id]!();
         }
+      case 'directTouchDispatch':
+        // The Android embedding notifies whether it is delivering the remainder of this gesture
+        // to the platform view directly; see AndroidViewController._onDirectTouchDispatch.
+        final args = call.arguments as Map<dynamic, dynamic>;
+        final bool active = (args['active'] as bool?) ?? true;
+        _directTouchDispatchCallbacks[args['id'] as int]?.call(
+          args['downTime'] as int,
+          active: active,
+        );
       default:
         throw UnimplementedError(
           "${call.method} was invoked but isn't implemented by PlatformViewsService",
@@ -98,6 +112,11 @@ class PlatformViewsService {
   ///
   /// The callbacks are invoked when the platform view asks to be focused.
   final Map<int, VoidCallback> _focusCallbacks = <int, VoidCallback>{};
+
+  /// Maps Android platform view IDs to the callback invoked when the embedding
+  /// starts or stops delivering a touch gesture directly to the platform view.
+  final Map<int, void Function(int downTime, {required bool active})>
+  _directTouchDispatchCallbacks = <int, void Function(int downTime, {required bool active})>{};
 
   /// {@template flutter.services.PlatformViewsService.initAndroidView}
   /// Creates a controller for a new Android view.
@@ -756,7 +775,9 @@ abstract class AndroidViewController extends PlatformViewController {
   }) : assert(creationParams == null || creationParamsCodec != null),
        _creationParams = creationParams == null
            ? null
-           : _CreationParams(creationParams, creationParamsCodec!);
+           : _CreationParams(creationParams, creationParamsCodec!) {
+    PlatformViewsService._instance._directTouchDispatchCallbacks[viewId] = _onDirectTouchDispatch;
+  }
 
   /// Action code for when a primary pointer touched the screen.
   ///
@@ -817,6 +838,146 @@ abstract class AndroidViewController extends PlatformViewController {
 
   // Helps convert PointerEvents to AndroidMotionEvents.
   final _AndroidMotionEventConverter _motionEventConverter = _AndroidMotionEventConverter();
+
+  // The downTime of the gesture whose single-pointer move events the Android embedding is
+  // delivering directly to the platform view, or null.
+  //
+  // Once the gesture arena has been resolved in favour of the platform view, the embedding
+  // (PlatformViewWrapper / FlutterMutatorView) delivers the rest of the gesture to the embedded
+  // Android view synchronously and tells us so via the `directTouchDispatch` method. Echoing those
+  // move events back through the `touch` method would only cost a platform message per event
+  // (the embedding drops them anyway), so they are skipped. Down, pointer-down/up, up and cancel
+  // events keep flowing so the embedding's bookkeeping stays in sync.
+  static const double _kDirectTouchTranslationEpsilon = 1e-3;
+
+  LiveTransformProvider? _liveTransformProvider;
+
+  /// Supplies the live view-to-global transform matrix (typically [RenderBox.getTransformTo])
+  /// for this platform view while attached, or `null` when detached or unavailable.
+  ///
+  /// Direct touch dispatch is conservatively disabled unless this callback is installed and
+  /// returns a strictly 2D translation-only [Matrix4].
+  LiveTransformProvider? get liveTransformProvider => _liveTransformProvider;
+  set liveTransformProvider(LiveTransformProvider? provider) {
+    if (_liveTransformProvider == provider) {
+      return;
+    }
+    _liveTransformProvider = provider;
+    validateDirectTouchTransform();
+  }
+
+  int? _directTouchDispatchDownTime;
+  double? _directTouchStartTranslationX;
+  double? _directTouchStartTranslationY;
+  int? _invalidatedDirectTouchDownTime;
+  bool _lastEventTransformIsTranslationOnly = true;
+
+  /// Whether native direct touch dispatch is currently active for an ongoing gesture on this view.
+  @visibleForTesting
+  bool get isDirectTouchDispatchActive => _directTouchDispatchDownTime != null;
+
+  void _clearActiveDirectTouchState() {
+    _directTouchDispatchDownTime = null;
+    _directTouchStartTranslationX = null;
+    _directTouchStartTranslationY = null;
+    final PointerMoveEvent? deferredMove = _deferredSinglePointerMove;
+    _deferredSinglePointerMove = null;
+    if (deferredMove != null &&
+        _state != _AndroidViewState.disposed &&
+        _liveTransformProvider?.call() != null) {
+      _motionEventConverter.updatePointerPositions(deferredMove);
+    }
+  }
+
+  /// Sends a platform channel notification to immediately deactivate native direct touch
+  /// dispatch for this view without injecting a synthetic cancel event, so an ongoing gesture
+  /// continues seamlessly via Dart-converted [AndroidMotionEvent]s at live local coordinates.
+  Future<void> invalidateDirectTouch({int? downTime}) async {
+    if (_state == _AndroidViewState.disposed) {
+      return;
+    }
+    try {
+      await SystemChannels.platform_views.invokeMethod<void>(
+        'invalidateDirectTouch',
+        <String, dynamic>{'id': viewId, if (downTime != null) 'downTime': downTime},
+      );
+    } on MissingPluginException {
+      // No platform views channel handler registered (for example during test teardown).
+    }
+  }
+
+  bool _isLiveDirectTouchEligible({PointerEvent? event}) {
+    final Matrix4? liveTransform = _liveTransformProvider?.call();
+    if (liveTransform == null || !_isTranslationOnlyTransform(liveTransform)) {
+      return false;
+    }
+    if (_directTouchStartTranslationX != null &&
+        _directTouchStartTranslationY != null &&
+        !_hasUnchangedTranslation(
+          liveTransform,
+          _directTouchStartTranslationX!,
+          _directTouchStartTranslationY!,
+        )) {
+      return false;
+    }
+    if (!_lastEventTransformIsTranslationOnly) {
+      return false;
+    }
+    if (event != null && !_isTranslationOnlyTransform(event.transform)) {
+      return false;
+    }
+    return true;
+  }
+
+  /// Checks the current live view-to-root transform and immediately invalidates native direct
+  /// touch dispatch for any active gesture if the transform is unavailable, is no longer a pure
+  /// 2D translation, or has shifted translation beyond [_kDirectTouchTranslationEpsilon] since
+  /// direct dispatch activated for that gesture.
+  void validateDirectTouchTransform({PointerEvent? event}) {
+    if (event != null) {
+      _lastEventTransformIsTranslationOnly = _isTranslationOnlyTransform(event.transform);
+    }
+    final int? activeDownTime = _directTouchDispatchDownTime;
+    if (activeDownTime == null) {
+      return;
+    }
+    if (!_isLiveDirectTouchEligible(event: event)) {
+      _invalidatedDirectTouchDownTime = activeDownTime;
+      _clearActiveDirectTouchState();
+      invalidateDirectTouch(downTime: activeDownTime);
+    }
+  }
+
+  void _onDirectTouchDispatch(int downTime, {required bool active}) {
+    if (!active) {
+      if (_directTouchDispatchDownTime == downTime) {
+        _clearActiveDirectTouchState();
+      }
+      return;
+    }
+    if (_motionEventConverter.downTimeMillis != downTime ||
+        _motionEventConverter.pointerProperties.length != 1) {
+      if (_invalidatedDirectTouchDownTime == downTime) {
+        invalidateDirectTouch(downTime: downTime);
+      }
+      return;
+    }
+    final Matrix4? liveTransform = _liveTransformProvider?.call();
+    final bool eligible =
+        _invalidatedDirectTouchDownTime != downTime &&
+        _lastEventTransformIsTranslationOnly &&
+        liveTransform != null &&
+        _isTranslationOnlyTransform(liveTransform);
+    if (!eligible) {
+      _invalidatedDirectTouchDownTime = downTime;
+      _clearActiveDirectTouchState();
+      invalidateDirectTouch(downTime: downTime);
+      return;
+    }
+    _directTouchDispatchDownTime = downTime;
+    _directTouchStartTranslationX = liveTransform.storage[12];
+    _directTouchStartTranslationY = liveTransform.storage[13];
+  }
 
   TextDirection _layoutDirection;
 
@@ -1006,14 +1167,78 @@ abstract class AndroidViewController extends PlatformViewController {
   /// The Android MotionEvent object is created with [MotionEvent.obtain](https://developer.android.com/reference/android/view/MotionEvent.html#obtain(long,%20long,%20int,%20float,%20float,%20float,%20float,%20int,%20float,%20float,%20int,%20int)).
   /// See documentation of [MotionEvent.obtain](https://developer.android.com/reference/android/view/MotionEvent.html#obtain(long,%20long,%20int,%20float,%20float,%20float,%20float,%20int,%20float,%20float,%20int,%20int))
   /// for description of the parameters.
+  PointerMoveEvent? _deferredSinglePointerMove;
+
+  static bool _isTranslationOnlyTransform(Matrix4? transform) {
+    if (transform == null) {
+      return true;
+    }
+    final Float64List storage = transform.storage;
+    return (storage[0] - 1.0).abs() <= precisionErrorTolerance &&
+        storage[1].abs() <= precisionErrorTolerance &&
+        storage[2].abs() <= precisionErrorTolerance &&
+        storage[3].abs() <= precisionErrorTolerance &&
+        storage[4].abs() <= precisionErrorTolerance &&
+        (storage[5] - 1.0).abs() <= precisionErrorTolerance &&
+        storage[6].abs() <= precisionErrorTolerance &&
+        storage[7].abs() <= precisionErrorTolerance &&
+        storage[8].abs() <= precisionErrorTolerance &&
+        storage[9].abs() <= precisionErrorTolerance &&
+        (storage[10] - 1.0).abs() <= precisionErrorTolerance &&
+        storage[11].abs() <= precisionErrorTolerance &&
+        storage[14].abs() <= precisionErrorTolerance &&
+        (storage[15] - 1.0).abs() <= precisionErrorTolerance;
+  }
+
+  static bool _hasUnchangedTranslation(Matrix4 transform, double tx0, double ty0) {
+    final Float64List storage = transform.storage;
+    return (storage[12] - tx0).abs() <= _kDirectTouchTranslationEpsilon &&
+        (storage[13] - ty0).abs() <= _kDirectTouchTranslationEpsilon;
+  }
+
   @override
-  Future<void> dispatchPointerEvent(PointerEvent event) async {
+  Future<void> dispatchPointerEvent(PointerEvent event) {
     if (event is PointerHoverEvent) {
-      return;
+      return Future<void>.value();
     }
 
     if (event is PointerDownEvent) {
       _motionEventConverter.handlePointerDownEvent(event);
+      _lastEventTransformIsTranslationOnly = _isTranslationOnlyTransform(event.transform);
+      if (_motionEventConverter.pointerProperties.length == 1) {
+        _invalidatedDirectTouchDownTime = null;
+        final Matrix4? liveTransform = _liveTransformProvider?.call();
+        final bool downEligible =
+            _lastEventTransformIsTranslationOnly &&
+            liveTransform != null &&
+            _isTranslationOnlyTransform(liveTransform);
+        if (!downEligible) {
+          final int? downTime = _motionEventConverter.downTimeMillis;
+          _invalidatedDirectTouchDownTime = downTime;
+          unawaited(invalidateDirectTouch(downTime: downTime));
+        }
+      }
+    }
+
+    validateDirectTouchTransform(event: event);
+
+    final bool isSinglePointerMove =
+        event is PointerMoveEvent && _motionEventConverter.pointerProperties.length == 1;
+    final bool deliveredDirectly =
+        isSinglePointerMove &&
+        _directTouchDispatchDownTime != null &&
+        _motionEventConverter.downTimeMillis == _directTouchDispatchDownTime;
+
+    if (deliveredDirectly) {
+      // Fast path: skip matrix transform and object allocation for pure direct touch moves.
+      // We defer updating the coords until an UP event forces us to resolve it.
+      _deferredSinglePointerMove = event;
+      return Future<void>.value();
+    }
+
+    if (_deferredSinglePointerMove != null) {
+      _motionEventConverter.updatePointerPositions(_deferredSinglePointerMove!);
+      _deferredSinglePointerMove = null;
     }
 
     _motionEventConverter.updatePointerPositions(event);
@@ -1027,8 +1252,18 @@ abstract class AndroidViewController extends PlatformViewController {
     }
 
     if (androidEvent != null) {
-      await sendMotionEvent(androidEvent);
+      if (_directTouchDispatchDownTime != null &&
+          (_motionEventConverter.downTimeMillis == null ||
+              androidEvent.downTime != _directTouchDispatchDownTime ||
+              androidEvent.pointerCount != 1)) {
+        // The gesture ended, or became a multi-touch gesture that the embedding hands back to us.
+        _directTouchDispatchDownTime = null;
+        _directTouchStartTranslationX = null;
+        _directTouchStartTranslationY = null;
+      }
+      return sendMotionEvent(androidEvent);
     }
+    return Future<void>.value();
   }
 
   /// Clears the focus from the Android View if it is focused.
@@ -1047,8 +1282,15 @@ abstract class AndroidViewController extends PlatformViewController {
   /// disposed.
   @override
   Future<void> dispose() async {
+    _directTouchDispatchDownTime = null;
+    _directTouchStartTranslationX = null;
+    _directTouchStartTranslationY = null;
+    _invalidatedDirectTouchDownTime = null;
+    _liveTransformProvider = null;
+    _deferredSinglePointerMove = null;
     final _AndroidViewState state = _state;
     _state = _AndroidViewState.disposed;
+    PlatformViewsService._instance._directTouchDispatchCallbacks.remove(viewId);
     _platformViewCreatedCallbacks.clear();
     PlatformViewsService._instance._focusCallbacks.remove(viewId);
     if (state == _AndroidViewState.creating || state == _AndroidViewState.created) {
@@ -1256,6 +1498,21 @@ class HybridAndroidViewController extends AndroidViewController {
   @override
   Future<void> sendMotionEvent(AndroidMotionEvent event) async {
     await SystemChannels.platform_views_2.invokeMethod<dynamic>('touch', event._asList(viewId));
+  }
+
+  @override
+  Future<void> invalidateDirectTouch({int? downTime}) async {
+    if (_state == _AndroidViewState.disposed) {
+      return;
+    }
+    try {
+      await SystemChannels.platform_views_2.invokeMethod<void>(
+        'invalidateDirectTouch',
+        <String, dynamic>{'id': viewId, if (downTime != null) 'downTime': downTime},
+      );
+    } on MissingPluginException {
+      // No platform views channel handler registered (for example during test teardown).
+    }
   }
 
   @override

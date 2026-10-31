@@ -12,6 +12,7 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.StandardMethodCodec;
 import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -48,6 +49,39 @@ public class PlatformViewsChannel2 {
     channel.invokeMethod("viewFocused", viewId);
   }
 
+  /**
+   * Tells the framework that the remainder of the given touch gesture is being delivered directly
+   * to the platform view by the embedding, so the framework can stop echoing the gesture's
+   * single-pointer {@code ACTION_MOVE} events back through the {@code touch} method.
+   *
+   * @param viewId The platform view.
+   * @param downTime The {@code MotionEvent#getDownTime()} of the gesture.
+   */
+  public void invokeDirectTouchDispatch(int viewId, long downTime) {
+    invokeDirectTouchDispatch(viewId, downTime, true);
+  }
+
+  /**
+   * Tells the framework whether the given touch gesture is currently being delivered directly to
+   * the platform view by the embedding.
+   *
+   * @param viewId The platform view.
+   * @param downTime The {@code MotionEvent#getDownTime()} of the gesture.
+   * @param active True when direct dispatch starts for {@code downTime}; false if the embedding
+   *     exits direct dispatch mid-gesture (e.g. on multi-touch or a mid-gesture transform change)
+   *     so the framework resumes echoing single-pointer {@code ACTION_MOVE} events.
+   */
+  public void invokeDirectTouchDispatch(int viewId, long downTime, boolean active) {
+    if (channel == null) {
+      return;
+    }
+    final Map<String, Object> args = new HashMap<>();
+    args.put("id", viewId);
+    args.put("downTime", downTime);
+    args.put("active", active);
+    channel.invokeMethod("directTouchDispatch", args);
+  }
+
   private static String detailedExceptionString(Exception exception) {
     return Log.getStackTraceString(exception);
   }
@@ -81,6 +115,9 @@ public class PlatformViewsChannel2 {
               break;
             case "rejectGesture":
               rejectGesture(call, result);
+              break;
+            case "invalidateDirectTouch":
+              invalidateDirectTouch(call, result);
               break;
             case "isSurfaceControlEnabled":
               isSurfaceControlEnabled(call, result);
@@ -188,6 +225,27 @@ public class PlatformViewsChannel2 {
           }
         }
 
+        private void invalidateDirectTouch(
+            @NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+          final int viewId;
+          final long downTime;
+          if (call.arguments() instanceof Number) {
+            viewId = ((Number) call.arguments()).intValue();
+            downTime = -1L;
+          } else {
+            final Map<String, Object> args = call.arguments();
+            viewId = ((Number) args.get("id")).intValue();
+            final Number downTimeNumber = (Number) args.get("downTime");
+            downTime = downTimeNumber != null ? downTimeNumber.longValue() : -1L;
+          }
+          try {
+            handler.onInvalidateDirectTouch(viewId, downTime);
+            result.success(null);
+          } catch (IllegalStateException exception) {
+            result.error("error", detailedExceptionString(exception), null);
+          }
+        }
+
         private void isSurfaceControlEnabled(
             @NonNull MethodCall call, @NonNull MethodChannel.Result result) {
           result.success(handler.isSurfaceControlEnabled());
@@ -245,6 +303,12 @@ public class PlatformViewsChannel2 {
      *     buffered dispatch.
      */
     default void onRejectGesture(int viewId, long gestureId) {}
+
+    /**
+     * Informs the handler that native direct touch dispatch for {@code viewId} must be invalidated
+     * immediately without injecting a synthetic {@code ACTION_CANCEL}.
+     */
+    default void onInvalidateDirectTouch(int viewId, long downTime) {}
 
     /** Whether the SurfaceControl swapchain is enabled. */
     boolean isSurfaceControlEnabled();

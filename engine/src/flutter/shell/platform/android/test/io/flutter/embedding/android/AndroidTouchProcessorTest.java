@@ -785,4 +785,113 @@ public class AndroidTouchProcessorTest {
     assertEquals(0.0, readPointerPhysicalY(packet));
     inOrder.verifyNoMoreInteractions();
   }
+
+  @Test
+  public void trackEventFlag_skipsMotionEventTrackingWhenFalseAndResetsOnSubsequentEvents() {
+    final AndroidTouchProcessor trackingProcessor = new AndroidTouchProcessor(mockRenderer, true);
+    final android.graphics.Matrix identity = new android.graphics.Matrix();
+
+    final MotionEvent untrackedMove =
+        MotionEvent.obtain(100, 101, MotionEvent.ACTION_MOVE, 10f, 20f, 0);
+    trackingProcessor.onTouchEvent(untrackedMove, identity, /*trackEvent=*/ false);
+    verify(mockRenderer)
+        .dispatchPointerDataPacket(packetCaptor.capture(), packetSizeCaptor.capture());
+    assertEquals(0L, packetCaptor.getValue().getLong(0));
+
+    // A subsequent onTouchEvent with trackEvent=true tracks the event.
+    final MotionEvent trackedDown =
+        MotionEvent.obtain(100, 102, MotionEvent.ACTION_DOWN, 12f, 22f, 0);
+    trackingProcessor.onTouchEvent(trackedDown, identity, /*trackEvent=*/ true);
+    verify(mockRenderer, org.mockito.Mockito.times(2))
+        .dispatchPointerDataPacket(packetCaptor.capture(), packetSizeCaptor.capture());
+    assertNotEquals(0L, packetCaptor.getValue().getLong(0));
+
+    // After trackEvent=false, onGenericMotionEvent resets trackCurrentEvent to trackMotionEvents.
+    trackingProcessor.onTouchEvent(untrackedMove, identity, /*trackEvent=*/ false);
+    final MotionEvent hoverEvent =
+        MotionEvent.obtain(100, 103, MotionEvent.ACTION_HOVER_MOVE, 5f, 6f, 0);
+    hoverEvent.setSource(InputDevice.SOURCE_CLASS_POINTER);
+    trackingProcessor.onGenericMotionEvent(hoverEvent, ApplicationProvider.getApplicationContext());
+    verify(mockRenderer, org.mockito.Mockito.times(4))
+        .dispatchPointerDataPacket(packetCaptor.capture(), packetSizeCaptor.capture());
+    assertNotEquals(0L, packetCaptor.getValue().getLong(0));
+  }
+
+  @Test
+  public void packetRingBuffers_wrapAroundFor288And576BytePackets() {
+    final MotionEventMocker mocker =
+        new MotionEventMocker(0, InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER);
+
+    // Send 12 consecutive 1-pointer MOVE events (288 bytes each) to wrap ringBuffer288 (size 8).
+    for (int i = 1; i <= 12; i++) {
+      touchProcessor.onTouchEvent(mocker.mockEvent(MotionEvent.ACTION_MOVE, i * 2.0f, i * 3.0f, 0));
+    }
+    verify(mockRenderer, org.mockito.Mockito.times(12))
+        .dispatchPointerDataPacket(packetCaptor.capture(), packetSizeCaptor.capture());
+    ByteBuffer packet288 = packetCaptor.getValue();
+    assertEquals(288, (int) packetSizeCaptor.getValue());
+    assertEquals(24.0, readPointerPhysicalX(packet288));
+    assertEquals(36.0, readPointerPhysicalY(packet288));
+
+    // Send 6 consecutive 1-pointer UP events (576 bytes each: UP + synthesized REMOVE) to wrap
+    // ringBuffer576 (size 4).
+    for (int i = 1; i <= 6; i++) {
+      touchProcessor.onTouchEvent(mocker.mockEvent(MotionEvent.ACTION_UP, i * 5.0f, i * 7.0f, 0));
+    }
+    verify(mockRenderer, org.mockito.Mockito.times(18))
+        .dispatchPointerDataPacket(packetCaptor.capture(), packetSizeCaptor.capture());
+    ByteBuffer packet576 = packetCaptor.getValue();
+    assertEquals(576, (int) packetSizeCaptor.getValue());
+    assertEquals(30.0, readPointerPhysicalX(packet576));
+    assertEquals(42.0, readPointerPhysicalY(packet576));
+  }
+
+  @Test
+  public void pressureRange_isCachedPerDeviceIdAndUpdatedWhenDeviceChanges() throws Exception {
+    final java.lang.reflect.Constructor<InputDevice.MotionRange> rangeCtor =
+        InputDevice.MotionRange.class.getDeclaredConstructor(
+            int.class, int.class, float.class, float.class, float.class, float.class, float.class);
+    rangeCtor.setAccessible(true);
+
+    final InputDevice device1 = mock(InputDevice.class);
+    final InputDevice.MotionRange range1 =
+        rangeCtor.newInstance(
+            MotionEvent.AXIS_PRESSURE, InputDevice.SOURCE_TOUCHSCREEN, 0.1f, 2.0f, 0f, 0f, 0f);
+    when(device1.getMotionRange(MotionEvent.AXIS_PRESSURE)).thenReturn(range1);
+
+    final InputDevice device2 = mock(InputDevice.class);
+    final InputDevice.MotionRange range2 =
+        rangeCtor.newInstance(
+            MotionEvent.AXIS_PRESSURE, InputDevice.SOURCE_TOUCHSCREEN, 0.25f, 4.0f, 0f, 0f, 0f);
+    when(device2.getMotionRange(MotionEvent.AXIS_PRESSURE)).thenReturn(range2);
+
+    final MotionEventMocker mocker =
+        new MotionEventMocker(0, InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER);
+
+    final MotionEvent event1a = mocker.mockEvent(MotionEvent.ACTION_MOVE, 1f, 2f, 0);
+    when(event1a.getDeviceId()).thenReturn(10);
+    when(event1a.getDevice()).thenReturn(device1);
+    touchProcessor.onTouchEvent(event1a);
+
+    final MotionEvent event1b = mocker.mockEvent(MotionEvent.ACTION_MOVE, 3f, 4f, 0);
+    when(event1b.getDeviceId()).thenReturn(10);
+    when(event1b.getDevice()).thenReturn(device1);
+    touchProcessor.onTouchEvent(event1b);
+
+    // Same deviceId=10: getMotionRange is queried only once.
+    verify(device1, org.mockito.Mockito.times(1)).getMotionRange(MotionEvent.AXIS_PRESSURE);
+
+    // Switching to deviceId=20 re-queries getMotionRange on the new device.
+    final MotionEvent event2 = mocker.mockEvent(MotionEvent.ACTION_MOVE, 5f, 6f, 0);
+    when(event2.getDeviceId()).thenReturn(20);
+    when(event2.getDevice()).thenReturn(device2);
+    touchProcessor.onTouchEvent(event2);
+
+    verify(device2, org.mockito.Mockito.times(1)).getMotionRange(MotionEvent.AXIS_PRESSURE);
+    verify(mockRenderer, org.mockito.Mockito.times(3))
+        .dispatchPointerDataPacket(packetCaptor.capture(), packetSizeCaptor.capture());
+    ByteBuffer packet = packetCaptor.getValue();
+    assertEquals(0.25, readPressureMin(packet), 0.001);
+    assertEquals(4.0, readPressureMax(packet), 0.001);
+  }
 }

@@ -15,6 +15,7 @@ import android.view.MotionEvent;
 import android.view.ViewConfiguration;
 import androidx.annotation.IntDef;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
@@ -126,10 +127,26 @@ public class AndroidTouchProcessor {
 
   private final boolean trackMotionEvents;
 
+  // Whether the event currently being processed by onTouchEvent should be tracked. Only
+  // meaningful while onTouchEvent is on the stack (touch events are processed on one thread).
+  private boolean trackCurrentEvent = true;
+
   private final Map<Integer, float[]> ongoingPans = new HashMap<>();
 
   // Only used on api 25 and below to avoid requerying display metrics.
   private int cachedVerticalScrollFactor;
+
+  // Caches to avoid allocations and IPC locks.
+  private final ByteBuffer[] ringBuffer288 = new ByteBuffer[8];
+  private final ByteBuffer[] ringBuffer576 = new ByteBuffer[4];
+  private int ringIndex288 = 0;
+  private int ringIndex576 = 0;
+
+  private int cachedPressureDeviceId = -1;
+  private double cachedPressureMin = 0.0;
+  private double cachedPressureMax = 1.0;
+
+  private final float[] pointerCoordsTemp = new float[2];
 
   /**
    * Constructs an {@code AndroidTouchProcessor} that will send touch event data to the Flutter
@@ -159,6 +176,24 @@ public class AndroidTouchProcessor {
    * @return True if the event was handled.
    */
   public boolean onTouchEvent(@NonNull MotionEvent event, @NonNull Matrix transformMatrix) {
+    return onTouchEvent(event, transformMatrix, trackMotionEvents);
+  }
+
+  /**
+   * Sends the given {@link MotionEvent} data to Flutter in a format that Flutter understands.
+   *
+   * @param event The motion event from the view.
+   * @param transformMatrix Applies to the view that originated the event. It's used to transform
+   *     the gesture pointers into screen coordinates.
+   * @param trackEvent Whether to keep a copy of the event in the {@link MotionEventTracker} so that
+   *     the framework can hand it back to a platform view. Callers that have already delivered the
+   *     event to the platform view themselves pass {@code false} (the framework is told to skip the
+   *     echo for such events, see {@code PlatformViewDirectTouchDispatcher}).
+   * @return True if the event was handled.
+   */
+  public boolean onTouchEvent(
+      @NonNull MotionEvent event, @NonNull Matrix transformMatrix, boolean trackEvent) {
+    trackCurrentEvent = trackEvent;
     int maskedAction = event.getActionMasked();
     int pointerChange = getPointerChangeForAction(event.getActionMasked());
     boolean updateForSinglePointer =
@@ -179,13 +214,32 @@ public class AndroidTouchProcessor {
     // Allocate space for an additional pointer if this is an ACTION_UP or ACTION_POINTER_UP
     // event taken with device type touch, to handle the synthesized PointerChange.REMOVE event.
     int totalPointerCount = originalPointerCount + (shouldRemovePointer ? 1 : 0);
-    ByteBuffer packet =
-        ByteBuffer.allocateDirect(totalPointerCount * POINTER_DATA_FIELD_COUNT * BYTES_PER_FIELD);
-    packet.order(ByteOrder.LITTLE_ENDIAN);
+    int capacity = totalPointerCount * POINTER_DATA_FIELD_COUNT * BYTES_PER_FIELD;
+    ByteBuffer packet;
+    if (capacity == 288) {
+      if (ringBuffer288[ringIndex288] == null) {
+        ringBuffer288[ringIndex288] = ByteBuffer.allocateDirect(288);
+        ringBuffer288[ringIndex288].order(ByteOrder.LITTLE_ENDIAN);
+      }
+      packet = ringBuffer288[ringIndex288];
+      ringIndex288 = (ringIndex288 + 1) % ringBuffer288.length;
+    } else if (capacity == 576) {
+      if (ringBuffer576[ringIndex576] == null) {
+        ringBuffer576[ringIndex576] = ByteBuffer.allocateDirect(576);
+        ringBuffer576[ringIndex576].order(ByteOrder.LITTLE_ENDIAN);
+      }
+      packet = ringBuffer576[ringIndex576];
+      ringIndex576 = (ringIndex576 + 1) % ringBuffer576.length;
+    } else {
+      packet = ByteBuffer.allocateDirect(capacity);
+      packet.order(ByteOrder.LITTLE_ENDIAN);
+    }
+    packet.position(0);
 
     if (updateForSinglePointer) {
       // ACTION_DOWN and ACTION_POINTER_DOWN always apply to a single pointer only.
-      addPointerForIndex(event, event.getActionIndex(), pointerChange, 0, transformMatrix, packet);
+      addPointerForIndex(
+          event, event.getActionIndex(), pointerChange, 0, transformMatrix, packet);
     } else if (updateForMultiplePointers) {
       // ACTION_UP and ACTION_POINTER_UP may contain position updates for other pointers.
       // We are converting these updates to move events here in order to preserve this data.
@@ -194,12 +248,18 @@ public class AndroidTouchProcessor {
       for (int p = 0; p < originalPointerCount; p++) {
         if (p != event.getActionIndex() && event.getToolType(p) == MotionEvent.TOOL_TYPE_FINGER) {
           addPointerForIndex(
-              event, p, PointerChange.MOVE, POINTER_DATA_FLAG_BATCHED, transformMatrix, packet);
+              event,
+              p,
+              PointerChange.MOVE,
+              POINTER_DATA_FLAG_BATCHED,
+              transformMatrix,
+              packet);
         }
       }
       // It's important that we're sending the UP event last. This allows PlatformView
       // to correctly batch everything back into the original Android event if needed.
-      addPointerForIndex(event, event.getActionIndex(), pointerChange, 0, transformMatrix, packet);
+      addPointerForIndex(
+          event, event.getActionIndex(), pointerChange, 0, transformMatrix, packet);
 
       if (shouldRemovePointer) {
         // Synthesizes remove events immediately after the UP event so that the touches
@@ -211,7 +271,12 @@ public class AndroidTouchProcessor {
         // (Flutter will automatically synthesize an add event before the pointer makes its next
         // contact.)
         addPointerForIndex(
-            event, event.getActionIndex(), PointerChange.REMOVE, 0, transformMatrix, packet);
+            event,
+            event.getActionIndex(),
+            PointerChange.REMOVE,
+            0,
+            transformMatrix,
+            packet);
       }
     } else {
       // ACTION_MOVE may not actually mean all pointers have moved
@@ -258,6 +323,7 @@ public class AndroidTouchProcessor {
       return false;
     }
 
+    trackCurrentEvent = trackMotionEvents;
     int pointerChange = getPointerChangeForAction(event.getActionMasked());
     ByteBuffer packet =
         ByteBuffer.allocateDirect(
@@ -322,8 +388,11 @@ public class AndroidTouchProcessor {
     int pointerKind = getPointerDeviceTypeForToolType(event.getToolType(pointerIndex));
     // We use this in lieu of using event.getRawX and event.getRawY as we wish to support
     // earlier versions than API level 29.
-    float[] viewToScreenCoords = {event.getX(pointerIndex), event.getY(pointerIndex)};
-    transformMatrix.mapPoints(viewToScreenCoords);
+    pointerCoordsTemp[0] = event.getX(pointerIndex);
+    pointerCoordsTemp[1] = event.getY(pointerIndex);
+    if (transformMatrix != null && transformMatrix != IDENTITY_TRANSFORM) {
+      transformMatrix.mapPoints(pointerCoordsTemp);
+    }
     long buttons;
     if (pointerKind == PointerDeviceKind.MOUSE) {
       buttons = event.getButtonState() & 0x1F;
@@ -333,7 +402,7 @@ public class AndroidTouchProcessor {
         // Some implementations translate trackpad scrolling into a mouse down-move-up event
         // sequence with buttons: 0, such as ARC on a Chromebook. See #11420, a legacy
         // implementation that uses the same condition but converts differently.
-        ongoingPans.put(pointerId, viewToScreenCoords);
+        ongoingPans.put(pointerId, new float[] {pointerCoordsTemp[0], pointerCoordsTemp[1]});
       }
     } else if (pointerKind == PointerDeviceKind.STYLUS) {
       // Returns converted android button state into flutter framework normalized state
@@ -356,7 +425,7 @@ public class AndroidTouchProcessor {
     }
 
     long motionEventId = 0;
-    if (trackMotionEvents) {
+    if (trackMotionEvents && trackCurrentEvent) {
       MotionEventTracker.MotionEventId trackedEvent = motionEventTracker.track(event);
       motionEventId = trackedEvent.getId();
     }
@@ -387,8 +456,8 @@ public class AndroidTouchProcessor {
       packet.putDouble(panStart[0]); // physical_x
       packet.putDouble(panStart[1]); // physical_y
     } else {
-      packet.putDouble(viewToScreenCoords[0]); // physical_x
-      packet.putDouble(viewToScreenCoords[1]); // physical_y
+      packet.putDouble(pointerCoordsTemp[0]); // physical_x
+      packet.putDouble(pointerCoordsTemp[1]); // physical_y
     }
 
     packet.putDouble(
@@ -403,18 +472,21 @@ public class AndroidTouchProcessor {
     packet.putLong(0); // synthesized
 
     packet.putDouble(event.getPressure(pointerIndex)); // pressure
-    double pressureMin = 0.0;
-    double pressureMax = 1.0;
-    if (event.getDevice() != null) {
-      InputDevice.MotionRange pressureRange =
-          event.getDevice().getMotionRange(MotionEvent.AXIS_PRESSURE);
-      if (pressureRange != null) {
-        pressureMin = pressureRange.getMin();
-        pressureMax = pressureRange.getMax();
+    if (event.getDeviceId() != cachedPressureDeviceId) {
+      cachedPressureDeviceId = event.getDeviceId();
+      cachedPressureMin = 0.0;
+      cachedPressureMax = 1.0;
+      if (event.getDevice() != null) {
+        InputDevice.MotionRange pressureRange =
+            event.getDevice().getMotionRange(MotionEvent.AXIS_PRESSURE);
+        if (pressureRange != null) {
+          cachedPressureMin = pressureRange.getMin();
+          cachedPressureMax = pressureRange.getMax();
+        }
       }
     }
-    packet.putDouble(pressureMin); // pressure_min
-    packet.putDouble(pressureMax); // pressure_max
+    packet.putDouble(cachedPressureMin); // pressure_min
+    packet.putDouble(cachedPressureMax); // pressure_max
 
     if (pointerKind == PointerDeviceKind.STYLUS) {
       packet.putDouble(event.getAxisValue(MotionEvent.AXIS_DISTANCE, pointerIndex)); // distance
@@ -466,8 +538,8 @@ public class AndroidTouchProcessor {
 
     if (isTrackpadPan) {
       float[] panStart = ongoingPans.get(pointerId);
-      packet.putDouble(viewToScreenCoords[0] - panStart[0]);
-      packet.putDouble(viewToScreenCoords[1] - panStart[1]);
+      packet.putDouble(pointerCoordsTemp[0] - panStart[0]);
+      packet.putDouble(pointerCoordsTemp[1] - panStart[1]);
     } else {
       packet.putDouble(0.0); // pan_x
       packet.putDouble(0.0); // pan_y
