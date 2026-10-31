@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "flutter/fml/closure.h"
 #include "flutter/impeller/core/formats.h"
 #include "flutter/impeller/core/texture_descriptor.h"
 #include "flutter/impeller/display_list/dl_image_impeller.h"
@@ -13,6 +14,7 @@
 #include "flutter/impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/texture_vk.h"
 #include "flutter/impeller/toolkit/android/hardware_buffer.h"
+#include "flutter/impeller/toolkit/android/proc_table.h"
 
 namespace flutter {
 
@@ -34,38 +36,17 @@ void ImageExternalTextureVKImpeller::Attach(PaintContext& context) {
   }
 }
 
-void ImageExternalTextureVKImpeller::Detach() {}
+void ImageExternalTextureVKImpeller::Detach() {
+  ClearPendingFrameAndWaiter();
+}
 
-void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
-                                                  const SkRect& bounds) {
-  JavaLocalRef image = AcquireLatestImage();
-  if (image.is_null()) {
-    return;
-  }
-  JavaLocalRef hardware_buffer = HardwareBufferFor(image);
-  if (hardware_buffer.is_null()) {
-    return;
-  }
-  AHardwareBuffer* latest_hardware_buffer = AHardwareBufferFor(hardware_buffer);
-
-  auto hb_desc =
-      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
-  std::optional<HardwareBufferKey> key =
-      impeller::android::HardwareBuffer::GetSystemUniqueID(
-          latest_hardware_buffer);
-  auto existing_image = image_lru_.FindImage(key);
-  if (existing_image != nullptr || !hb_desc.has_value()) {
-    dl_image_ = existing_image;
-
-    CloseHardwareBuffer(hardware_buffer);
-    return;
-  }
-
+sk_sp<flutter::DlImage> ImageExternalTextureVKImpeller::ImportHardwareBuffer(
+    AHardwareBuffer* latest_hardware_buffer,
+    const AHardwareBuffer_Desc& hb_desc) {
   auto texture_source = std::make_shared<impeller::AHBTextureSourceVK>(
-      impeller_context_, latest_hardware_buffer, hb_desc.value());
+      impeller_context_, latest_hardware_buffer, hb_desc);
   if (!texture_source->IsValid()) {
-    CloseHardwareBuffer(hardware_buffer);
-    return;
+    return nullptr;
   }
 
   auto texture =
@@ -89,18 +70,75 @@ void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
     barrier.new_layout = impeller::vk::ImageLayout::eShaderReadOnlyOptimal;
 
     if (!texture->SetLayout(barrier)) {
-      return;
+      return nullptr;
     }
     if (!impeller_context_->GetCommandQueue()->Submit({buffer}).ok()) {
-      return;
+      return nullptr;
     }
   }
 
-  dl_image_ = impeller::DlImageImpeller::Make(texture);
+  return impeller::DlImageImpeller::Make(texture);
+}
+
+void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
+                                                  const SkRect& bounds) {
+  AcquiredFrame acquired = AcquireNextOrPendingFrame();
+  if (acquired.ahardware_buffer == nullptr) {
+    return;
+  }
+
+  // Wait on the acquire fence before `ImportHardwareBuffer` so a slow fence
+  // that hits `kTimedOut` leaves `pending_frame_` untouched without allocating
+  // a transient Vulkan image or submitting a premature layout transition.
+  // Pending-frame retries use a 0 ms non-blocking check so intermediate
+  // repaints never re-stall the raster thread.
+  const int wait_timeout_ms =
+      acquired.is_pending_retry ? 0 : fence_wait_timeout_ms_;
+  const auto wait_result = NdkSurfaceProducer::WaitAcquireFenceFdBounded(
+      acquired.acquire_fence_fd, wait_timeout_ms);
+  if (wait_result == NdkSurfaceProducer::FenceWaitResult::kTimedOut) {
+    RetainPendingFrameOnTimeout(std::move(acquired));
+    return;
+  }
+  CancelPendingFrameWaiter();
+  fml::ScopedCleanupClosure release_frame(
+      [this, &acquired]() { ReleaseAcquiredFrame(acquired); });
+  if (wait_result != NdkSurfaceProducer::FenceWaitResult::kSignaled) {
+    return;
+  }
+
+  AHardwareBuffer* latest_hardware_buffer = acquired.ahardware_buffer;
+  std::optional<HardwareBufferKey> key =
+      impeller::android::HardwareBuffer::GetSystemUniqueID(
+          latest_hardware_buffer);
+  if (auto cached_image = image_lru_.TryFindImage(key)) {
+    dl_image_ = std::move(cached_image);
+    MarkFrameDisplayed(acquired);
+    return;
+  }
+
+  auto hb_desc =
+      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
+  if (!hb_desc.has_value()) {
+    return;
+  }
+  auto existing_image = image_lru_.FindImage(key, hb_desc.value());
+  if (existing_image != nullptr) {
+    dl_image_ = existing_image;
+    MarkFrameDisplayed(acquired);
+    return;
+  }
+
+  auto imported = ImportHardwareBuffer(latest_hardware_buffer, hb_desc.value());
+  if (!imported) {
+    return;
+  }
+
+  dl_image_ = std::move(imported);
   if (key.has_value()) {
     image_lru_.AddImage(dl_image_, key.value());
   }
-  CloseHardwareBuffer(hardware_buffer);
+  MarkFrameDisplayed(acquired);
 }
 
 }  // namespace flutter

@@ -2106,8 +2106,11 @@ TEST_F(ShellTest, CanCreateImagefromDecompressedBytes) {
 class MockTexture : public Texture {
  public:
   MockTexture(int64_t textureId,
-              std::shared_ptr<fml::AutoResetWaitableEvent> latch)
-      : Texture(textureId), latch_(std::move(latch)) {}
+              std::shared_ptr<fml::AutoResetWaitableEvent> latch,
+              bool needs_mark_frame_available = true)
+      : Texture(textureId),
+        latch_(std::move(latch)),
+        needs_mark_frame_available_(needs_mark_frame_available) {}
 
   ~MockTexture() override = default;
 
@@ -2126,6 +2129,10 @@ class MockTexture : public Texture {
     latch_->Signal();
   }
 
+  bool NeedsMarkNewFrameAvailable() const override {
+    return needs_mark_frame_available_;
+  }
+
   void OnTextureUnregistered() override {
     unregistered_ = true;
     latch_->Signal();
@@ -2138,6 +2145,7 @@ class MockTexture : public Texture {
   bool unregistered_ = false;
   int frames_available_ = 0;
   std::shared_ptr<fml::AutoResetWaitableEvent> latch_;
+  bool needs_mark_frame_available_ = true;
 };
 
 TEST_F(ShellTest, TextureFrameMarkedAvailableAndUnregister) {
@@ -2158,22 +2166,33 @@ TEST_F(ShellTest, TextureFrameMarkedAvailableAndUnregister) {
 
   std::shared_ptr<MockTexture> mockTexture =
       std::make_shared<MockTexture>(0, latch);
+  std::shared_ptr<MockTexture> pullTexture = std::make_shared<MockTexture>(
+      1, latch, /*needs_mark_frame_available=*/false);
 
   fml::TaskRunner::RunNowOrPostTask(
       shell->GetTaskRunners().GetRasterTaskRunner(), [&]() {
         shell->GetPlatformView()->RegisterTexture(mockTexture);
+        shell->GetPlatformView()->RegisterTexture(pullTexture);
+        shell->GetPlatformView()->MarkTextureFrameAvailable(1);
         shell->GetPlatformView()->MarkTextureFrameAvailable(0);
       });
   latch->Wait();
 
   EXPECT_EQ(mockTexture->frames_available(), 1);
+  EXPECT_EQ(pullTexture->frames_available(), 0);
 
   fml::TaskRunner::RunNowOrPostTask(
       shell->GetTaskRunners().GetRasterTaskRunner(),
       [&]() { shell->GetPlatformView()->UnregisterTexture(0); });
   latch->Wait();
 
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetRasterTaskRunner(),
+      [&]() { shell->GetPlatformView()->UnregisterTexture(1); });
+  latch->Wait();
+
   EXPECT_EQ(mockTexture->unregistered(), true);
+  EXPECT_EQ(pullTexture->unregistered(), true);
   DestroyShell(std::move(shell), task_runners);
 }
 
