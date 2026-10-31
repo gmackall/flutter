@@ -40,22 +40,20 @@ void ImageExternalTextureVKImpeller::Detach() {}
 
 void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
                                                   const SkRect& bounds) {
-  auto acquired = AcquireLatestHardwareBuffer();
-  if (acquired.hardware_buffer.is_null()) {
+  auto acquired = AcquireLatestFrame();
+  if (acquired.ahardware_buffer == nullptr) {
     return;
   }
   fml::ScopedCleanupClosure close_java_hb([this, &acquired]() {
-    if (!acquired.owned_by_producer) {
-      CloseHardwareBuffer(acquired.hardware_buffer);
+    if (!acquired.owned_by_producer &&
+        !acquired.java_hardware_buffer.is_null()) {
+      CloseHardwareBuffer(acquired.java_hardware_buffer);
     }
   });
-  AHardwareBuffer* latest_hardware_buffer =
-      AHardwareBufferFor(acquired.hardware_buffer);
-  if (latest_hardware_buffer == nullptr) {
-    return;
-  }
+  AHardwareBuffer* latest_hardware_buffer = acquired.ahardware_buffer;
   const auto& proc_table = impeller::android::GetProcTable();
-  if (proc_table.AHardwareBuffer_acquire.IsAvailable()) {
+  if (!acquired.caller_owns_ahb_ref &&
+      proc_table.AHardwareBuffer_acquire.IsAvailable()) {
     proc_table.AHardwareBuffer_acquire(latest_hardware_buffer);
   }
   fml::ScopedCleanupClosure release_native_hb(
@@ -69,6 +67,10 @@ void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
       impeller::android::HardwareBuffer::GetSystemUniqueID(
           latest_hardware_buffer);
   if (auto cached_image = image_lru_.TryFindImage(key)) {
+    if (!NdkSurfaceProducer::WaitAcquireFenceFdBounded(
+            std::move(acquired.acquire_fence_fd))) {
+      return;
+    }
     dl_image_ = std::move(cached_image);
     return;
   }
@@ -80,6 +82,10 @@ void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
   }
   auto existing_image = image_lru_.FindImage(key, hb_desc.value());
   if (existing_image != nullptr) {
+    if (!NdkSurfaceProducer::WaitAcquireFenceFdBounded(
+            std::move(acquired.acquire_fence_fd))) {
+      return;
+    }
     dl_image_ = existing_image;
     return;
   }
@@ -87,6 +93,11 @@ void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
   auto texture_source = std::make_shared<impeller::AHBTextureSourceVK>(
       impeller_context_, latest_hardware_buffer, hb_desc.value());
   if (!texture_source->IsValid()) {
+    return;
+  }
+
+  if (!NdkSurfaceProducer::WaitAcquireFenceFdBounded(
+          std::move(acquired.acquire_fence_fd))) {
     return;
   }
 

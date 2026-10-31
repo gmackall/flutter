@@ -25,6 +25,11 @@ ImageExternalTexture::ImageExternalTexture(
 
 ImageExternalTexture::~ImageExternalTexture() = default;
 
+void ImageExternalTexture::SetNdkSurfaceProducer(
+    std::shared_ptr<NdkSurfaceProducer> ndk_producer) {
+  ndk_producer_ = std::move(ndk_producer);
+}
+
 // Implementing flutter::Texture.
 void ImageExternalTexture::Paint(PaintContext& context,
                                  const DlRect& bounds,
@@ -102,6 +107,40 @@ ImageExternalTexture::AcquireLatestHardwareBuffer() {
   return jni_facade_->ImageProducerTextureEntryAcquireLatestHardwareBuffer(
       JavaLocalRef(image_texture_entry_), &cached_consumer_,
       &cached_is_surface_producer_);
+}
+
+ImageExternalTexture::AcquiredFrame ImageExternalTexture::AcquireLatestFrame() {
+  if (ndk_producer_) {
+    auto ndk_frame = ndk_producer_->AcquireLatestFrame();
+    if (ndk_frame.ahardware_buffer == nullptr) {
+      return {};
+    }
+    return AcquiredFrame{
+        .java_hardware_buffer = JavaLocalRef(),
+        .ahardware_buffer = ndk_frame.ahardware_buffer,
+        .acquire_fence_fd = std::move(ndk_frame.acquire_fence_fd),
+        .owned_by_producer = true,
+        .caller_owns_ahb_ref = true,
+    };
+  }
+  auto acquired = AcquireLatestHardwareBuffer();
+  if (acquired.hardware_buffer.is_null()) {
+    return {};
+  }
+  AHardwareBuffer* ahb = AHardwareBufferFor(acquired.hardware_buffer);
+  if (ahb == nullptr) {
+    if (!acquired.owned_by_producer) {
+      CloseHardwareBuffer(acquired.hardware_buffer);
+    }
+    return {};
+  }
+  return AcquiredFrame{
+      .java_hardware_buffer = std::move(acquired.hardware_buffer),
+      .ahardware_buffer = ahb,
+      .acquire_fence_fd = fml::UniqueFD(),
+      .owned_by_producer = acquired.owned_by_producer,
+      .caller_owns_ahb_ref = false,
+  };
 }
 
 void ImageExternalTexture::CloseImage(const fml::jni::JavaRef<jobject>& image) {

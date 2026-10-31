@@ -7,8 +7,10 @@
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/unique_fd.h"
 #include "flutter/shell/platform/android/image_lru.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
+#include "flutter/shell/platform/android/ndk_surface_producer.h"
 #include "flutter/shell/platform/android/platform_view_android_jni_impl.h"
 
 #include <android/hardware_buffer.h>
@@ -47,7 +49,16 @@ class ImageExternalTexture : public flutter::Texture {
   // |flutter::Texture|
   virtual ~ImageExternalTexture();
 
+  void SetNdkSurfaceProducer(std::shared_ptr<NdkSurfaceProducer> ndk_producer);
+
  protected:
+  struct AcquiredFrame {
+    JavaLocalRef java_hardware_buffer;
+    AHardwareBuffer* ahardware_buffer = nullptr;
+    fml::UniqueFD acquire_fence_fd;
+    bool owned_by_producer = false;
+    bool caller_owns_ahb_ref = false;
+  };
   //----------------------------------------------------------------------------
   /// @brief      Subclasses override this method to bind the latest
   ///             representation of the hardware buffer wrapped by this texture
@@ -71,6 +82,8 @@ class ImageExternalTexture : public flutter::Texture {
   virtual PlatformViewAndroidJNI::AcquiredHardwareBuffer
   AcquireLatestHardwareBuffer();
 
+  virtual AcquiredFrame AcquireLatestFrame();
+
   void CloseImage(const fml::jni::JavaRef<jobject>& image);
 
   JavaLocalRef HardwareBufferFor(const fml::jni::JavaRef<jobject>& image);
@@ -85,6 +98,7 @@ class ImageExternalTexture : public flutter::Texture {
   fml::jni::JavaObjectWeakGlobalRef cached_consumer_;
   bool cached_is_surface_producer_ = false;
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
+  std::shared_ptr<NdkSurfaceProducer> ndk_producer_;
 
   enum class AttachmentState { kUninitialized, kAttached, kDetached };
   AttachmentState state_ = AttachmentState::kUninitialized;

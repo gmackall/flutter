@@ -14,8 +14,10 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -1616,5 +1618,85 @@ public class FlutterRendererTest {
     verify(imgs[0], times(1)).close();
 
     texture.release();
+  }
+
+  @Test
+  public void ndkSurfaceProducer_fallsBackGracefullyWhenNativeLibraryNotLoaded() {
+    FlutterRenderer.debugEnableNdkSurfaceProducer = true;
+    try {
+      FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+      FlutterRenderer.ImageReaderSurfaceProducer rawTexture =
+          (FlutterRenderer.ImageReaderSurfaceProducer) flutterRenderer.createSurfaceProducer();
+      FlutterRenderer.ImageReaderSurfaceProducer texture = spy(rawTexture);
+      ImageReader mockReader = mock(ImageReader.class);
+      Surface mockSurface = mock(Surface.class);
+      when(mockSurface.isValid()).thenReturn(true);
+      when(mockReader.getSurface()).thenReturn(mockSurface);
+      when(texture.createImageReader()).thenReturn(mockReader);
+
+      texture.setSize(320, 240);
+      assertEquals(mockSurface, texture.getSurface());
+      assertEquals(1, texture.numImageReaders());
+      texture.release();
+    } finally {
+      FlutterRenderer.debugEnableNdkSurfaceProducer = true;
+    }
+  }
+
+  @Test
+  public void ndkSurfaceProducer_delegatesCreateGetSurfaceResizeTrimAndDestroyInOrder() {
+    FlutterRenderer.debugEnableNdkSurfaceProducer = true;
+    try {
+      final long fakeNdkPtr = 0x7F001234L;
+      Surface firstSurface = mock(Surface.class);
+      Surface resizedSurface = mock(Surface.class);
+      when(firstSurface.isValid()).thenReturn(true);
+      when(resizedSurface.isValid()).thenReturn(true);
+
+      when(fakeFlutterJNI.createNdkSurfaceProducer(anyLong(), anyBoolean())).thenReturn(fakeNdkPtr);
+      when(fakeFlutterJNI.ndkSurfaceProducerGetSurface(fakeNdkPtr, true))
+          .thenReturn(firstSurface, resizedSurface);
+      when(fakeFlutterJNI.ndkSurfaceProducerGetCount(fakeNdkPtr, 0)).thenReturn(1);
+
+      FlutterRenderer flutterRenderer = new FlutterRenderer(fakeFlutterJNI);
+      FlutterRenderer.ImageReaderSurfaceProducer texture =
+          (FlutterRenderer.ImageReaderSurfaceProducer)
+              flutterRenderer.createSurfaceProducer(
+                  TextureRegistry.SurfaceLifecycle.resetInBackground);
+
+      // 1. Initial getSurface() creates the first NDK reader surface; repeated getSurface() uses
+      // cachedSurface without a second JNI call.
+      assertEquals(firstSurface, texture.getSurface());
+      assertEquals(firstSurface, texture.getSurface());
+      assertEquals(1, texture.numImageReaders());
+
+      // 2. Resize invalidates cachedSurface and forwards setSize + forceNew getSurface() to JNI.
+      texture.setSize(640, 480);
+      assertEquals(resizedSurface, texture.getSurface());
+
+      // 3. scheduleFrame() forwards to ndkSurfaceProducerScheduleFrame.
+      texture.scheduleFrame();
+
+      // 4. onTrimMemory(TRIM_MEMORY_BACKGROUND) invokes ndkSurfaceProducerOnTrimMemory.
+      flutterRenderer.onTrimMemory(TRIM_MEMORY_BACKGROUND);
+
+      // 5. release() invokes ndkSurfaceProducerOnTrimMemory followed by destroyNdkSurfaceProducer.
+      texture.release();
+
+      org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(fakeFlutterJNI);
+      inOrder.verify(fakeFlutterJNI).createNdkSurfaceProducer(texture.id(), false);
+      inOrder
+          .verify(fakeFlutterJNI)
+          .registerNdkSurfaceProducerTexture(texture.id(), texture, true, fakeNdkPtr);
+      inOrder.verify(fakeFlutterJNI).ndkSurfaceProducerGetSurface(fakeNdkPtr, true);
+      inOrder.verify(fakeFlutterJNI).ndkSurfaceProducerGetCount(fakeNdkPtr, 0);
+      inOrder.verify(fakeFlutterJNI).ndkSurfaceProducerSetSize(fakeNdkPtr, 640, 480);
+      inOrder.verify(fakeFlutterJNI).ndkSurfaceProducerGetSurface(fakeNdkPtr, true);
+      inOrder.verify(fakeFlutterJNI).ndkSurfaceProducerScheduleFrame(fakeNdkPtr, false);
+      inOrder.verify(fakeFlutterJNI, times(2)).ndkSurfaceProducerOnTrimMemory(fakeNdkPtr);
+      inOrder.verify(fakeFlutterJNI).destroyNdkSurfaceProducer(fakeNdkPtr);
+    } finally {
+      FlutterRenderer.debugEnableNdkSurfaceProducer = true;
+    }
   }
 }

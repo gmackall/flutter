@@ -191,6 +191,79 @@ public class FlutterJNI {
 
   private static boolean prefetchDefaultFontManagerCalled = false;
 
+  private native long nativeCreateNdkSurfaceProducer(
+      long nativeShellHolderId, long textureId, boolean isDisplayingUi);
+
+  private static native void nativeDestroyNdkSurfaceProducer(long ptr);
+
+  private static native void nativeNdkSurfaceProducerSetSize(long ptr, int width, int height);
+
+  @Nullable
+  private static native Surface nativeNdkSurfaceProducerGetSurface(long ptr, boolean forceNew);
+
+  private static native void nativeNdkSurfaceProducerScheduleFrame(
+      long ptr, boolean isDisplayingUi);
+
+  private static native void nativeNdkSurfaceProducerSetDisplayingUi(
+      long ptr, boolean isDisplayingUi);
+
+  private static native void nativeNdkSurfaceProducerOnTrimMemory(long ptr);
+
+  private static native int nativeNdkSurfaceProducerGetCount(long ptr, int kind);
+
+  @UiThread
+  public long createNdkSurfaceProducer(long textureId, boolean isDisplayingUi) {
+    if (!FlutterJNI.loadLibraryCalled || !isAttached()) {
+      return 0L;
+    }
+    return nativeCreateNdkSurfaceProducer(nativeShellHolderId, textureId, isDisplayingUi);
+  }
+
+  public void destroyNdkSurfaceProducer(long ptr) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeDestroyNdkSurfaceProducer(ptr);
+    }
+  }
+
+  public void ndkSurfaceProducerSetSize(long ptr, int width, int height) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerSetSize(ptr, width, height);
+    }
+  }
+
+  @Nullable
+  public Surface ndkSurfaceProducerGetSurface(long ptr, boolean forceNew) {
+    if (!FlutterJNI.loadLibraryCalled || ptr == 0L) {
+      return null;
+    }
+    return nativeNdkSurfaceProducerGetSurface(ptr, forceNew);
+  }
+
+  public void ndkSurfaceProducerScheduleFrame(long ptr, boolean isDisplayingUi) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerScheduleFrame(ptr, isDisplayingUi);
+    }
+  }
+
+  public void ndkSurfaceProducerSetDisplayingUi(long ptr, boolean isDisplayingUi) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerSetDisplayingUi(ptr, isDisplayingUi);
+    }
+  }
+
+  public void ndkSurfaceProducerOnTrimMemory(long ptr) {
+    if (FlutterJNI.loadLibraryCalled && ptr != 0L) {
+      nativeNdkSurfaceProducerOnTrimMemory(ptr);
+    }
+  }
+
+  public int ndkSurfaceProducerGetCount(long ptr, int kind) {
+    if (!FlutterJNI.loadLibraryCalled || ptr == 0L) {
+      return 0;
+    }
+    return nativeNdkSurfaceProducerGetCount(ptr, kind);
+  }
+
   private static native void nativeInit(
       @NonNull Context context,
       @NonNull String[] args,
@@ -1020,6 +1093,33 @@ public class FlutterJNI {
       long textureId,
       @NonNull WeakReference<TextureRegistry.ImageConsumer> imageTexture,
       boolean resetOnBackground);
+
+  @UiThread
+  public void registerNdkSurfaceProducerTexture(
+      long textureId,
+      @NonNull TextureRegistry.ImageConsumer imageTexture,
+      boolean resetOnBackground,
+      long ndkProducerPtr) {
+    if (ndkProducerPtr == 0L) {
+      registerImageTexture(textureId, imageTexture, resetOnBackground);
+      return;
+    }
+    ensureRunningOnMainThread();
+    ensureAttachedToNative();
+    nativeRegisterNdkSurfaceProducerTexture(
+        nativeShellHolderId,
+        textureId,
+        new WeakReference<TextureRegistry.ImageConsumer>(imageTexture),
+        resetOnBackground,
+        ndkProducerPtr);
+  }
+
+  private native void nativeRegisterNdkSurfaceProducerTexture(
+      long nativeShellHolderId,
+      long textureId,
+      @NonNull WeakReference<TextureRegistry.ImageConsumer> imageTexture,
+      boolean resetOnBackground,
+      long ndkProducerPtr);
 
   /**
    * Call this method to inform Flutter that a texture previously registered with {@link

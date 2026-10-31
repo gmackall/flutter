@@ -4,11 +4,16 @@
 
 #include "flutter/shell/platform/android/image_external_texture_gl_skia.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 #include "flutter/display_list/image/dl_image_skia.h"
 #include "flutter/impeller/toolkit/android/hardware_buffer.h"
+#include "flutter/impeller/toolkit/android/proc_table.h"
 #include "flutter/impeller/toolkit/egl/context.h"
 #include "flutter/impeller/toolkit/egl/display.h"
 #include "flutter/impeller/toolkit/egl/surface.h"
@@ -44,9 +49,11 @@ class TestImageExternalTextureGL : public ImageExternalTextureGLSkia {
     MockJavaVM::GetInstance().SetJNIEnv(nullptr);
   }
 
+  using ImageExternalTextureGL::AcquiredFrame;
   using ImageExternalTextureGL::CreateEGLImage;
   using ImageExternalTextureGL::ProcessFrame;
   using ImageExternalTextureGL::UpdateImage;
+  using ImageExternalTextureGL::WaitAcquireFenceOnGL;
 
   const sk_sp<DlImage>& GetImage() const { return dl_image_; }
 
@@ -61,6 +68,12 @@ class TestImageExternalTextureGL : public ImageExternalTextureGLSkia {
     on_before_import_ = std::move(on_before_import);
   }
 
+  void SetNextAcquiredFrame(AcquiredFrame frame,
+                            std::function<void()> on_before_import = {}) {
+    next_custom_frame_ = std::move(frame);
+    on_before_import_ = std::move(on_before_import);
+  }
+
   int GetCloseHardwareBufferCalls() const { return close_hb_calls_; }
 
   GLuint GetLastTexture() const { return last_texture_; }
@@ -70,6 +83,15 @@ class TestImageExternalTextureGL : public ImageExternalTextureGLSkia {
   }
 
  protected:
+  AcquiredFrame AcquireLatestFrame() override {
+    if (next_custom_frame_.has_value()) {
+      AcquiredFrame frame = std::move(*next_custom_frame_);
+      next_custom_frame_.reset();
+      return frame;
+    }
+    return ImageExternalTextureGLSkia::AcquireLatestFrame();
+  }
+
   PlatformViewAndroidJNI::AcquiredHardwareBuffer AcquireLatestHardwareBuffer()
       override {
     if (!has_next_acquired_) {
@@ -117,6 +139,7 @@ class TestImageExternalTextureGL : public ImageExternalTextureGLSkia {
   bool has_next_acquired_ = false;
   AHardwareBuffer* next_ahb_ = nullptr;
   bool next_owned_by_producer_ = true;
+  std::optional<AcquiredFrame> next_custom_frame_;
   int close_hb_calls_ = 0;
   std::function<void()> on_before_import_;
   GLuint last_texture_ = 0;
@@ -324,6 +347,82 @@ TEST_F(ImageExternalTextureGLTest,
                                       });
   texture_->ProcessFrame(paint_context_, bounds_);
   EXPECT_TRUE(released_producer_ref);
+  ASSERT_NE(texture_->GetImage(), nullptr);
+  EXPECT_NE(texture_->GetImage(), original_image_);
+  EXPECT_TRUE(glIsTexture(GetTextureName(texture_->GetImage())));
+}
+
+TEST_F(ImageExternalTextureGLTest,
+       WaitAcquireFenceOnGLReclaimsAndClosesFdOnSyncFailureOrNoDisplay) {
+  // 1. With current EGL display: a pipe FD is not a kernel sync_file, so
+  // eglCreateSyncKHR (if supported) fails with EGL_NO_SYNC_KHR, reclaims raw_fd
+  // into UniqueFD, falls back to WaitAcquireFenceFdBounded, and closes the FD.
+  int pipe_fds[2] = {-1, -1};
+  ASSERT_EQ(pipe(pipe_fds), 0);
+  const char byte = 1;
+  ASSERT_EQ(write(pipe_fds[1], &byte, 1), 1);
+  close(pipe_fds[1]);
+  const int read_fd = pipe_fds[0];
+  texture_->WaitAcquireFenceOnGL(fml::UniqueFD(read_fd));
+  errno = 0;
+  EXPECT_EQ(fcntl(read_fd, F_GETFD), -1);
+  EXPECT_EQ(errno, EBADF);
+
+  // 2. Without a current EGL display: directly takes the bounded poll fallback.
+  ASSERT_TRUE(context_->ClearCurrent());
+  int pipe_fds_no_display[2] = {-1, -1};
+  ASSERT_EQ(pipe(pipe_fds_no_display), 0);
+  ASSERT_EQ(write(pipe_fds_no_display[1], &byte, 1), 1);
+  close(pipe_fds_no_display[1]);
+  const int read_fd_no_display = pipe_fds_no_display[0];
+  texture_->WaitAcquireFenceOnGL(fml::UniqueFD(read_fd_no_display));
+  errno = 0;
+  EXPECT_EQ(fcntl(read_fd_no_display, F_GETFD), -1);
+  EXPECT_EQ(errno, EBADF);
+  ASSERT_TRUE(context_->MakeCurrent(*surface_));
+}
+
+TEST_F(ImageExternalTextureGLTest,
+       ProcessFrameConsumesCallerOwnedAhbRefAndAcquireFenceFromNdkProducer) {
+  std::optional<impeller::android::HardwareBuffer> producer_buffer(
+      std::in_place,
+      impeller::android::HardwareBufferDescriptor::MakeForSwapchainImage(
+          {32, 32}));
+  ASSERT_TRUE(producer_buffer->IsValid());
+  AHardwareBuffer* raw_handle = producer_buffer->GetHandle();
+
+  // Simulate NdkSurfaceProducer::AcquireLatestFrame() acquiring the
+  // caller-owned reference under its mutex before returning AcquiredFrame.
+  const auto& proc_table = impeller::android::GetProcTable();
+  ASSERT_TRUE(proc_table.AHardwareBuffer_acquire.IsAvailable());
+  proc_table.AHardwareBuffer_acquire(raw_handle);
+
+  int pipe_fds[2] = {-1, -1};
+  ASSERT_EQ(pipe(pipe_fds), 0);
+  const char byte = 1;
+  ASSERT_EQ(write(pipe_fds[1], &byte, 1), 1);
+  close(pipe_fds[1]);
+  const int fence_fd = pipe_fds[0];
+
+  TestImageExternalTextureGL::AcquiredFrame frame;
+  frame.ahardware_buffer = raw_handle;
+  frame.acquire_fence_fd = fml::UniqueFD(fence_fd);
+  frame.owned_by_producer = true;
+  frame.caller_owns_ahb_ref = true;
+
+  bool released_producer_ref = false;
+  texture_->SetNextAcquiredFrame(std::move(frame), [&]() {
+    // Drop the producer's own reference before EGL import runs; the caller
+    // reference acquired by NdkSurfaceProducer must keep raw_handle alive.
+    producer_buffer.reset();
+    released_producer_ref = true;
+  });
+
+  texture_->ProcessFrame(paint_context_, bounds_);
+  EXPECT_TRUE(released_producer_ref);
+  errno = 0;
+  EXPECT_EQ(fcntl(fence_fd, F_GETFD), -1);
+  EXPECT_EQ(errno, EBADF);
   ASSERT_NE(texture_->GetImage(), nullptr);
   EXPECT_NE(texture_->GetImage(), original_image_);
   EXPECT_TRUE(glIsTexture(GetTextureName(texture_->GetImage())));

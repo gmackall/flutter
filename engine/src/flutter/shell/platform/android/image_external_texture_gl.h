@@ -48,6 +48,8 @@ class ImageExternalTextureGL : public ImageExternalTexture {
   virtual EGLImageKHR CreateEGLImageKHR(EGLDisplay display,
                                         EGLClientBuffer buffer);
 
+  bool WaitAcquireFenceOnGL(fml::UniqueFD acquire_fence_fd);
+
   struct GlEntry {
     impeller::UniqueEGLImageKHR egl_image;
     impeller::UniqueGLTexture texture;

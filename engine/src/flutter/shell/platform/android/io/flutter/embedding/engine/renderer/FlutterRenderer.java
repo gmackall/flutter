@@ -104,6 +104,8 @@ public class FlutterRenderer implements TextureRegistry {
    */
   @VisibleForTesting public static boolean debugUseBackgroundImageReaderThread = true;
 
+  @VisibleForTesting public static boolean debugEnableNdkSurfaceProducer = true;
+
   private static final Object sharedImageReaderLock = new Object();
   @Nullable private static HandlerThread sharedImageReaderThread = null;
   @Nullable private static Handler sharedImageReaderHandler = null;
@@ -160,11 +162,17 @@ public class FlutterRenderer implements TextureRegistry {
         @Override
         public void onFlutterUiDisplayed() {
           isDisplayingFlutterUi = true;
+          for (ImageReaderSurfaceProducer producer : imageReaderProducers) {
+            producer.onFlutterUiDisplayStateChanged(true);
+          }
         }
 
         @Override
         public void onFlutterUiNoLongerDisplayed() {
           isDisplayingFlutterUi = false;
+          for (ImageReaderSurfaceProducer producer : imageReaderProducers) {
+            producer.onFlutterUiDisplayStateChanged(false);
+          }
         }
       };
 
@@ -279,7 +287,11 @@ public class FlutterRenderer implements TextureRegistry {
       final long id = nextTextureId.getAndIncrement();
       final ImageReaderSurfaceProducer producer = new ImageReaderSurfaceProducer(id);
       boolean reset = lifecycle == SurfaceLifecycle.resetInBackground;
-      registerImageTexture(id, producer, reset);
+      if (producer.ndkProducerPtr != 0L) {
+        flutterJNI.registerNdkSurfaceProducerTexture(id, producer, reset, producer.ndkProducerPtr);
+      } else {
+        registerImageTexture(id, producer, reset);
+      }
       if (reset) {
         addOnTrimMemoryListener(producer);
       }
@@ -518,14 +530,12 @@ public class FlutterRenderer implements TextureRegistry {
     private static final boolean CLEANUP_ON_MEMORY_PRESSURE = true;
 
     private final long id;
+    private long ndkProducerPtr = 0L;
     private final Handler mainAsyncHandler =
         HandlerCompat.createAsyncHandler(
             handler.getLooper() != null ? handler.getLooper() : Looper.getMainLooper());
-    private final Handler readerHandler =
-        debugUseBackgroundImageReaderThread
-            ? getOrCreateSharedImageReaderHandler()
-            : mainAsyncHandler;
-    private final boolean asyncReaderThread = readerHandler != mainAsyncHandler;
+    private final Handler readerHandler;
+    private final boolean asyncReaderThread;
 
     private boolean released;
     // Will be true in tests and on Android API < 33.
@@ -1266,11 +1276,22 @@ public class FlutterRenderer implements TextureRegistry {
         released = true;
       }
       cleanup();
+      if (ndkProducerPtr != 0L) {
+        long ptr = ndkProducerPtr;
+        ndkProducerPtr = 0L;
+        flutterJNI.destroyNdkSurfaceProducer(ptr);
+      }
       removeOnTrimMemoryListener(this);
       imageReaderProducers.remove(this);
     }
 
     private void cleanup() {
+      if (ndkProducerPtr != 0L) {
+        hasBeenAcquiredWithImage = false;
+        cachedSurface = null;
+        flutterJNI.ndkSurfaceProducerOnTrimMemory(ndkProducerPtr);
+        return;
+      }
       hasBeenAcquiredWithImage = false;
       cachedSurface = null;
       mainAsyncHandler.removeCallbacks(armNextVsyncRunnable);
@@ -1353,6 +1374,27 @@ public class FlutterRenderer implements TextureRegistry {
 
     ImageReaderSurfaceProducer(long id) {
       this.id = id;
+      if (debugEnableNdkSurfaceProducer
+          && Build.VERSION.SDK_INT >= API_LEVELS.API_29
+          && flutterJNI.isAttached()) {
+        this.ndkProducerPtr = flutterJNI.createNdkSurfaceProducer(id, isDisplayingFlutterUi);
+      }
+      if (this.ndkProducerPtr != 0L) {
+        this.readerHandler = mainAsyncHandler;
+        this.asyncReaderThread = false;
+      } else {
+        this.readerHandler =
+            debugUseBackgroundImageReaderThread
+                ? getOrCreateSharedImageReaderHandler()
+                : mainAsyncHandler;
+        this.asyncReaderThread = this.readerHandler != mainAsyncHandler;
+      }
+    }
+
+    void onFlutterUiDisplayStateChanged(boolean displayed) {
+      if (ndkProducerPtr != 0L) {
+        flutterJNI.ndkSurfaceProducerSetDisplayingUi(ndkProducerPtr, displayed);
+      }
     }
 
     @Override
@@ -1393,6 +1435,9 @@ public class FlutterRenderer implements TextureRegistry {
       this.cachedSurface = null;
       this.requestedHeight = height;
       this.requestedWidth = width;
+      if (ndkProducerPtr != 0L) {
+        flutterJNI.ndkSurfaceProducerSetSize(ndkProducerPtr, width, height);
+      }
     }
 
     @Override
@@ -1410,6 +1455,13 @@ public class FlutterRenderer implements TextureRegistry {
       final Surface current = this.cachedSurface;
       if (!createNewReader && current != null && current.isValid()) {
         return current;
+      }
+      if (ndkProducerPtr != 0L) {
+        final boolean forceNew = this.createNewReader;
+        this.createNewReader = false;
+        final Surface s = flutterJNI.ndkSurfaceProducerGetSurface(ndkProducerPtr, forceNew);
+        this.cachedSurface = s;
+        return s;
       }
       PerImageReader pir = getActiveReader();
       if (VERBOSE_LOGS) {
@@ -1435,6 +1487,10 @@ public class FlutterRenderer implements TextureRegistry {
     @Override
     public void scheduleFrame() {
       latestFrameOnlyMode = true;
+      if (ndkProducerPtr != 0L) {
+        flutterJNI.ndkSurfaceProducerScheduleFrame(ndkProducerPtr, isDisplayingFlutterUi);
+        return;
+      }
       if (VERBOSE_LOGS) {
         long now = System.nanoTime();
         if (lastScheduleTime != 0) {
@@ -1551,6 +1607,9 @@ public class FlutterRenderer implements TextureRegistry {
 
     @VisibleForTesting
     public int numImageReaders() {
+      if (ndkProducerPtr != 0L) {
+        return flutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 0);
+      }
       synchronized (lock) {
         return imageReaderQueue.size();
       }
@@ -1565,6 +1624,9 @@ public class FlutterRenderer implements TextureRegistry {
 
     @VisibleForTesting
     public int numImages() {
+      if (ndkProducerPtr != 0L) {
+        return flutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 1);
+      }
       int r = 0;
       synchronized (lock) {
         for (PerImageReader reader : imageReaderQueue) {
@@ -1576,6 +1638,9 @@ public class FlutterRenderer implements TextureRegistry {
 
     @VisibleForTesting
     public int pendingDequeuedImages() {
+      if (ndkProducerPtr != 0L) {
+        return flutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 2);
+      }
       return lastDequeuedImage.size();
     }
   }

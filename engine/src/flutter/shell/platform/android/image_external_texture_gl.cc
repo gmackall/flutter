@@ -6,6 +6,10 @@
 
 #include <android/hardware_buffer_jni.h>
 #include <android/sensor.h>
+#include <errno.h>
+#include <poll.h>
+
+#include <cstring>
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/fml/closure.h"
@@ -86,24 +90,71 @@ void ImageExternalTextureGL::UpdateImage(
   }
 }
 
+bool ImageExternalTextureGL::WaitAcquireFenceOnGL(
+    fml::UniqueFD acquire_fence_fd) {
+  if (!acquire_fence_fd.is_valid()) {
+    return true;
+  }
+  EGLDisplay display = eglGetCurrentDisplay();
+  if (display != EGL_NO_DISPLAY) {
+    static const auto create_sync = reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(
+        eglGetProcAddress("eglCreateSyncKHR"));
+    static const auto wait_sync = reinterpret_cast<PFNEGLWAITSYNCKHRPROC>(
+        eglGetProcAddress("eglWaitSyncKHR"));
+    static const auto destroy_sync = reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(
+        eglGetProcAddress("eglDestroySyncKHR"));
+    if (create_sync && wait_sync && destroy_sync) {
+      thread_local EGLDisplay t_checked_display = EGL_NO_DISPLAY;
+      thread_local bool t_has_native_fence = false;
+      if (t_checked_display != display) {
+        t_checked_display = display;
+        const char* exts = eglQueryString(display, EGL_EXTENSIONS);
+        t_has_native_fence =
+            exts != nullptr &&
+            std::strstr(exts, "EGL_ANDROID_native_fence_sync") != nullptr &&
+            std::strstr(exts, "EGL_KHR_wait_sync") != nullptr;
+      }
+      if (t_has_native_fence) {
+        // Release Bionic fdsan ownership BEFORE eglCreateSyncKHR, because the
+        // EGL driver takes ownership of (and may close/dup) the sync_file FD
+        // inside the call on success. Reclaim on failure for poll() fallback.
+        const int raw_fd = acquire_fence_fd.release();
+        const EGLint attribs[] = {
+            EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
+            raw_fd,
+            EGL_NONE,
+        };
+        EGLSyncKHR sync =
+            create_sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+        if (sync != EGL_NO_SYNC_KHR) {
+          wait_sync(display, sync, 0);
+          destroy_sync(display, sync);
+          return true;
+        }
+        acquire_fence_fd.reset(raw_fd);
+      }
+    }
+  }
+  return NdkSurfaceProducer::WaitAcquireFenceFdBounded(
+      std::move(acquire_fence_fd));
+}
+
 void ImageExternalTextureGL::ProcessFrame(PaintContext& context,
                                           const SkRect& bounds) {
-  auto acquired = AcquireLatestHardwareBuffer();
-  if (acquired.hardware_buffer.is_null()) {
+  auto acquired = AcquireLatestFrame();
+  if (acquired.ahardware_buffer == nullptr) {
     return;
   }
   fml::ScopedCleanupClosure close_java_hb([this, &acquired]() {
-    if (!acquired.owned_by_producer) {
-      CloseHardwareBuffer(acquired.hardware_buffer);
+    if (!acquired.owned_by_producer &&
+        !acquired.java_hardware_buffer.is_null()) {
+      CloseHardwareBuffer(acquired.java_hardware_buffer);
     }
   });
-  AHardwareBuffer* latest_hardware_buffer =
-      AHardwareBufferFor(acquired.hardware_buffer);
-  if (latest_hardware_buffer == nullptr) {
-    return;
-  }
+  AHardwareBuffer* latest_hardware_buffer = acquired.ahardware_buffer;
   const auto& proc_table = impeller::android::GetProcTable();
-  if (proc_table.AHardwareBuffer_acquire.IsAvailable()) {
+  if (!acquired.caller_owns_ahb_ref &&
+      proc_table.AHardwareBuffer_acquire.IsAvailable()) {
     proc_table.AHardwareBuffer_acquire(latest_hardware_buffer);
   }
   fml::ScopedCleanupClosure release_native_hb(
@@ -112,6 +163,9 @@ void ImageExternalTextureGL::ProcessFrame(PaintContext& context,
           proc_table.AHardwareBuffer_release(latest_hardware_buffer);
         }
       });
+  if (!WaitAcquireFenceOnGL(std::move(acquired.acquire_fence_fd))) {
+    return;
+  }
   UpdateImage(latest_hardware_buffer, bounds, context);
 }
 
