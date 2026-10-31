@@ -196,6 +196,9 @@ class RenderAndroidView extends PlatformViewRenderBox {
     markNeedsPaint();
   }
 
+  // Cache the tear-off to avoid allocating a new closure on every frame.
+  late final FrameCallback _updateOffsetCallback = _updateOffset;
+
   // Sets the offset of the underlying platform view on the platform side.
   //
   // This allows the Android native view to draw the a11y highlights in the same
@@ -204,20 +207,27 @@ class RenderAndroidView extends PlatformViewRenderBox {
   // It also allows platform code to obtain the correct position of the Android
   // native view on the screen.
   void _setOffset() {
-    SchedulerBinding.instance.addPostFrameCallback((_) async {
-      if (!_isDisposed) {
-        // Don't send an offset if not laid out. For example, a RenderBox that
-        // is attached while a route transition is in flight has no position on
-        // screen yet, and asking for one throws out of this frame callback,
-        // where nothing can catch it.
-        // See https://github.com/flutter/flutter/issues/190833.
-        if (attached && hasSize) {
-          await _viewController.setOffset(localToGlobal(Offset.zero));
-        }
-        // Schedule a new post frame callback.
-        _setOffset();
-      }
-    }, debugLabel: 'RenderAndroidView.setOffset');
+    SchedulerBinding.instance.addPostFrameCallback(
+      _updateOffsetCallback,
+      debugLabel: 'RenderAndroidView.setOffset',
+    );
+  }
+
+  void _updateOffset(Duration _) {
+    if (_isDisposed) {
+      return;
+    }
+    // Don't send an offset if not laid out. For example, a RenderBox that
+    // is attached while a route transition is in flight has no position on
+    // screen yet, and asking for one throws out of this frame callback,
+    // where nothing can catch it.
+    // See https://github.com/flutter/flutter/issues/190833.
+    if (attached && hasSize) {
+      unawaited(_viewController.setOffset(localToGlobal(Offset.zero)));
+    }
+    // Schedule a new post frame callback immediately so a delayed platform
+    // channel reply cannot cause the next frame's offset update to be skipped.
+    _setOffset();
   }
 
   @override

@@ -854,4 +854,124 @@ void main() {
       expect(calls.first.arguments, <String, dynamic>{'id': 45});
     },
   );
+
+  test('TextureAndroidViewController.setOffset encodes exact 56-byte StandardMethodCodec bytes', () async {
+    final rawMessages = <ByteData>[];
+    const codec = StandardMethodCodec();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMessageHandler(
+      SystemChannels.platform_views.name,
+      (ByteData? message) async {
+        final MethodCall call = codec.decodeMethodCall(message);
+        if (call.method == 'create') {
+          return codec.encodeSuccessEnvelope(1);
+        }
+        rawMessages.add(message!);
+        return codec.encodeSuccessEnvelope(null);
+      },
+    );
+
+    final AndroidViewController controller = PlatformViewsService.initAndroidView(
+      id: 0x7fffffff,
+      viewType: 'webview',
+      layoutDirection: TextDirection.ltr,
+    );
+    await controller.create(size: const Size(100.0, 100.0));
+
+    const testOffset = Offset(-37.125, 412.875);
+    await controller.setOffset(testOffset);
+
+    expect(rawMessages, hasLength(1));
+    final ByteData actual = rawMessages.single;
+    final ByteData expected = codec.encodeMethodCall(
+      const MethodCall('offset', <String, dynamic>{
+        'id': 0x7fffffff,
+        'top': 412.875,
+        'left': -37.125,
+      }),
+    );
+    expect(actual.lengthInBytes, 56);
+    expect(
+      actual.buffer.asUint8List(actual.offsetInBytes, actual.lengthInBytes),
+      expected.buffer.asUint8List(expected.offsetInBytes, expected.lengthInBytes),
+    );
+  });
+
+  test(
+    'TextureAndroidViewController.debugEncodeSharedOffsetBuffer reuses static 56-byte buffer in place',
+    () {
+      const codec = StandardMethodCodec();
+      final ByteData first = TextureAndroidViewController.debugEncodeSharedOffsetBuffer(
+        1,
+        10.5,
+        20.25,
+      );
+      final ByteData expectedFirst = codec.encodeMethodCall(
+        const MethodCall('offset', <String, dynamic>{'id': 1, 'top': 10.5, 'left': 20.25}),
+      );
+      expect(first.lengthInBytes, 56);
+      expect(
+        first.buffer.asUint8List(first.offsetInBytes, first.lengthInBytes),
+        expectedFirst.buffer.asUint8List(expectedFirst.offsetInBytes, expectedFirst.lengthInBytes),
+      );
+
+      final ByteData second = TextureAndroidViewController.debugEncodeSharedOffsetBuffer(
+        -42,
+        -99.75,
+        0.0,
+      );
+      expect(identical(first, second), isTrue);
+      final ByteData expectedSecond = codec.encodeMethodCall(
+        const MethodCall('offset', <String, dynamic>{'id': -42, 'top': -99.75, 'left': 0.0}),
+      );
+      expect(
+        second.buffer.asUint8List(second.offsetInBytes, second.lengthInBytes),
+        expectedSecond.buffer.asUint8List(
+          expectedSecond.offsetInBytes,
+          expectedSecond.lengthInBytes,
+        ),
+      );
+    },
+  );
+
+  test(
+    'TextureAndroidViewController.setOffset preserves ordering before dispose and is a no-op before create or after dispose',
+    () async {
+      final calls = <MethodCall>[];
+      const codec = StandardMethodCodec();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMessageHandler(
+        SystemChannels.platform_views.name,
+        (ByteData? message) async {
+          final MethodCall call = codec.decodeMethodCall(message);
+          calls.add(call);
+          if (call.method == 'create') {
+            return codec.encodeSuccessEnvelope(1);
+          }
+          return codec.encodeSuccessEnvelope(null);
+        },
+      );
+
+      final AndroidViewController controller = PlatformViewsService.initAndroidView(
+        id: 17,
+        viewType: 'webview',
+        layoutDirection: TextDirection.ltr,
+      );
+
+      // Calling setOffset before create() is a no-op.
+      await controller.setOffset(const Offset(5.0, 6.0));
+      expect(calls, isEmpty);
+
+      await controller.create(size: const Size(100.0, 100.0));
+      calls.clear();
+
+      // Issue setOffset followed immediately by dispose(), then another setOffset after dispose().
+      final Future<void> offsetFuture = controller.setOffset(const Offset(12.5, 34.25));
+      final Future<void> disposeFuture = controller.dispose();
+      final Future<void> postDisposeOffsetFuture = controller.setOffset(const Offset(99.0, 88.0));
+      await Future.wait(<Future<void>>[offsetFuture, disposeFuture, postDisposeOffsetFuture]);
+
+      expect(calls.map((MethodCall c) => c.method).toList(), <String>['offset', 'dispose']);
+      expect(calls[0].arguments, <String, dynamic>{'id': 17, 'top': 34.25, 'left': 12.5});
+      expect(calls[1].arguments, <String, dynamic>{'id': 17, 'hybrid': false});
+    },
+  );
 }
