@@ -55,6 +55,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.After;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -102,6 +103,13 @@ public class PlatformViewsControllerTest {
     public void onFlutterViewDetached() {
       detachCalls++;
     }
+  }
+
+  @After
+  public void tearDown() {
+    FlutterRenderer.debugDisableSurfaceClear = false;
+    PlatformViewWrapper.useDedicatedHardwareRenderer =
+        android.os.Build.VERSION.SDK_INT >= io.flutter.Build.API_LEVELS.API_29;
   }
 
   @Test
@@ -2171,12 +2179,14 @@ public class PlatformViewsControllerTest {
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
   public void configureForTextureLayerComposition_resizesRenderTargetBeforeGettingSurface() {
     FlutterRenderer.debugDisableSurfaceClear = false;
+    PlatformViewWrapper.useDedicatedHardwareRenderer = false;
     final PlatformViewsController platformViewsController = new PlatformViewsController();
     final FlutterJNI jni = new FlutterJNI();
     platformViewsController.setFlutterJNI(jni);
     attach(jni, platformViewsController);
 
     final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
     final android.graphics.Canvas canvas = mock(android.graphics.Canvas.class);
     when(surface.lockHardwareCanvas()).thenReturn(canvas);
     final TextureRegistry.SurfaceProducer surfaceProducer =
