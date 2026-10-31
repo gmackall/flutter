@@ -46,6 +46,9 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_texture_wrapper_class = nullptr;
 static fml::jni::ScopedJavaGlobalRef<jclass>*
     g_image_consumer_texture_registry_interface = nullptr;
 
+static fml::jni::ScopedJavaGlobalRef<jclass>*
+    g_image_reader_surface_producer_class = nullptr;
+
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_image_class = nullptr;
 
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_hardware_buffer_class = nullptr;
@@ -136,6 +139,8 @@ static jmethodID g_get_transform_matrix_method = nullptr;
 static jmethodID g_detach_from_gl_context_method = nullptr;
 
 static jmethodID g_acquire_latest_image_method = nullptr;
+
+static jmethodID g_acquire_latest_hardware_buffer_method = nullptr;
 
 static jmethodID g_image_get_hardware_buffer_method = nullptr;
 
@@ -1251,6 +1256,20 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
       // Continue on as this class may not exist at API <= 26.
       fml::jni::ClearException(env, true);
     }
+    g_image_reader_surface_producer_class =
+        new fml::jni::ScopedJavaGlobalRef<jclass>(
+            env, env->FindClass("io/flutter/embedding/engine/renderer/"
+                                "FlutterRenderer$ImageReaderSurfaceProducer"));
+    if (!g_image_reader_surface_producer_class->is_null()) {
+      g_acquire_latest_hardware_buffer_method = env->GetMethodID(
+          g_image_reader_surface_producer_class->obj(),
+          "acquireLatestHardwareBuffer", "()Landroid/hardware/HardwareBuffer;");
+      if (g_acquire_latest_hardware_buffer_method == nullptr) {
+        fml::jni::ClearException(env, true);
+      }
+    } else {
+      fml::jni::ClearException(env, true);
+    }
   } else {
     // Continue on as this class may not exist at API <= 26.
     fml::jni::ClearException(env, true);
@@ -1708,6 +1727,75 @@ PlatformViewAndroidJNIImpl::ImageProducerTextureEntryAcquireLatestImage(
   }
   // Return null.
   return JavaLocalRef();
+}
+
+PlatformViewAndroidJNI::AcquiredHardwareBuffer PlatformViewAndroidJNIImpl::
+    ImageProducerTextureEntryAcquireLatestHardwareBuffer(
+        JavaLocalRef image_producer_texture_entry,
+        fml::jni::JavaObjectWeakGlobalRef* cached_consumer,
+        bool* cached_is_surface_producer) {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+
+  fml::jni::ScopedJavaLocalRef<jobject> consumer_local_ref;
+  bool is_surface_producer = false;
+
+  if (cached_consumer != nullptr && cached_is_surface_producer != nullptr) {
+    consumer_local_ref = cached_consumer->get(env);
+    if (!consumer_local_ref.is_null()) {
+      is_surface_producer = *cached_is_surface_producer;
+    } else if (!image_producer_texture_entry.is_null()) {
+      consumer_local_ref = fml::jni::ScopedJavaLocalRef<jobject>(
+          env, env->CallObjectMethod(image_producer_texture_entry.obj(),
+                                     g_java_weak_reference_get_method));
+      if (!fml::jni::CheckException(env) || consumer_local_ref.is_null()) {
+        return {};
+      }
+      *cached_consumer =
+          fml::jni::JavaObjectWeakGlobalRef(env, consumer_local_ref.obj());
+      is_surface_producer =
+          g_acquire_latest_hardware_buffer_method != nullptr &&
+          g_image_reader_surface_producer_class != nullptr &&
+          !g_image_reader_surface_producer_class->is_null() &&
+          env->IsInstanceOf(consumer_local_ref.obj(),
+                            g_image_reader_surface_producer_class->obj());
+      *cached_is_surface_producer = is_surface_producer;
+    } else {
+      return {};
+    }
+  } else {
+    if (image_producer_texture_entry.is_null()) {
+      return {};
+    }
+    consumer_local_ref = fml::jni::ScopedJavaLocalRef<jobject>(
+        env, env->CallObjectMethod(image_producer_texture_entry.obj(),
+                                   g_java_weak_reference_get_method));
+    if (!fml::jni::CheckException(env) || consumer_local_ref.is_null()) {
+      return {};
+    }
+    is_surface_producer =
+        g_acquire_latest_hardware_buffer_method != nullptr &&
+        g_image_reader_surface_producer_class != nullptr &&
+        !g_image_reader_surface_producer_class->is_null() &&
+        env->IsInstanceOf(consumer_local_ref.obj(),
+                          g_image_reader_surface_producer_class->obj());
+  }
+
+  if (is_surface_producer) {
+    JavaLocalRef hb(
+        env, env->CallObjectMethod(consumer_local_ref.obj(),
+                                   g_acquire_latest_hardware_buffer_method));
+    if (!fml::jni::CheckException(env) || hb.is_null()) {
+      return {};
+    }
+    return {std::move(hb), true};
+  }
+
+  JavaLocalRef image(env, env->CallObjectMethod(consumer_local_ref.obj(),
+                                                g_acquire_latest_image_method));
+  if (!fml::jni::CheckException(env) || image.is_null()) {
+    return {};
+  }
+  return {ImageGetHardwareBuffer(std::move(image)), false};
 }
 
 JavaLocalRef PlatformViewAndroidJNIImpl::ImageGetHardwareBuffer(

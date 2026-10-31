@@ -55,6 +55,13 @@ class Texture : public ContextListener {
   // Called on raster thread.
   virtual void MarkNewFrameAvailable() = 0;
 
+  // Whether MarkNewFrameAvailable() performs work on the raster thread.
+  // Textures whose MarkNewFrameAvailable() is a no-op (e.g. Android
+  // ImageExternalTexture, which pulls the latest buffer during Paint()) can
+  // return false so Shell::OnPlatformViewMarkTextureFrameAvailable avoids
+  // posting a redundant wakeup task to the raster thread on every frame.
+  virtual bool NeedsMarkNewFrameAvailable() const { return true; }
+
   // Called on raster thread.
   virtual void OnTextureUnregistered() = 0;
 

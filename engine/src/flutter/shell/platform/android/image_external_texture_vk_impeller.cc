@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "flutter/fml/closure.h"
 #include "flutter/impeller/core/formats.h"
 #include "flutter/impeller/core/texture_descriptor.h"
 #include "flutter/impeller/display_list/dl_image_impeller.h"
@@ -13,6 +14,7 @@
 #include "flutter/impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/texture_vk.h"
 #include "flutter/impeller/toolkit/android/hardware_buffer.h"
+#include "flutter/impeller/toolkit/android/proc_table.h"
 
 namespace flutter {
 
@@ -38,33 +40,53 @@ void ImageExternalTextureVKImpeller::Detach() {}
 
 void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
                                                   const SkRect& bounds) {
-  JavaLocalRef image = AcquireLatestImage();
-  if (image.is_null()) {
+  auto acquired = AcquireLatestHardwareBuffer();
+  if (acquired.hardware_buffer.is_null()) {
     return;
   }
-  JavaLocalRef hardware_buffer = HardwareBufferFor(image);
-  if (hardware_buffer.is_null()) {
+  fml::ScopedCleanupClosure close_java_hb([this, &acquired]() {
+    if (!acquired.owned_by_producer) {
+      CloseHardwareBuffer(acquired.hardware_buffer);
+    }
+  });
+  AHardwareBuffer* latest_hardware_buffer =
+      AHardwareBufferFor(acquired.hardware_buffer);
+  if (latest_hardware_buffer == nullptr) {
     return;
   }
-  AHardwareBuffer* latest_hardware_buffer = AHardwareBufferFor(hardware_buffer);
+  const auto& proc_table = impeller::android::GetProcTable();
+  if (proc_table.AHardwareBuffer_acquire.IsAvailable()) {
+    proc_table.AHardwareBuffer_acquire(latest_hardware_buffer);
+  }
+  fml::ScopedCleanupClosure release_native_hb(
+      [latest_hardware_buffer, &proc_table]() {
+        if (proc_table.AHardwareBuffer_release.IsAvailable()) {
+          proc_table.AHardwareBuffer_release(latest_hardware_buffer);
+        }
+      });
 
-  auto hb_desc =
-      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
   std::optional<HardwareBufferKey> key =
       impeller::android::HardwareBuffer::GetSystemUniqueID(
           latest_hardware_buffer);
-  auto existing_image = image_lru_.FindImage(key);
-  if (existing_image != nullptr || !hb_desc.has_value()) {
-    dl_image_ = existing_image;
+  if (auto cached_image = image_lru_.TryFindImage(key)) {
+    dl_image_ = std::move(cached_image);
+    return;
+  }
 
-    CloseHardwareBuffer(hardware_buffer);
+  auto hb_desc =
+      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
+  if (!hb_desc.has_value()) {
+    return;
+  }
+  auto existing_image = image_lru_.FindImage(key, hb_desc.value());
+  if (existing_image != nullptr) {
+    dl_image_ = existing_image;
     return;
   }
 
   auto texture_source = std::make_shared<impeller::AHBTextureSourceVK>(
       impeller_context_, latest_hardware_buffer, hb_desc.value());
   if (!texture_source->IsValid()) {
-    CloseHardwareBuffer(hardware_buffer);
     return;
   }
 
@@ -100,7 +122,6 @@ void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
   if (key.has_value()) {
     image_lru_.AddImage(dl_image_, key.value());
   }
-  CloseHardwareBuffer(hardware_buffer);
 }
 
 }  // namespace flutter
