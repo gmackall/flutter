@@ -13,7 +13,10 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 
+import '_default_binary_messenger.dart';
+import 'binary_messenger.dart';
 import 'message_codec.dart';
+import 'platform_channel.dart';
 import 'system_channels.dart';
 
 export 'dart:ui' show Offset, Size, TextDirection, VoidCallback;
@@ -1343,6 +1346,14 @@ class TextureAndroidViewController extends AndroidViewController {
   Future<void> rejectGesture({int? gestureId}) {
     return _internals.rejectGesture(viewId: viewId, gestureId: gestureId);
   }
+
+  /// Populates the shared static 56-byte offset buffer for `(viewId, top, left)`
+  /// and returns a view of it, allowing tests to verify in-place mutation of the
+  /// reusable buffer used by the one-way fast path.
+  @visibleForTesting
+  static ByteData debugEncodeSharedOffsetBuffer(int viewId, double top, double left) {
+    return _TextureAndroidViewControllerInternals.debugEncodeSharedOffsetBuffer(viewId, top, left);
+  }
 }
 
 // The base class for an implementation of AndroidViewController.
@@ -1450,30 +1461,93 @@ class _TextureAndroidViewControllerInternals extends _AndroidViewControllerInter
     return Size(meta!['width']! as double, meta['height']! as double);
   }
 
+  // Pre-encoded 56-byte StandardMethodCodec template for
+  // MethodCall('offset', <String, dynamic>{'id': int32, 'top': float64, 'left': float64}).
+  static final Uint8List _offsetMessageTemplate = Uint8List.fromList(<int>[
+    7, 6, 0x6f, 0x66, 0x66, 0x73, 0x65, 0x74, // String 'offset' (bytes 0..7)
+    13, 3, // Map of length 3 (bytes 8..9)
+    7, 2, 0x69, 0x64, // String 'id' (bytes 10..13)
+    3, 0, 0, 0, 0, // int32 placeholder at offset 15..18 (bytes 14..18)
+    7, 3, 0x74, 0x6f, 0x70, // String 'top' (bytes 19..23)
+    6, 0, 0, 0, 0, 0, 0, 0, // float64 tag + 7 alignment zero bytes (bytes 24..31)
+    0, 0, 0, 0, 0, 0, 0, 0, // float64 placeholder at offset 32..39
+    7, 4, 0x6c, 0x65, 0x66, 0x74, // String 'left' (bytes 40..45)
+    6, 0, // float64 tag + 1 alignment zero byte (bytes 46..47)
+    0, 0, 0, 0, 0, 0, 0, 0, // float64 placeholder at offset 48..55
+  ]);
+
+  // Reusable scratch buffer for DefaultBinaryMessenger.sendOneWay, which
+  // synchronously copies the ByteData into native memory before returning.
+  static final ByteData _reusableOffsetData = ByteData.sublistView(
+    Uint8List(56)..setRange(0, 56, _offsetMessageTemplate),
+  );
+
+  static void _writeOffsetPayload(ByteData data, int viewId, double top, double left) {
+    data.setInt32(15, viewId, Endian.host);
+    data.setFloat64(32, top, Endian.host);
+    data.setFloat64(48, left, Endian.host);
+  }
+
+  static ByteData debugEncodeSharedOffsetBuffer(int viewId, double top, double left) {
+    _writeOffsetPayload(_reusableOffsetData, viewId, top, left);
+    return _reusableOffsetData;
+  }
+
+  static ByteData _encodeFreshOffsetMethodCall(int viewId, double top, double left) {
+    final bytes = Uint8List(56)..setRange(0, 56, _offsetMessageTemplate);
+    final data = ByteData.sublistView(bytes);
+    _writeOffsetPayload(data, viewId, top, left);
+    return data;
+  }
+
+  static Future<void> _sendOffsetViaMessenger(BinaryMessenger messenger, ByteData input) async {
+    final ByteData? result = await messenger.send('flutter/platform_views', input);
+    if (result == null) {
+      throw MissingPluginException(
+        'No implementation found for method offset on channel flutter/platform_views',
+      );
+    }
+    SystemChannels.platform_views.codec.decodeEnvelope(result);
+  }
+
   @override
   Future<void> setOffset(
     Offset offset, {
     required int viewId,
     required _AndroidViewState viewState,
-  }) async {
+  }) {
     if (offset == _offset) {
-      return;
+      return Future<void>.value();
     }
 
     // Don't set the offset unless the Android view has been created.
     // The implementation of this method channel throws if the Android view for this viewId
     // isn't addressable.
     if (viewState != _AndroidViewState.created) {
-      return;
+      return Future<void>.value();
     }
 
     _offset = offset;
 
-    await SystemChannels.platform_views.invokeMethod<void>('offset', <String, dynamic>{
-      'id': viewId,
-      'top': offset.dy,
-      'left': offset.dx,
-    });
+    if (shouldProfilePlatformChannels || viewId < -0x80000000 || viewId > 0x7fffffff) {
+      return SystemChannels.platform_views.invokeMethod<void>('offset', <String, dynamic>{
+        'id': viewId,
+        'top': offset.dy,
+        'left': offset.dx,
+      });
+    }
+
+    final BinaryMessenger messenger = SystemChannels.platform_views.binaryMessenger;
+    if (messenger is DefaultBinaryMessenger) {
+      _writeOffsetPayload(_reusableOffsetData, viewId, offset.dy, offset.dx);
+      messenger.sendOneWay('flutter/platform_views', _reusableOffsetData);
+      return Future<void>.value();
+    }
+
+    return _sendOffsetViaMessenger(
+      messenger,
+      _encodeFreshOffsetMethodCall(viewId, offset.dy, offset.dx),
+    );
   }
 
   @override

@@ -56,8 +56,9 @@ void PlatformMessageHandlerAndroid::InvokePlatformMessageEmptyResponseCallback(
 void PlatformMessageHandlerAndroid::HandlePlatformMessage(
     std::unique_ptr<flutter::PlatformMessage> message) {
   // Called from any thread.
-  int response_id = next_response_id_.fetch_add(1);
+  int response_id = 0;
   if (auto response = message->response()) {
+    response_id = next_response_id_.fetch_add(1);
     std::lock_guard lock(pending_responses_mutex_);
     pending_responses_[response_id] = response;
   }

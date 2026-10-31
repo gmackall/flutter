@@ -731,6 +731,52 @@ void main() {
 
     expect(viewController.rejectGestureCount, 0);
   });
+
+  test('RenderAndroidView updates offset every frame even when setOffset future is pending', () {
+    final viewController = _NeverCompletingOffsetAndroidViewController(0);
+    final renderBox = RenderAndroidView(
+      viewController: viewController,
+      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+      gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{},
+    );
+    final positioned = RenderPositionedBox(
+      alignment: Alignment.topLeft,
+      child: RenderConstrainedBox(
+        additionalConstraints: const BoxConstraints.tightFor(width: 100, height: 100),
+        child: renderBox,
+      ),
+    );
+    final padding = RenderPadding(padding: const EdgeInsets.only(top: 10, left: 5), child: positioned);
+
+    layout(padding);
+    binding.pumpCompleteFrame();
+    expect(viewController.offsets, <Offset>[const Offset(5, 10)]);
+
+    // Move the RenderAndroidView on the very next frame while Frame 1's
+    // setOffset future is still incomplete.
+    padding.padding = const EdgeInsets.only(top: 25, left: 15);
+    binding.pumpCompleteFrame();
+    expect(viewController.offsets, <Offset>[const Offset(5, 10), const Offset(15, 25)]);
+
+    padding.padding = const EdgeInsets.only(top: 40, left: 30);
+    binding.pumpCompleteFrame();
+    expect(
+      viewController.offsets,
+      <Offset>[const Offset(5, 10), const Offset(15, 25), const Offset(30, 40)],
+    );
+
+    renderBox.dispose();
+  });
+}
+
+class _NeverCompletingOffsetAndroidViewController extends FakeAndroidViewController {
+  _NeverCompletingOffsetAndroidViewController(super.viewId);
+
+  @override
+  Future<void> setOffset(Offset off) {
+    offsets.add(off);
+    return Completer<void>().future;
+  }
 }
 
 class _WinningGestureArenaMember extends GestureArenaMember {

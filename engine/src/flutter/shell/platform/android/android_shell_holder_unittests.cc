@@ -201,6 +201,29 @@ TEST(AndroidShellHolder, HandlePlatformMessage) {
       ->InvokePlatformMessageEmptyResponseCallback(response_id);
 }
 
+TEST(AndroidShellHolder, HandlePlatformMessageWithoutResponseUsesZeroResponseId) {
+  Settings settings;
+  settings.enable_software_rendering = true;
+  settings.enable_impeller = false;
+  auto jni = std::make_shared<MockPlatformViewAndroidJNI>();
+  auto holder = std::make_unique<AndroidShellHolder>(
+      settings, jni, AndroidRenderingAPI::kSoftware);
+  ASSERT_NE(holder.get(), nullptr);
+  ASSERT_TRUE(holder->IsValid());
+  ASSERT_TRUE(holder->GetPlatformMessageHandler());
+
+  size_t data_size = 4;
+  fml::MallocMapping bytes =
+      fml::MallocMapping(static_cast<uint8_t*>(malloc(data_size)), data_size);
+  auto one_way_message = std::make_unique<PlatformMessage>(
+      /*channel=*/"flutter/platform_views",
+      /*data=*/std::move(bytes),
+      /*response=*/nullptr);
+  EXPECT_CALL(*jni, FlutterViewHandlePlatformMessage(::testing::_, 0));
+  holder->GetPlatformMessageHandler()->HandlePlatformMessage(
+      std::move(one_way_message));
+}
+
 TEST(AndroidShellHolder, CreateWithMergedPlatformAndUIThread) {
   Settings settings;
   auto jni = std::make_shared<MockPlatformViewAndroidJNI>();
