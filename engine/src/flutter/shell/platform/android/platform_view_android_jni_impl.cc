@@ -15,6 +15,7 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/flow/embedded_views.h"
+#include "flutter/fml/cpu_affinity.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/platform/android/jni_util.h"
@@ -752,6 +753,15 @@ static void UpdateJavaAssetManager(JNIEnv* env,
       AssetResolver::AssetResolverType::kApkAssetProvider);
 }
 
+static jboolean RequestNotEfficiencyAffinity(JNIEnv* env, jclass clazz) {
+  return fml::RequestAffinity(fml::CpuAffinity::kNotEfficiency) ? JNI_TRUE
+                                                                : JNI_FALSE;
+}
+
+static jint GetLastRasterThreadTid(JNIEnv* env, jclass clazz) {
+  return static_cast<jint>(AndroidShellHolder::GetLastRasterThreadTid());
+}
+
 bool RegisterApi(JNIEnv* env) {
   static const JNINativeMethod flutter_jni_methods[] = {
       // Start of methods from FlutterJNI
@@ -956,6 +966,16 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeIsSurfaceControlEnabled",
           .signature = "(J)Z",
           .fnPtr = reinterpret_cast<void*>(&IsSurfaceControlEnabled),
+      },
+      {
+          .name = "nativeRequestNotEfficiencyAffinity",
+          .signature = "()Z",
+          .fnPtr = reinterpret_cast<void*>(&RequestNotEfficiencyAffinity),
+      },
+      {
+          .name = "nativeGetLastRasterThreadTid",
+          .signature = "()I",
+          .fnPtr = reinterpret_cast<void*>(&GetLastRasterThreadTid),
       }};
 
   if (env->RegisterNatives(g_flutter_jni_class->obj(), flutter_jni_methods,

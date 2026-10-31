@@ -17,7 +17,9 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.Process;
 import android.view.Surface;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
@@ -26,6 +28,7 @@ import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
 import io.flutter.embedding.engine.FlutterJNI;
+import io.flutter.util.HandlerCompat;
 import io.flutter.view.TextureRegistry;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
@@ -91,6 +94,52 @@ public class FlutterRenderer implements TextureRegistry {
   /** Whether to disable clearing of the Surface used to render platform views. */
   @VisibleForTesting public static boolean debugDisableSurfaceClear = false;
 
+  /**
+   * Whether {@link ImageReaderSurfaceProducer} runs {@link ImageReader.OnImageAvailableListener}
+   * and deferred buffer release work on the process-wide background {@code FlutterImageReader}
+   * {@link HandlerThread} instead of the main UI looper.
+   *
+   * <p>The {@code FlutterImageReader} thread is lazily created once per process and shared across
+   * all {@link FlutterRenderer} instances.
+   */
+  @VisibleForTesting public static boolean debugUseBackgroundImageReaderThread = true;
+
+  private static final Object sharedImageReaderLock = new Object();
+  @Nullable private static HandlerThread sharedImageReaderThread = null;
+  @Nullable private static Handler sharedImageReaderHandler = null;
+
+  @NonNull
+  private static Handler getOrCreateSharedImageReaderHandler() {
+    synchronized (sharedImageReaderLock) {
+      if (sharedImageReaderHandler == null
+          || sharedImageReaderThread == null
+          || !sharedImageReaderThread.isAlive()) {
+        // Process-lifetime background thread shared across all FlutterRenderer instances.
+        HandlerThread thread =
+            new HandlerThread("FlutterImageReader", Process.THREAD_PRIORITY_DISPLAY);
+        thread.setUncaughtExceptionHandler(
+            (t, e) -> {
+              Log.e(TAG, "Uncaught exception on " + t.getName(), e);
+              synchronized (sharedImageReaderLock) {
+                if (sharedImageReaderThread == t) {
+                  sharedImageReaderThread = null;
+                  sharedImageReaderHandler = null;
+                }
+              }
+              Thread.UncaughtExceptionHandler defaultHandler =
+                  Thread.getDefaultUncaughtExceptionHandler();
+              if (defaultHandler != null) {
+                defaultHandler.uncaughtException(t, e);
+              }
+            });
+        thread.start();
+        sharedImageReaderThread = thread;
+        sharedImageReaderHandler = HandlerCompat.createAsyncHandler(thread.getLooper());
+      }
+      return sharedImageReaderHandler;
+    }
+  }
+
   private static final String TAG = "FlutterRenderer";
 
   @NonNull private final FlutterJNI flutterJNI;
@@ -122,6 +171,57 @@ public class FlutterRenderer implements TextureRegistry {
   public FlutterRenderer(@NonNull FlutterJNI flutterJNI) {
     this.flutterJNI = flutterJNI;
     this.flutterJNI.addIsDisplayingFlutterUiListener(flutterUiDisplayListener);
+  }
+
+  private static volatile int sharedImageReaderAffinityTid = 0;
+
+  @NonNull
+  @VisibleForTesting
+  static Handler ensureSharedImageReaderHandlerForTest() {
+    Handler readerHandler = getOrCreateSharedImageReaderHandler();
+    getSharedImageReaderTid();
+    return readerHandler;
+  }
+
+  @VisibleForTesting
+  static void stopSharedImageReaderThreadForTest() throws InterruptedException {
+    final HandlerThread threadToJoin;
+    synchronized (sharedImageReaderLock) {
+      threadToJoin = sharedImageReaderThread;
+    }
+    if (threadToJoin != null) {
+      threadToJoin.quitSafely();
+      threadToJoin.join(1000L);
+    }
+  }
+
+  /**
+   * Returns the Linux TID of the shared background {@code FlutterImageReader} thread if running, or
+   * {@code 0} if it has not been started or has exited.
+   */
+  public static int getSharedImageReaderTid() {
+    final Handler readerHandler;
+    final int tid;
+    synchronized (sharedImageReaderLock) {
+      if (sharedImageReaderThread == null || !sharedImageReaderThread.isAlive()) {
+        return 0;
+      }
+      tid = Math.max(0, sharedImageReaderThread.getThreadId());
+      readerHandler = sharedImageReaderHandler;
+    }
+    if (tid > 0 && readerHandler != null && sharedImageReaderAffinityTid != tid) {
+      readerHandler.post(
+          () -> {
+            if (sharedImageReaderAffinityTid != tid) {
+              sharedImageReaderAffinityTid = tid;
+              try {
+                FlutterJNI.requestNotEfficiencyCpuAffinity();
+              } catch (UnsatisfiedLinkError ignored) {
+              }
+            }
+          });
+    }
+    return tid;
   }
 
   /**
@@ -236,6 +336,10 @@ public class FlutterRenderer implements TextureRegistry {
       }
       imageReaderProducers.add(producer);
       Log.v(TAG, "New ImageReaderSurfaceProducer ID: " + id);
+      if (debugUseBackgroundImageReaderThread) {
+        getOrCreateSharedImageReaderHandler();
+      }
+      getSharedImageReaderTid();
       entry = producer;
     } else {
       // TODO(matanlurey): Actually have the class named "*Producer" to well, produce

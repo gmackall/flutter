@@ -97,6 +97,7 @@ public class PlatformViewWrapperTest {
     FlutterRenderer.debugDisableSurfaceClear = false;
     PlatformViewWrapper.useDedicatedHardwareRenderer =
         android.os.Build.VERSION.SDK_INT >= API_LEVELS.API_29;
+    PlatformViewWrapper.adpfController.setBridgeForTest(PlatformViewWrapper.DEFAULT_ADPF_BRIDGE);
   }
 
   @Test
@@ -323,6 +324,362 @@ public class PlatformViewWrapperTest {
   }
 
   @Test
+  public void pipelineAdpfController_manages120HzTargetFourPipelineThreadsAndLifecycle() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final java.util.ArrayList<int[]> createdTids = new java.util.ArrayList<>();
+    final java.util.ArrayList<Long> targets = new java.util.ArrayList<>();
+    final java.util.ArrayList<int[]> updatedTids = new java.util.ArrayList<>();
+    final java.util.ArrayList<Long> reportedDurations = new java.util.ArrayList<>();
+    final int[] closedCount = {0};
+    final int[] affinityCalls = {0};
+    final float[] fps = {120.0f};
+    final int[] readerTid = {3003};
+    final int[] rasterTid = {4004};
+    final boolean[] allowSetThreads = {true};
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            createdTids.add(tids.clone());
+            targets.add(initialTargetWorkDurationNanos);
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {
+                targets.add(targetDurationNanos);
+              }
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                if (!allowSetThreads[0]) {
+                  return false;
+                }
+                updatedTids.add(newTids.clone());
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {
+                reportedDurations.add(actualDurationNanos);
+              }
+
+              @Override
+              public void close() {
+                closedCount[0]++;
+              }
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return fps[0];
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return readerTid[0];
+          }
+
+          @Override
+          public int getLastRasterThreadTid() {
+            return rasterTid[0];
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity() {
+            affinityCalls[0]++;
+            return true;
+          }
+        });
+
+    controller.onRendererCreated();
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+
+    // Initial session at 120 Hz targets 5.0 ms (60% of 8.33 ms) with [mainTid, readerTid,
+    // rasterTid].
+    assertEquals(1, createdTids.size());
+    assertEquals(3, createdTids.get(0).length);
+    assertEquals(3003, createdTids.get(0)[1]);
+    assertEquals(4004, createdTids.get(0)[2]);
+    assertEquals(Long.valueOf(5_000_000L), targets.get(0));
+
+    // First RenderThread commit records renderThreadTid=2002, applies kNotEfficiency affinity once,
+    // and reports Stage-1 work duration.
+    final long vsync1 = 1_000_000_000L;
+    controller.onFrameCommittedOnRenderThread(vsync1, vsync1 + 4_200_000L, 2002);
+    assertEquals(1, affinityCalls[0]);
+    assertEquals(1, reportedDurations.size());
+    assertEquals(Long.valueOf(4_200_000L), reportedDurations.get(0));
+
+    // Next main-thread prepare adds renderThreadTid=2002 via setThreads -> all 4 pipeline threads!
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, updatedTids.size());
+    assertEquals(4, updatedTids.get(0).length);
+    assertEquals(2002, updatedTids.get(0)[1]);
+    assertEquals(3003, updatedTids.get(0)[2]);
+    assertEquals(4004, updatedTids.get(0)[3]);
+
+    // Multi-PV same-vsync: tiny +0.2 ms sub-target commit is coalesced, while a second PV pushing
+    // batch work to 6.1 ms (> 5.0 ms target) is reported immediately; affinity is not re-requested.
+    final long vsync2 = 1_008_333_333L;
+    controller.onFrameCommittedOnRenderThread(vsync2, vsync2 + 3_500_000L, 2002);
+    controller.onFrameCommittedOnRenderThread(vsync2, vsync2 + 3_700_000L, 2002);
+    controller.onFrameCommittedOnRenderThread(vsync2, vsync2 + 6_100_000L, 2002);
+    assertEquals(1, affinityCalls[0]);
+    assertEquals(3, reportedDurations.size());
+    assertEquals(Long.valueOf(3_500_000L), reportedDurations.get(1));
+    assertEquals(Long.valueOf(6_100_000L), reportedDurations.get(2));
+
+    // Switching display mode to 60 Hz updates target duration to 10.0 ms; API 31-33 fallback
+    // recreates session cleanly if setThreads returns false.
+    fps[0] = 60.0f;
+    allowSetThreads[0] = false;
+    rasterTid[0] = 5005;
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_31);
+    assertEquals(1, closedCount[0]);
+    assertEquals(2, createdTids.size());
+    assertEquals(5005, createdTids.get(1)[3]);
+    assertEquals(Long.valueOf(10_000_000L), targets.get(targets.size() - 1));
+
+    // Destroying the last renderer closes the session cleanly.
+    controller.onRendererDestroyed();
+    assertEquals(2, closedCount[0]);
+  }
+
+  @Test
+  public void pipelineAdpfController_negativeCachesNullSessionAndSingleAttemptsAffinityOnFailure() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final int[] createCalls = {0};
+    final int[] affinityCalls = {0};
+    final int[] rasterTid = {0};
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            createCalls[0]++;
+            return null;
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 0;
+          }
+
+          @Override
+          public int getLastRasterThreadTid() {
+            return rasterTid[0];
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity() {
+            affinityCalls[0]++;
+            return false;
+          }
+        });
+
+    controller.onRendererCreated();
+    // Repeated frames with the same TID tuple only invoke createSession once when it returns null.
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, createCalls[0]);
+
+    // When requestNotEfficiencyCpuAffinity returns false, it is attempted only once for a given
+    // RenderThread TID and needsFrameCommitCallback(API_30) becomes false after that single try.
+    assertTrue(controller.needsFrameCommitCallback(API_LEVELS.API_30));
+    controller.onFrameCommittedOnRenderThread(1_000_000_000L, 1_003_000_000L, 2002);
+    controller.onFrameCommittedOnRenderThread(1_008_000_000L, 1_011_000_000L, 2002);
+    assertEquals(1, affinityCalls[0]);
+    assertFalse(controller.needsFrameCommitCallback(API_LEVELS.API_30));
+
+    // Discovering renderThreadTid=2002 changes the TID tuple, allowing one retry.
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(2, createCalls[0]);
+  }
+
+  @Test
+  public void pipelineAdpfController_fallsBackToCoreTwoTidsWhenAuxiliaryTidRejected() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final java.util.ArrayList<int[]> createdTids = new java.util.ArrayList<>();
+    final java.util.ArrayList<int[]> updatedTids = new java.util.ArrayList<>();
+    final int[] rasterTid = {9999}; // Simulate a rejected auxiliary TID.
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            for (int tid : tids) {
+              if (tid == 9999) {
+                return null;
+              }
+            }
+            createdTids.add(tids.clone());
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {}
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                for (int tid : newTids) {
+                  if (tid == 9999) {
+                    return false;
+                  }
+                }
+                updatedTids.add(newTids.clone());
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {}
+
+              @Override
+              public void close() {}
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 3003;
+          }
+
+          @Override
+          public int getLastRasterThreadTid() {
+            return rasterTid[0];
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity() {
+            return true;
+          }
+        });
+
+    controller.onRendererCreated();
+    controller.onFrameCommittedOnRenderThread(1_000_000_000L, 1_003_000_000L, 2002);
+
+    // 4-TID [main, 2002, 3003, 9999] fails createSession, so controller falls back to 2-TID
+    // [main, 2002] and does not re-attempt 9999 on subsequent frames with the same TIDs.
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, createdTids.size());
+    assertEquals(2, createdTids.get(0).length);
+    assertEquals(2002, createdTids.get(0)[1]);
+
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, createdTids.size());
+    assertEquals(0, updatedTids.size());
+
+    // Once a valid raster TID=4004 arrives, setThreads upgrades the session to all 4 threads.
+    rasterTid[0] = 4004;
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, updatedTids.size());
+    assertEquals(4, updatedTids.get(0).length);
+    assertEquals(4004, updatedTids.get(0)[3]);
+  }
+
+  @Test
+  public void
+      draw_withDedicatedHardwareRenderer_closesAdpfSessionOnWindowInvisibleDetachAndRelease() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final int[] createCount = {0};
+    final int[] closeCount = {0};
+
+    PlatformViewWrapper.adpfController.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            createCount[0]++;
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {}
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {}
+
+              @Override
+              public void close() {
+                closeCount[0]++;
+              }
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 3003;
+          }
+
+          @Override
+          public int getLastRasterThreadTid() {
+            return 4004;
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity() {
+            return true;
+          }
+        });
+
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+
+    // First foreground draw opens the ADPF session.
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(1, createCount[0]);
+    assertEquals(0, closeCount[0]);
+
+    // Transitioning window visibility to INVISIBLE flushes and closes the ADPF session.
+    wrapper.onWindowVisibilityChanged(View.INVISIBLE);
+    assertEquals(1, closeCount[0]);
+
+    // Subsequent foreground draw lazily re-opens the ADPF session.
+    wrapper.onWindowVisibilityChanged(View.VISIBLE);
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(2, createCount[0]);
+    assertEquals(1, closeCount[0]);
+
+    // Detaching from window closes the session; release() afterwards does not double-close.
+    wrapper.onDetachedFromWindow();
+    assertEquals(2, closeCount[0]);
+    wrapper.release();
+    assertEquals(2, closeCount[0]);
+  }
+
+  @Test
   public void invalidateChildInParent_callsInvalidate() {
     final PlatformViewWrapper wrapper = spy(new PlatformViewWrapper(ctx));
 
@@ -487,7 +844,9 @@ public class PlatformViewWrapperTest {
     final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
     when(renderTarget.getSurface()).thenReturn(surface);
     when(surface.lockHardwareCanvas()).thenReturn(canvas);
-    doThrow(new IllegalStateException("Surface released")).when(surface).unlockCanvasAndPost(canvas);
+    doThrow(new IllegalStateException("Surface released"))
+        .when(surface)
+        .unlockCanvasAndPost(canvas);
     final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx, renderTarget);
 
     wrapper.draw(canvas);

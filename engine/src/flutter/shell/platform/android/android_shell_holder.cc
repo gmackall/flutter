@@ -7,11 +7,15 @@
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <algorithm>
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
-
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "common/settings.h"
 #include "flutter/fml/cpu_affinity.h"
@@ -29,6 +33,31 @@
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
+
+static std::mutex g_raster_tids_mutex;
+static std::vector<int> g_live_raster_tids;
+static std::atomic<int> g_last_configured_raster_tid{0};
+
+static void RegisterLiveRasterTid(int tid) {
+  if (tid <= 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_raster_tids_mutex);
+  g_live_raster_tids.erase(
+      std::remove(g_live_raster_tids.begin(), g_live_raster_tids.end(), tid),
+      g_live_raster_tids.end());
+  g_live_raster_tids.push_back(tid);
+}
+
+static void UnregisterLiveRasterTid(int tid) {
+  if (tid <= 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_raster_tids_mutex);
+  g_live_raster_tids.erase(
+      std::remove(g_live_raster_tids.begin(), g_live_raster_tids.end(), tid),
+      g_live_raster_tids.end());
+}
 
 /// Inheriting ThreadConfigurer and use Android platform thread API to configure
 /// the thread priorities
@@ -53,6 +82,9 @@ static void AndroidPlatformThreadConfigSetter(
       break;
     }
     case fml::Thread::ThreadPriority::kRaster: {
+      const int raster_tid = static_cast<int>(gettid());
+      g_last_configured_raster_tid.store(raster_tid, std::memory_order_relaxed);
+      RegisterLiveRasterTid(raster_tid);
       fml::RequestAffinity(fml::CpuAffinity::kNotEfficiency);
       // Android describes -8 as "most important display threads, for
       // compositing the screen and retrieving input events". Conservatively
@@ -110,7 +142,17 @@ AndroidShellHolder::AndroidShellHolder(
           flutter::ThreadHost::Type::kIo, thread_label),
       fml::Thread::ThreadPriority::kNormal);
 
-  thread_host_ = std::make_shared<ThreadHost>(host_config);
+  auto* raw_thread_host = new ThreadHost(host_config);
+  const int instance_raster_tid =
+      g_last_configured_raster_tid.load(std::memory_order_relaxed);
+  thread_host_ = std::shared_ptr<ThreadHost>(
+      raw_thread_host, [instance_raster_tid](ThreadHost* host) {
+        // Unregister the raster thread's TID before ~ThreadHost() joins the
+        // raster thread, and only when the last AndroidShellHolder sharing
+        // this ThreadHost is destroyed.
+        UnregisterLiveRasterTid(instance_raster_tid);
+        delete host;
+      });
 
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
@@ -142,6 +184,15 @@ AndroidShellHolder::AndroidShellHolder(
   raster_runner = thread_host_->raster_thread->GetTaskRunner();
   if (settings.merged_platform_ui_thread ==
       Settings::MergedPlatformUIThread::kEnabled) {
+    // When UI and platform threads are merged, ThreadHost does not spawn a
+    // dedicated kDisplay UI thread, so AndroidPlatformThreadConfigSetter does
+    // not run for it. Request kNotEfficiency affinity on the merged thread so
+    // Dart UI + Android View/WebView traversals avoid little efficiency cores.
+    // Note: sched_setaffinity on the main thread is inherited via clone() by
+    // Java threads subsequently spawned from main unless they configure their
+    // own affinity (1.io and Impeller background workers explicitly set
+    // kEfficiency).
+    fml::RequestAffinity(fml::CpuAffinity::kNotEfficiency);
     ui_runner = platform_runner;
   } else {
     ui_runner = thread_host_->ui_thread->GetTaskRunner();
@@ -217,6 +268,11 @@ bool AndroidShellHolder::IsValid() const {
 
 const flutter::Settings& AndroidShellHolder::GetSettings() const {
   return settings_;
+}
+
+int AndroidShellHolder::GetLastRasterThreadTid() {
+  std::lock_guard<std::mutex> lock(g_raster_tids_mutex);
+  return g_live_raster_tids.empty() ? 0 : g_live_raster_tids.back();
 }
 
 std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(

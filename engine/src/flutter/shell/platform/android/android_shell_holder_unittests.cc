@@ -231,5 +231,31 @@ TEST(AndroidShellHolder, CreateWithUnMergedPlatformAndUIThread) {
       holder->GetShellForTesting()->GetTaskRunners().GetPlatformTaskRunner());
 }
 
+TEST(AndroidShellHolder, MultiEngineRasterThreadTidLifecycle) {
+  Settings settings;
+  auto jni_a = std::make_shared<MockPlatformViewAndroidJNI>();
+  auto holder_a = std::make_unique<AndroidShellHolder>(
+      settings, jni_a, AndroidRenderingAPI::kImpellerOpenGLES);
+  const int tid_a = AndroidShellHolder::GetLastRasterThreadTid();
+  EXPECT_GT(tid_a, 0);
+
+  auto jni_b = std::make_shared<MockPlatformViewAndroidJNI>();
+  auto holder_b = std::make_unique<AndroidShellHolder>(
+      settings, jni_b, AndroidRenderingAPI::kImpellerOpenGLES);
+  const int tid_b = AndroidShellHolder::GetLastRasterThreadTid();
+  EXPECT_GT(tid_b, 0);
+  EXPECT_NE(tid_a, tid_b);
+
+  // Destroying the secondary holder reverts GetLastRasterThreadTid() to the
+  // still-live primary holder's raster thread TID instead of leaving a dead
+  // TID.
+  holder_b.reset();
+  EXPECT_EQ(AndroidShellHolder::GetLastRasterThreadTid(), tid_a);
+
+  // Destroying the last holder clears the live raster TID list to 0.
+  holder_a.reset();
+  EXPECT_EQ(AndroidShellHolder::GetLastRasterThreadTid(), 0);
+}
+
 }  // namespace testing
 }  // namespace flutter

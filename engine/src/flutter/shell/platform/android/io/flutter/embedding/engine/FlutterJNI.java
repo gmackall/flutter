@@ -170,6 +170,39 @@ public class FlutterJNI {
 
   private static boolean loadLibraryCalled = false;
 
+  private static native boolean nativeRequestNotEfficiencyAffinity();
+
+  private static native int nativeGetLastRasterThreadTid();
+
+  /**
+   * Requests {@code CpuAffinity::kNotEfficiency} for the calling thread when the native library is
+   * loaded, preventing critical rendering/pipeline threads from being scheduled on little cores.
+   */
+  public static boolean requestNotEfficiencyCpuAffinity() {
+    if (!FlutterJNI.loadLibraryCalled) {
+      return false;
+    }
+    return nativeRequestNotEfficiencyAffinity();
+  }
+
+  /**
+   * Returns the Linux TID of the most recently configured engine raster thread, or {@code 0} if the
+   * native library is not loaded or no raster thread has been initialized yet.
+   */
+  public static int getLastRasterThreadTid() {
+    if (!FlutterJNI.loadLibraryCalled) {
+      return 0;
+    }
+    return nativeGetLastRasterThreadTid();
+  }
+
+  /**
+   * Returns the current display refresh rate in FPS tracked by {@link io.flutter.view.VsyncWaiter}.
+   */
+  public static float getRefreshRateFPS() {
+    return FlutterJNI.refreshRateFPS;
+  }
+
   private static native void nativePrefetchDefaultFontManager();
 
   /**
