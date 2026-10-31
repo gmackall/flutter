@@ -68,16 +68,22 @@ class ImageExternalTexture : public flutter::Texture {
 
   JavaLocalRef AcquireLatestImage();
 
+  virtual PlatformViewAndroidJNI::AcquiredHardwareBuffer
+  AcquireLatestHardwareBuffer();
+
   void CloseImage(const fml::jni::JavaRef<jobject>& image);
 
   JavaLocalRef HardwareBufferFor(const fml::jni::JavaRef<jobject>& image);
 
-  void CloseHardwareBuffer(const fml::jni::JavaRef<jobject>& hardware_buffer);
+  virtual void CloseHardwareBuffer(
+      const fml::jni::JavaRef<jobject>& hardware_buffer);
 
-  AHardwareBuffer* AHardwareBufferFor(
+  virtual AHardwareBuffer* AHardwareBufferFor(
       const fml::jni::JavaRef<jobject>& hardware_buffer);
 
   fml::jni::ScopedJavaGlobalRef<jobject> image_texture_entry_;
+  fml::jni::JavaObjectWeakGlobalRef cached_consumer_;
+  bool cached_is_surface_producer_ = false;
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
 
   enum class AttachmentState { kUninitialized, kAttached, kDetached };
@@ -94,6 +100,9 @@ class ImageExternalTexture : public flutter::Texture {
 
   // |flutter::Texture|.
   void MarkNewFrameAvailable() override;
+
+  // |flutter::Texture|.
+  bool NeedsMarkNewFrameAvailable() const override { return false; }
 
   // |flutter::Texture|
   void OnTextureUnregistered() override;

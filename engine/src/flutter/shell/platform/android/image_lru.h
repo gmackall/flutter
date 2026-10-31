@@ -7,17 +7,19 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
+
+#include <android/hardware_buffer.h>
 
 #include "display_list/image/dl_image.h"
 
 namespace flutter {
 
-// This value needs to be larger than the number of swapchain images
-// that a typical image reader will produce to ensure that we effectively
-// cache. If the value is too small, we will unnecessarily churn through
-// images, while if it is too large we may retain images longer than
-// necessary.
-static constexpr size_t kImageReaderSwapchainSize = 6u;
+// Keep up to 2x ImageReaderSurfaceProducer.MAX_IMAGES (2 * 7 = 14) imported
+// HardwareBuffers in the per-texture LRU cache. This covers the active working
+// set across an in-flight ImageReader resize/rotation without pinning up to 64
+// full-screen GPU buffers across repeated background/foreground resets.
+static constexpr size_t kImageReaderSwapchainSize = 14u;
 
 using HardwareBufferKey = uint64_t;
 
@@ -27,8 +29,24 @@ class ImageLRU {
 
   ~ImageLRU() = default;
 
-  /// @brief Retrieve the image associated with the given [key], or nullptr.
-  sk_sp<flutter::DlImage> FindImage(std::optional<HardwareBufferKey> key);
+  /// @brief Fast-path lookup by key alone (bounded linear scan over
+  ///        kImageReaderSwapchainSize entries) without requiring a buffer
+  ///        descriptor. If found, marks the entry as most-recently-used and
+  ///        expires stale entries; on a miss, returns nullptr without
+  ///        advancing the frame counter so the caller can invoke FindImage()
+  ///        with a full descriptor.
+  sk_sp<flutter::DlImage> TryFindImage(
+      std::optional<HardwareBufferKey> key,
+      const std::function<void(HardwareBufferKey)>& on_evict = {});
+
+  /// @brief Look up one acquired frame, expiring images unused for twice the
+  ///        cache capacity in acquired frames.
+  ///        On a miss, a changed buffer size or format invalidates the cache.
+  ///        [on_evict] releases any additional resources for removed images.
+  sk_sp<flutter::DlImage> FindImage(
+      std::optional<HardwareBufferKey> key,
+      const AHardwareBuffer_Desc& descriptor,
+      const std::function<void(HardwareBufferKey)>& on_evict = {});
 
   /// @brief Add a new image to the cache with a key, returning the key of the
   ///        LRU entry that was removed.
@@ -38,18 +56,21 @@ class ImageLRU {
                              HardwareBufferKey key);
 
   /// @brief Remove all entires from the image cache.
-  void Clear();
+  void Clear(const std::function<void(HardwareBufferKey)>& on_evict = {});
 
  private:
-  /// @brief Marks [key] as the most recently used.
-  void UpdateKey(const sk_sp<flutter::DlImage>& image, HardwareBufferKey key);
+  /// @brief Marks the entry at [index] as the most recently used.
+  void UpdateKey(size_t index);
 
   struct Data {
     HardwareBufferKey key = 0u;
     sk_sp<flutter::DlImage> value;
+    uint64_t last_used_frame = 0u;
   };
 
   std::array<Data, kImageReaderSwapchainSize> images_;
+  AHardwareBuffer_Desc descriptor_ = {};
+  uint64_t frame_ = 0u;
 };
 
 }  // namespace flutter

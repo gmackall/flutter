@@ -97,6 +97,13 @@ JavaLocalRef ImageExternalTexture::AcquireLatestImage() {
   return image_java;
 }
 
+PlatformViewAndroidJNI::AcquiredHardwareBuffer
+ImageExternalTexture::AcquireLatestHardwareBuffer() {
+  return jni_facade_->ImageProducerTextureEntryAcquireLatestHardwareBuffer(
+      JavaLocalRef(image_texture_entry_), &cached_consumer_,
+      &cached_is_surface_producer_);
+}
+
 void ImageExternalTexture::CloseImage(const fml::jni::JavaRef<jobject>& image) {
   if (image.obj() == nullptr) {
     return;
@@ -123,6 +130,9 @@ JavaLocalRef ImageExternalTexture::HardwareBufferFor(
 
 AHardwareBuffer* ImageExternalTexture::AHardwareBufferFor(
     const fml::jni::JavaRef<jobject>& hardware_buffer) {
+  if (hardware_buffer.is_null()) {
+    return nullptr;
+  }
   JNIEnv* env = fml::jni::AttachCurrentThread();
   FML_CHECK(env != nullptr);
   const auto& proc =

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "flutter/assets/directory_asset_bundle.h"
 #include "flutter/common/graphics/texture.h"
@@ -552,6 +553,10 @@ class Shell final : public PlatformView::Delegate,
 
   // Cached refresh rate used by the performance overlay.
   std::optional<fml::Milliseconds> cached_display_refresh_rate_;
+
+  // Texture IDs whose MarkNewFrameAvailable() implementation is a no-op (e.g.
+  // Android ImageExternalTexture). Accessed exclusively on PlatformTaskRunner.
+  std::unordered_set<int64_t> textures_without_mark_frame_callback_;
 
   // How many frames have been timed since last report.
   size_t UnreportedFramesCount() const;
