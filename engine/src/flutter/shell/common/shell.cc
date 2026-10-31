@@ -1315,6 +1315,10 @@ void Shell::OnPlatformViewRegisterTexture(
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
 
+  if (!texture->NeedsMarkNewFrameAvailable()) {
+    textures_without_mark_frame_callback_.insert(texture->Id());
+  }
+
   task_runners_.GetRasterTaskRunner()->PostTask(
       [rasterizer = rasterizer_->GetWeakPtr(), texture] {
         if (rasterizer) {
@@ -1329,6 +1333,8 @@ void Shell::OnPlatformViewRegisterTexture(
 void Shell::OnPlatformViewUnregisterTexture(int64_t texture_id) {
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+
+  textures_without_mark_frame_callback_.erase(texture_id);
 
   task_runners_.GetRasterTaskRunner()->PostTask(
       [rasterizer = rasterizer_->GetWeakPtr(), texture_id]() {
@@ -1345,26 +1351,29 @@ void Shell::OnPlatformViewMarkTextureFrameAvailable(int64_t texture_id) {
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
 
-  // Tell the rasterizer that one of its textures has a new frame available.
-  task_runners_.GetRasterTaskRunner()->PostTask(
-      [rasterizer = rasterizer_->GetWeakPtr(), texture_id]() {
-        if (!rasterizer) {
-          return;
-        }
-        auto registry = rasterizer->GetTextureRegistry();
+  if (textures_without_mark_frame_callback_.find(texture_id) ==
+      textures_without_mark_frame_callback_.end()) {
+    // Tell the rasterizer that one of its textures has a new frame available.
+    task_runners_.GetRasterTaskRunner()->PostTask(
+        [rasterizer = rasterizer_->GetWeakPtr(), texture_id]() {
+          if (!rasterizer) {
+            return;
+          }
+          auto registry = rasterizer->GetTextureRegistry();
 
-        if (!registry) {
-          return;
-        }
+          if (!registry) {
+            return;
+          }
 
-        auto texture = registry->GetTexture(texture_id);
+          auto texture = registry->GetTexture(texture_id);
 
-        if (!texture) {
-          return;
-        }
+          if (!texture) {
+            return;
+          }
 
-        texture->MarkNewFrameAvailable();
-      });
+          texture->MarkNewFrameAvailable();
+        });
+  }
 
   // Schedule a new frame without having to rebuild the layer tree.
   fml::TaskRunner::RunNowOrPostTask(task_runners_.GetUITaskRunner(),

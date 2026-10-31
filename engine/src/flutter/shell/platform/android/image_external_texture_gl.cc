@@ -8,9 +8,11 @@
 #include <android/sensor.h>
 
 #include "flutter/common/graphics/texture.h"
+#include "flutter/fml/closure.h"
 #include "flutter/impeller/core/formats.h"
 #include "flutter/impeller/display_list/dl_image_impeller.h"
 #include "flutter/impeller/toolkit/android/hardware_buffer.h"
+#include "flutter/impeller/toolkit/android/proc_table.h"
 #include "flutter/impeller/toolkit/egl/image.h"
 #include "flutter/impeller/toolkit/gles/texture.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
@@ -41,14 +43,29 @@ void ImageExternalTextureGL::Attach(PaintContext& context) {
   }
 }
 
-void ImageExternalTextureGL::UpdateImage(JavaLocalRef& hardware_buffer,
-                                         const SkRect& bounds,
-                                         PaintContext& context) {
-  AHardwareBuffer* latest_hardware_buffer = AHardwareBufferFor(hardware_buffer);
+void ImageExternalTextureGL::UpdateImage(
+    AHardwareBuffer* latest_hardware_buffer,
+    const SkRect& bounds,
+    PaintContext& context) {
+  if (latest_hardware_buffer == nullptr) {
+    return;
+  }
   std::optional<HardwareBufferKey> key =
       impeller::android::HardwareBuffer::GetSystemUniqueID(
           latest_hardware_buffer);
-  auto existing_image = image_lru_.FindImage(key);
+  auto evict_cb = [this](HardwareBufferKey evicted_key) {
+    gl_entries_.erase(evicted_key);
+  };
+  if (auto cached_image = image_lru_.TryFindImage(key, evict_cb)) {
+    dl_image_ = std::move(cached_image);
+    return;
+  }
+  auto descriptor =
+      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
+  if (!descriptor.has_value()) {
+    return;
+  }
+  auto existing_image = image_lru_.FindImage(key, descriptor.value(), evict_cb);
   if (existing_image != nullptr) {
     dl_image_ = existing_image;
     return;
@@ -59,7 +76,11 @@ void ImageExternalTextureGL::UpdateImage(JavaLocalRef& hardware_buffer,
     return;
   }
 
-  dl_image_ = CreateDlImage(context, bounds, key, std::move(egl_image));
+  auto image = CreateDlImage(context, bounds, key, std::move(egl_image));
+  if (!image) {
+    return;
+  }
+  dl_image_ = std::move(image);
   if (key.has_value()) {
     gl_entries_.erase(image_lru_.AddImage(dl_image_, key.value()));
   }
@@ -67,16 +88,31 @@ void ImageExternalTextureGL::UpdateImage(JavaLocalRef& hardware_buffer,
 
 void ImageExternalTextureGL::ProcessFrame(PaintContext& context,
                                           const SkRect& bounds) {
-  JavaLocalRef image = AcquireLatestImage();
-  if (image.is_null()) {
+  auto acquired = AcquireLatestHardwareBuffer();
+  if (acquired.hardware_buffer.is_null()) {
     return;
   }
-  JavaLocalRef hardware_buffer = HardwareBufferFor(image);
-  if (hardware_buffer.is_null()) {
+  fml::ScopedCleanupClosure close_java_hb([this, &acquired]() {
+    if (!acquired.owned_by_producer) {
+      CloseHardwareBuffer(acquired.hardware_buffer);
+    }
+  });
+  AHardwareBuffer* latest_hardware_buffer =
+      AHardwareBufferFor(acquired.hardware_buffer);
+  if (latest_hardware_buffer == nullptr) {
     return;
   }
-  UpdateImage(hardware_buffer, bounds, context);
-  CloseHardwareBuffer(hardware_buffer);
+  const auto& proc_table = impeller::android::GetProcTable();
+  if (proc_table.AHardwareBuffer_acquire.IsAvailable()) {
+    proc_table.AHardwareBuffer_acquire(latest_hardware_buffer);
+  }
+  fml::ScopedCleanupClosure release_native_hb(
+      [latest_hardware_buffer, &proc_table]() {
+        if (proc_table.AHardwareBuffer_release.IsAvailable()) {
+          proc_table.AHardwareBuffer_release(latest_hardware_buffer);
+        }
+      });
+  UpdateImage(latest_hardware_buffer, bounds, context);
 }
 
 void ImageExternalTextureGL::Detach() {
@@ -108,11 +144,18 @@ impeller::UniqueEGLImageKHR ImageExternalTextureGL::CreateEGLImage(
 
   impeller::EGLImageKHRWithDisplay maybe_image =
       impeller::EGLImageKHRWithDisplay{
-          eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
-                            client_buffer, 0),
-          display};
+          CreateEGLImageKHR(display, client_buffer), display};
 
+  if (maybe_image.image == EGL_NO_IMAGE_KHR) {
+    return {};
+  }
   return impeller::UniqueEGLImageKHR(maybe_image);
+}
+
+EGLImageKHR ImageExternalTextureGL::CreateEGLImageKHR(EGLDisplay display,
+                                                      EGLClientBuffer buffer) {
+  return eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
+                           buffer, nullptr);
 }
 
 }  // namespace flutter

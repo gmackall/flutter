@@ -80,6 +80,11 @@ class PlatformViewAndroidJNIImpl final : public PlatformViewAndroidJNI {
   JavaLocalRef ImageProducerTextureEntryAcquireLatestImage(
       JavaLocalRef image_texture_entry) override;
 
+  AcquiredHardwareBuffer ImageProducerTextureEntryAcquireLatestHardwareBuffer(
+      JavaLocalRef image_texture_entry,
+      fml::jni::JavaObjectWeakGlobalRef* cached_consumer,
+      bool* cached_is_surface_producer) override;
+
   JavaLocalRef ImageGetHardwareBuffer(JavaLocalRef image) override;
 
   void ImageClose(JavaLocalRef image) override;
