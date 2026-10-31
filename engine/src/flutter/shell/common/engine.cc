@@ -288,6 +288,32 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
 
 void Engine::BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) {
   runtime_controller_->BeginFrame(frame_time, frame_number);
+  // Drain microtasks queued during onDrawFrame and post-frame callbacks (such
+  // as async continuations, platform messages, or follow-up scheduleFrame()
+  // calls) before returning to Animator::BeginFrame.
+  //
+  // Placing this flush in shared Engine::BeginFrame code—matching
+  // PlatformConfiguration::BeginFrame's flush after onBeginFrame and
+  // Engine::DispatchPointerDataPacket's flush after pointer dispatch—keeps
+  // frame-phase microtask semantics uniform across platforms and across both
+  // VSync delivery paths:
+  // - On the inline VSync callback path (e.g. Android Choreographer animation
+  //   callback running directly on a merged platform/UI thread),
+  //   Engine::BeginFrame executes outside MessageLoopImpl::FlushTasks, so
+  //   message-loop task observers do not run when the callback returns.
+  //   Flushing here ensures microtasks complete before control returns to
+  //   Choreographer and before ViewRootImpl's traversal phase.
+  // - Ordering relative to Animator::EndFrame: Animator::BeginFrame resets
+  //   frame_scheduled_ and signals pending_frame_semaphore_ before calling
+  //   Engine::BeginFrame, and Scene.render() runs during onDrawFrame before
+  //   this flush. If a microtask calls scheduleFrame(), Animator::RequestFrame
+  //   re-arms the next VSync immediately and Animator::EndFrame sees
+  //   frame_scheduled_ == true (avoiding a spurious idle notification).
+  // - On the posted VSync task path, draining the microtask queue at the end
+  //   of Engine::BeginFrame is benign and idempotent: the queue is already
+  //   empty when Animator::EndFrame finishes and MessageLoopImpl::FlushTasks
+  //   subsequently invokes the microtask task observer.
+  runtime_controller_->FlushMicrotaskQueue();
 }
 
 void Engine::ReportTimings(std::vector<int64_t> timings) {
