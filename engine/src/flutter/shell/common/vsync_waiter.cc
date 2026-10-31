@@ -46,7 +46,8 @@ void VsyncWaiter::AsyncWaitForVsync(const Callback& callback) {
 }
 
 void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
-                               fml::TimePoint frame_target_time) {
+                               fml::TimePoint frame_target_time,
+                               bool can_target_current_thread) {
   FML_DCHECK(fml::TimePoint::Now() >= frame_start_time);
 
   Callback callback;
@@ -65,6 +66,17 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
   }
 
   if (callback) {
+    if (can_target_current_thread &&
+        task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread()) {
+      FML_TRACE_EVENT("flutter", kVsyncTraceName, "StartTime", frame_start_time,
+                      "TargetTime", frame_target_time);
+      std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder =
+          std::make_unique<FrameTimingsRecorder>();
+      frame_timings_recorder->RecordVsync(frame_start_time, frame_target_time);
+      callback(std::move(frame_timings_recorder));
+      return;
+    }
+
     const uint64_t flow_identifier = fml::tracing::TraceNonce();
 
     PauseDartEventLoopTasks();
