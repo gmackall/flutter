@@ -1020,6 +1020,169 @@ public class PlatformViewsController2Test {
     assertTrue(parentView.getFlutterWonGesture());
   }
 
+  private static ByteBuffer encodeTouchEcho2(
+      int viewId, MotionEvent event, MotionEventTracker.MotionEventId eventId, double coordScale) {
+    final List<Object> args = new ArrayList<>();
+    args.add(viewId);
+    args.add(event.getDownTime());
+    args.add(event.getEventTime());
+    args.add(event.getAction());
+    args.add(event.getPointerCount());
+    args.add(Arrays.asList(Arrays.asList(event.getPointerId(0), event.getToolType(0))));
+    args.add(
+        Arrays.asList(
+            Arrays.asList(
+                (double) event.getOrientation(),
+                (double) event.getPressure(),
+                (double) event.getSize(),
+                (double) event.getToolMajor(),
+                (double) event.getToolMinor(),
+                (double) event.getTouchMajor(),
+                (double) event.getTouchMinor(),
+                event.getX() * coordScale,
+                event.getY() * coordScale)));
+    args.add(event.getMetaState());
+    args.add(event.getButtonState());
+    args.add((double) event.getXPrecision());
+    args.add((double) event.getYPrecision());
+    args.add(event.getDeviceId());
+    args.add(event.getEdgeFlags());
+    args.add(event.getSource());
+    args.add(event.getFlags());
+    args.add(eventId.getId());
+    return encodeMethodCall(new MethodCall("touch", args));
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void onTouch_switchesToDirectDispatchAndNotifiesDeactivation_forHcpp() {
+    final PlatformViewRegistryImpl registryImpl = new PlatformViewRegistryImpl();
+    final PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(registryImpl);
+
+    final int platformViewId = 0;
+    final PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    final PlatformView platformView = mock(PlatformView.class);
+    final List<MotionEvent> received = new ArrayList<>();
+    final View androidView =
+        new View(ApplicationProvider.getApplicationContext()) {
+          @Override
+          public boolean dispatchTouchEvent(MotionEvent event) {
+            received.add(MotionEvent.obtain(event));
+            return true;
+          }
+        };
+    when(platformView.getView()).thenReturn(androidView);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    final FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    attach(jni, controller);
+    createPlatformView(jni, controller, platformViewId, "testType");
+    assertTrue(controller.initializePlatformViewIfNeeded(platformViewId));
+
+    final FlutterMutatorView parentView = controller.getPlatformViewParent(platformViewId);
+    assertNotNull(parentView);
+    final MotionEventTracker tracker = MotionEventTracker.getInstance();
+
+    ShadowFlutterJNI.getDispatchedMethodCalls().clear();
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 5f, 6f, 0);
+    final MotionEventTracker.MotionEventId downId = tracker.track(down);
+    parentView.onTouchEvent(down);
+    assertFalse(parentView.isDirectDispatchActive());
+
+    // First forwarded event activates direct dispatch and notifies Dart once on platform_views_2.
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, down, downId, 1.0), 0, 0);
+    assertTrue(parentView.isDirectDispatchActive());
+    assertEquals(1, received.size());
+    assertEquals(1, ShadowFlutterJNI.getDispatchedMethodCalls().size());
+    assertEquals("directTouchDispatch", ShadowFlutterJNI.getDispatchedMethodCalls().get(0).method);
+    assertEquals(
+        Boolean.TRUE,
+        ((Map<?, ?>) ShadowFlutterJNI.getDispatchedMethodCalls().get(0).arguments()).get("active"));
+
+    // Next move is delivered synchronously by FlutterMutatorView, and its echo is dropped.
+    final MotionEvent move = MotionEvent.obtain(100, 101, MotionEvent.ACTION_MOVE, 7f, 8f, 0);
+    final MotionEventTracker.MotionEventId moveId = tracker.track(move);
+    parentView.onTouchEvent(move);
+    assertEquals(2, received.size());
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, move, moveId, 1.0), 0, 0);
+    assertEquals(2, received.size());
+
+    // Coordinate mismatch in an echo deactivates direct dispatch and notifies active=false.
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, move, moveId, 3.0), 0, 0);
+    assertFalse(parentView.isDirectDispatchActive());
+    assertEquals(2, ShadowFlutterJNI.getDispatchedMethodCalls().size());
+    assertEquals(
+        Boolean.FALSE,
+        ((Map<?, ?>) ShadowFlutterJNI.getDispatchedMethodCalls().get(1).arguments()).get("active"));
+
+    // Gesture 2: non-translation FlutterMutatorsStack applied mid-gesture immediately deactivates
+    // direct dispatch on the next native touch event and notifies active=false.
+    ShadowFlutterJNI.getDispatchedMethodCalls().clear();
+    final MotionEvent down2 = MotionEvent.obtain(200, 200, MotionEvent.ACTION_DOWN, 5f, 6f, 0);
+    final MotionEventTracker.MotionEventId down2Id = tracker.track(down2);
+    parentView.onTouchEvent(down2);
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, down2, down2Id, 1.0), 0, 0);
+    assertTrue(parentView.isDirectDispatchActive());
+    assertEquals(3, received.size());
+    assertEquals(1, ShadowFlutterJNI.getDispatchedMethodCalls().size());
+
+    final FlutterMutatorsStack scaledStack = new FlutterMutatorsStack();
+    scaledStack.pushTransform(new float[] {2f, 0f, 0f, 0f, 2f, 0f, 0f, 0f, 1f});
+    parentView.readyToDisplay(scaledStack, 0, 0, 100, 100);
+    assertFalse(parentView.hasTranslationOnlyMutatorTransform());
+
+    final MotionEvent move2 = MotionEvent.obtain(200, 205, MotionEvent.ACTION_MOVE, 10f, 12f, 0);
+    final MotionEventTracker.MotionEventId move2Id = tracker.track(move2);
+    parentView.onTouchEvent(move2);
+    assertFalse(parentView.isDirectDispatchActive());
+    assertEquals(3, received.size());
+    assertEquals(2, ShadowFlutterJNI.getDispatchedMethodCalls().size());
+    assertEquals(
+        Boolean.FALSE,
+        ((Map<?, ?>) ShadowFlutterJNI.getDispatchedMethodCalls().get(1).arguments()).get("active"));
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, move2, move2Id, 2.0), 0, 0);
+    assertEquals(4, received.size());
+
+    // Gesture 3 & 4: delayed ACTION_UP echo from completed direct gesture 3 arriving AFTER
+    // gesture 4's native ACTION_DOWN is still suppressed.
+    final FlutterMutatorsStack identityStack = new FlutterMutatorsStack();
+    identityStack.pushTransform(new float[] {1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f});
+    parentView.readyToDisplay(identityStack, 0, 0, 100, 100);
+    assertTrue(parentView.hasTranslationOnlyMutatorTransform());
+
+    final MotionEvent down3 = MotionEvent.obtain(300, 300, MotionEvent.ACTION_DOWN, 5f, 6f, 0);
+    final MotionEventTracker.MotionEventId down3Id = tracker.track(down3);
+    parentView.onTouchEvent(down3);
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, down3, down3Id, 1.0), 0, 0);
+    assertTrue(parentView.isDirectDispatchActive());
+    assertEquals(5, received.size());
+
+    final MotionEvent up3 = MotionEvent.obtain(300, 310, MotionEvent.ACTION_UP, 5f, 6f, 0);
+    final MotionEventTracker.MotionEventId up3Id = tracker.track(up3);
+    parentView.onTouchEvent(up3);
+    assertEquals(6, received.size());
+    assertFalse(parentView.isDirectDispatchActive());
+
+    // Gesture 4 native ACTION_DOWN arrives before up3's echo.
+    final MotionEvent down4 = MotionEvent.obtain(400, 400, MotionEvent.ACTION_DOWN, 8f, 9f, 0);
+    tracker.track(down4);
+    parentView.onTouchEvent(down4);
+
+    // Delayed up3 echo is suppressed.
+    jni.handlePlatformMessage(
+        "flutter/platform_views_2", encodeTouchEcho2(platformViewId, up3, up3Id, 1.0), 0, 0);
+    assertEquals(6, received.size());
+  }
+
   @Test
   @Config(
       shadows = {
@@ -1446,6 +1609,7 @@ public class PlatformViewsController2Test {
   @Implements(FlutterJNI.class)
   public static class ShadowFlutterJNI {
     private static SparseArray<ByteBuffer> replies = new SparseArray<>();
+    private static final List<MethodCall> dispatchedMethodCalls = new ArrayList<>();
 
     public ShadowFlutterJNI() {}
 
@@ -1461,7 +1625,18 @@ public class PlatformViewsController2Test {
 
     @Implementation
     public void dispatchPlatformMessage(
-        String channel, ByteBuffer message, int position, int responseId) {}
+        String channel, ByteBuffer message, int position, int responseId) {
+      if ("flutter/platform_views_2".equals(channel) && message != null) {
+        final ByteBuffer copy = message.duplicate();
+        copy.position(0);
+        copy.limit(position);
+        dispatchedMethodCalls.add(StandardMethodCodec.INSTANCE.decodeMethodCall(copy));
+      }
+    }
+
+    public static List<MethodCall> getDispatchedMethodCalls() {
+      return dispatchedMethodCalls;
+    }
 
     @Implementation
     public void onSurfaceCreated(Surface surface) {}

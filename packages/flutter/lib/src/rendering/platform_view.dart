@@ -718,8 +718,35 @@ class PlatformViewRenderBox extends RenderBox with _PlatformViewGestureMixin {
     required Set<Factory<OneSequenceGestureRecognizer>> gestureRecognizers,
   }) : assert(controller.viewId > -1),
        _controller = controller {
+    if (controller is AndroidViewController) {
+      controller.liveTransformProvider = _getLiveTransform;
+    }
     this.hitTestBehavior = hitTestBehavior;
     updateGestureRecognizers(gestureRecognizers);
+    _scheduleDirectTouchValidation();
+  }
+
+  bool _isPlatformViewDisposed = false;
+
+  Matrix4? _getLiveTransform() {
+    if (_isPlatformViewDisposed || !attached || !hasSize) {
+      return null;
+    }
+    return getTransformTo(null);
+  }
+
+  // Validates live direct-touch transform eligibility on every frame so mid-gesture ancestor
+  // transform changes invalidate direct touch proactively across all Android composition modes
+  // (TLHC, Hybrid Composition, and HCPP).
+  void _scheduleDirectTouchValidation() {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!_isPlatformViewDisposed) {
+        if (_controller case final AndroidViewController androidController) {
+          androidController.validateDirectTouchTransform();
+        }
+        _scheduleDirectTouchValidation();
+      }
+    }, debugLabel: 'PlatformViewRenderBox.validateDirectTouch');
   }
 
   /// The controller for this render object.
@@ -733,8 +760,15 @@ class PlatformViewRenderBox extends RenderBox with _PlatformViewGestureMixin {
     if (_controller == controller) {
       return;
     }
+    if (_controller case final AndroidViewController oldAndroid) {
+      oldAndroid.validateDirectTouchTransform();
+      oldAndroid.liveTransformProvider = null;
+    }
     final needsSemanticsUpdate = _controller.viewId != controller.viewId;
     _controller = controller;
+    if (controller is AndroidViewController) {
+      controller.liveTransformProvider = _getLiveTransform;
+    }
     markNeedsPaint();
     if (needsSemanticsUpdate) {
       markNeedsSemanticsUpdate();
@@ -787,6 +821,24 @@ class PlatformViewRenderBox extends RenderBox with _PlatformViewGestureMixin {
   @override
   void paint(PaintingContext context, Offset offset) {
     context.addLayer(PlatformViewLayer(rect: offset & size, viewId: _controller.viewId));
+  }
+
+  @override
+  void detach() {
+    super.detach();
+    if (_controller case final AndroidViewController androidController) {
+      androidController.validateDirectTouchTransform();
+    }
+  }
+
+  @override
+  void dispose() {
+    _isPlatformViewDisposed = true;
+    if (_controller case final AndroidViewController androidController) {
+      androidController.validateDirectTouchTransform();
+      androidController.liveTransformProvider = null;
+    }
+    super.dispose();
   }
 
   @override

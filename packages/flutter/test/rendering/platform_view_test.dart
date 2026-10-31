@@ -704,6 +704,370 @@ void main() {
     expect(viewController.lastRejectGestureId, 102);
   });
 
+  test('RenderAndroidView under RenderTransform proactively invalidates direct touch on mid-gesture scale, rotation, and translation changes and resumes live globalToLocal echoes', () async {
+    final log = <MethodCall>[];
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform_views, (
+      MethodCall methodCall,
+    ) async {
+      log.add(methodCall);
+      if (methodCall.method == 'create') {
+        return 1;
+      }
+      if (methodCall.method == 'resize') {
+        final args = methodCall.arguments as Map<dynamic, dynamic>;
+        return <String, dynamic>{'width': args['width'], 'height': args['height']};
+      }
+      return null;
+    });
+    addTearDown(() {
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform_views, null);
+    });
+
+    const viewId = 77;
+    final AndroidViewController controller = PlatformViewsService.initAndroidView(
+      id: viewId,
+      viewType: 'test-tlhc-view',
+      layoutDirection: TextDirection.ltr,
+    );
+    await controller.create(size: const Size(200.0, 200.0));
+    final renderAndroidView = RenderAndroidView(
+      viewController: controller,
+      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+    );
+    final renderTransform = RenderTransform(
+      transform: Matrix4.identity(),
+      child: renderAndroidView,
+    );
+    layout(
+      RenderPositionedBox(
+        alignment: Alignment.topLeft,
+        child: RenderConstrainedBox(
+          additionalConstraints: const BoxConstraints.tightFor(width: 200.0, height: 200.0),
+          child: renderTransform,
+        ),
+      ),
+    );
+    pumpFrame(phase: EnginePhase.sendSemanticsUpdate);
+
+    const kIndexDownTime = 1;
+    const kIndexAction = 3;
+    const kIndexPointerCoords = 6;
+    const kCoordsIndexX = 7;
+    const kCoordsIndexY = 8;
+
+    Future<void> activateDirectDispatch(int downTime) async {
+      final ByteData message = SystemChannels.platform_views.codec.encodeMethodCall(
+        MethodCall('directTouchDispatch', <String, dynamic>{
+          'id': viewId,
+          'downTime': downTime,
+          'active': true,
+        }),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.platform_views.name,
+        message,
+        (_) {},
+      );
+    }
+
+    List<MethodCall> touchCalls() =>
+        log.where((MethodCall call) => call.method == 'touch').toList();
+
+    List<MethodCall> invalidateCalls() =>
+        log.where((MethodCall call) => call.method == 'invalidateDirectTouch').toList();
+
+    // --- Part 1: Mid-gesture ancestor scale transform change through real GestureBinding route ---
+    log.clear();
+    const down1 = PointerDownEvent(
+      pointer: 11,
+      position: Offset(40.0, 50.0),
+      timeStamp: Duration(milliseconds: 1000),
+    );
+    binding.handlePointerEvent(down1);
+    GestureBinding.instance.gestureArena.close(11);
+    GestureBinding.instance.gestureArena.sweep(11);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(touchCalls(), hasLength(1));
+    final downTime1 = (touchCalls().single.arguments as List<dynamic>)[kIndexDownTime] as int;
+
+    await activateDirectDispatch(downTime1);
+    expect(controller.isDirectTouchDispatchActive, isTrue);
+
+    log.clear();
+    // Single-pointer move while live transform is unchanged identity is suppressed.
+    binding.handlePointerEvent(
+      const PointerMoveEvent(
+        pointer: 11,
+        position: Offset(50.0, 60.0),
+        delta: Offset(10.0, 10.0),
+        timeStamp: Duration(milliseconds: 1008),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(touchCalls(), isEmpty);
+    expect(invalidateCalls(), isEmpty);
+
+    // Mutate ancestor RenderTransform to 2x scale mid-gesture (OneSequenceGestureRecognizer still
+    // holds the pointer-down identity transform, so only live RenderAndroidView query sees this!).
+    renderTransform.transform = Matrix4.diagonal3Values(2.0, 2.0, 1.0);
+    binding.handleBeginFrame(const Duration(milliseconds: 1012));
+    binding.handleDrawFrame();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.isDirectTouchDispatchActive, isFalse);
+    expect(invalidateCalls(), hasLength(1));
+    expect((invalidateCalls().single.arguments as Map<dynamic, dynamic>)['id'], viewId);
+    expect((invalidateCalls().single.arguments as Map<dynamic, dynamic>)['downTime'], downTime1);
+
+    log.clear();
+    // Subsequent move at global (80.0, 100.0) immediately echoes with live local coords (40.0, 50.0).
+    binding.handlePointerEvent(
+      const PointerMoveEvent(
+        pointer: 11,
+        position: Offset(80.0, 100.0),
+        delta: Offset(30.0, 40.0),
+        timeStamp: Duration(milliseconds: 1016),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(touchCalls(), hasLength(1));
+    final moveArgs1 = touchCalls().single.arguments as List<dynamic>;
+    expect(moveArgs1[kIndexAction], AndroidViewController.kActionMove);
+    final moveCoords1 = (moveArgs1[kIndexPointerCoords] as List<dynamic>).single as List<dynamic>;
+    expect(moveCoords1[kCoordsIndexX] as double, closeTo(40.0, 1e-3));
+    expect(moveCoords1[kCoordsIndexY] as double, closeTo(50.0, 1e-3));
+
+    binding.handlePointerEvent(
+      const PointerUpEvent(
+        pointer: 11,
+        position: Offset(80.0, 100.0),
+        timeStamp: Duration(milliseconds: 1024),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    // --- Part 2: Mid-gesture ancestor translation shift ---
+    renderTransform.transform = Matrix4.translationValues(10.0, 20.0, 0.0);
+    pumpFrame(phase: EnginePhase.paint);
+
+    log.clear();
+    const down2 = PointerDownEvent(
+      pointer: 12,
+      position: Offset(60.0, 70.0),
+      timeStamp: Duration(milliseconds: 2000),
+    );
+    binding.handlePointerEvent(down2);
+    GestureBinding.instance.gestureArena.close(12);
+    GestureBinding.instance.gestureArena.sweep(12);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(touchCalls(), hasLength(1));
+    final downTime2 = (touchCalls().single.arguments as List<dynamic>)[kIndexDownTime] as int;
+
+    await activateDirectDispatch(downTime2);
+    expect(controller.isDirectTouchDispatchActive, isTrue);
+
+    log.clear();
+    binding.handlePointerEvent(
+      const PointerMoveEvent(
+        pointer: 12,
+        position: Offset(65.0, 75.0),
+        delta: Offset(5.0, 5.0),
+        timeStamp: Duration(milliseconds: 2008),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(touchCalls(), isEmpty);
+
+    // Shift translation from (10, 20) to (30, 50) mid-gesture and pump the frame.
+    renderTransform.transform = Matrix4.translationValues(30.0, 50.0, 0.0);
+    binding.handleBeginFrame(const Duration(milliseconds: 2012));
+    binding.handleDrawFrame();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.isDirectTouchDispatchActive, isFalse);
+    expect(invalidateCalls(), hasLength(1));
+    expect((invalidateCalls().single.arguments as Map<dynamic, dynamic>)['id'], viewId);
+    expect((invalidateCalls().single.arguments as Map<dynamic, dynamic>)['downTime'], downTime2);
+
+    log.clear();
+    // Move pointer to global (90.0, 110.0): under translation (30, 50), local is (60.0, 60.0).
+    binding.handlePointerEvent(
+      const PointerMoveEvent(
+        pointer: 12,
+        position: Offset(90.0, 110.0),
+        delta: Offset(25.0, 35.0),
+        timeStamp: Duration(milliseconds: 2016),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(touchCalls(), hasLength(1));
+    final moveArgs2 = touchCalls().single.arguments as List<dynamic>;
+    expect(moveArgs2[kIndexAction], AndroidViewController.kActionMove);
+    final moveCoords2 = (moveArgs2[kIndexPointerCoords] as List<dynamic>).single as List<dynamic>;
+    expect(moveCoords2[kCoordsIndexX] as double, closeTo(60.0, 1e-3));
+    expect(moveCoords2[kCoordsIndexY] as double, closeTo(60.0, 1e-3));
+
+    binding.handlePointerEvent(
+      const PointerUpEvent(
+        pointer: 12,
+        position: Offset(90.0, 110.0),
+        timeStamp: Duration(milliseconds: 2024),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    // --- Part 3: Pre-touch FIFO invalidation when ancestor has scale 1.05 and touch is at (0, 0) ---
+    renderTransform.transform = Matrix4.diagonal3Values(1.05, 1.05, 1.0);
+    binding.handleBeginFrame(const Duration(milliseconds: 2500));
+    binding.handleDrawFrame();
+    await Future<void>.delayed(Duration.zero);
+
+    log.clear();
+    binding.handlePointerEvent(
+      const PointerDownEvent(pointer: 13, timeStamp: Duration(milliseconds: 3000)),
+    );
+    GestureBinding.instance.gestureArena.close(13);
+    GestureBinding.instance.gestureArena.sweep(13);
+    await Future<void>.delayed(Duration.zero);
+
+    final int invalidateIdx = log.indexWhere(
+      (MethodCall call) => call.method == 'invalidateDirectTouch',
+    );
+    final int touchIdx = log.indexWhere((MethodCall call) => call.method == 'touch');
+    expect(invalidateIdx, isNonNegative);
+    expect(touchIdx, greaterThan(invalidateIdx));
+
+    binding.handlePointerEvent(
+      const PointerUpEvent(pointer: 13, timeStamp: Duration(milliseconds: 3008)),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await controller.dispose();
+  });
+
+  test('RenderAndroidView per-frame direct-touch validation does not stall while setOffset awaits an uncompleted platform reply', () async {
+    final log = <MethodCall>[];
+    final offsetHangs = <Completer<Object?>>[];
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform_views, (
+      MethodCall methodCall,
+    ) async {
+      log.add(methodCall);
+      if (methodCall.method == 'create') {
+        return 1;
+      }
+      if (methodCall.method == 'resize') {
+        final args = methodCall.arguments as Map<dynamic, dynamic>;
+        return <String, dynamic>{'width': args['width'], 'height': args['height']};
+      }
+      if (methodCall.method == 'offset') {
+        final completer = Completer<Object?>();
+        offsetHangs.add(completer);
+        return completer.future;
+      }
+      return null;
+    });
+    addTearDown(() {
+      for (final completer in offsetHangs) {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform_views, null);
+    });
+
+    const viewId = 88;
+    final AndroidViewController controller = PlatformViewsService.initAndroidView(
+      id: viewId,
+      viewType: 'test-tlhc-view',
+      layoutDirection: TextDirection.ltr,
+    );
+    await controller.create(size: const Size(200.0, 200.0));
+    final renderAndroidView = RenderAndroidView(
+      viewController: controller,
+      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+    );
+    final renderTransform = RenderTransform(
+      transform: Matrix4.translationValues(5.0, 5.0, 0.0),
+      child: renderAndroidView,
+    );
+    layout(
+      RenderPositionedBox(
+        alignment: Alignment.topLeft,
+        child: RenderConstrainedBox(
+          additionalConstraints: const BoxConstraints.tightFor(width: 200.0, height: 200.0),
+          child: renderTransform,
+        ),
+      ),
+    );
+    binding.handleBeginFrame(const Duration(milliseconds: 4000));
+    binding.handleDrawFrame();
+    await Future<void>.delayed(Duration.zero);
+    expect(offsetHangs, isNotEmpty);
+    expect(offsetHangs.first.isCompleted, isFalse);
+
+    log.clear();
+    binding.handlePointerEvent(
+      const PointerDownEvent(
+        pointer: 14,
+        position: Offset(25.0, 35.0),
+        timeStamp: Duration(milliseconds: 4100),
+      ),
+    );
+    GestureBinding.instance.gestureArena.close(14);
+    GestureBinding.instance.gestureArena.sweep(14);
+    await Future<void>.delayed(Duration.zero);
+
+    final List<MethodCall> touches = log
+        .where((MethodCall call) => call.method == 'touch')
+        .toList();
+    expect(touches, hasLength(1));
+    final downTime = (touches.single.arguments as List<dynamic>)[1] as int;
+
+    final ByteData activateMsg = SystemChannels.platform_views.codec.encodeMethodCall(
+      MethodCall('directTouchDispatch', <String, dynamic>{
+        'id': viewId,
+        'downTime': downTime,
+        'active': true,
+      }),
+    );
+    await binding.defaultBinaryMessenger.handlePlatformMessage(
+      SystemChannels.platform_views.name,
+      activateMsg,
+      (_) {},
+    );
+    expect(controller.isDirectTouchDispatchActive, isTrue);
+
+    log.clear();
+    // While the previous 'offset' call is still uncompleted, mutate ancestor scale mid-gesture
+    // and pump a single frame with zero new pointer events: invalidateDirectTouch MUST fire!
+    expect(offsetHangs.every((Completer<Object?> c) => !c.isCompleted), isTrue);
+    renderTransform.transform = Matrix4.diagonal3Values(1.5, 1.5, 1.0);
+    binding.handleBeginFrame(const Duration(milliseconds: 4116));
+    binding.handleDrawFrame();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.isDirectTouchDispatchActive, isFalse);
+    final List<MethodCall> invalidates = log
+        .where((MethodCall call) => call.method == 'invalidateDirectTouch')
+        .toList();
+    expect(invalidates, hasLength(1));
+    expect((invalidates.single.arguments as Map<dynamic, dynamic>)['id'], viewId);
+    expect((invalidates.single.arguments as Map<dynamic, dynamic>)['downTime'], downTime);
+
+    binding.handlePointerEvent(
+      const PointerUpEvent(
+        pointer: 14,
+        position: Offset(25.0, 35.0),
+        timeStamp: Duration(milliseconds: 4132),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await controller.dispose();
+  });
+
   test('rejectGesture does not invoke controller when embedderId is 0', () {
     final viewController = FakePlatformViewController(0);
     final renderBox = PlatformViewRenderBox(
