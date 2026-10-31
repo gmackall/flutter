@@ -10,6 +10,8 @@ import android.annotation.SuppressLint;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.MutableContextWrapper;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.util.SparseArray;
 import android.view.Gravity;
@@ -53,6 +55,15 @@ import java.util.List;
  */
 public class PlatformViewsController implements PlatformViewsAccessibilityDelegate {
   private static final String TAG = "PlatformViewsController";
+
+  /**
+   * Optional Android {@code <meta-data>} boolean key that enables workload-scoped, restorable CPU
+   * affinity hints during active TLHC platform view rendering. Defaults to {@code false} when
+   * omitted so ADPF {@code PerformanceHintManager.Session} operates without modifying raw thread
+   * affinity masks.
+   */
+  public static final String META_DATA_ENABLE_TLHC_CPU_AFFINITY =
+      "io.flutter.embedding.android.EnableTlhcCpuAffinity";
 
   // These view types allow out-of-band drawing commands that don't notify the Android view
   // hierarchy.
@@ -710,6 +721,16 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
       textureId = renderTarget.getId();
     }
     viewWrapper.setTouchProcessor(androidTouchProcessor);
+    viewWrapper.setRasterThreadTidSupplier(
+        () -> {
+          if (textureRegistry instanceof FlutterRenderer) {
+            return ((FlutterRenderer) textureRegistry).getRasterThreadTid();
+          }
+          if (flutterJNI != null) {
+            return flutterJNI.getRasterThreadTid();
+          }
+          return 0;
+        });
 
     final FrameLayout.LayoutParams viewWrapperLayoutParams =
         new FrameLayout.LayoutParams(physicalWidth, physicalHeight, Gravity.LEFT | Gravity.TOP);
@@ -893,6 +914,21 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     this.context = context;
     this.textureRegistry = textureRegistry;
     platformViewsChannel = new PlatformViewsChannel(dartExecutor);
+    if (context != null) {
+      try {
+        ApplicationInfo appInfo =
+            context
+                .getPackageManager()
+                .getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA);
+        if (appInfo != null
+            && appInfo.metaData != null
+            && appInfo.metaData.containsKey(META_DATA_ENABLE_TLHC_CPU_AFFINITY)) {
+          PlatformViewWrapper.setCpuAffinityEnabled(
+              appInfo.metaData.getBoolean(META_DATA_ENABLE_TLHC_CPU_AFFINITY, false));
+        }
+      } catch (PackageManager.NameNotFoundException ignored) {
+      }
+    }
   }
 
   /**

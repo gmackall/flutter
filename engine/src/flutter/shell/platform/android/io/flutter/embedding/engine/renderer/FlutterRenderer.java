@@ -111,7 +111,8 @@ public class FlutterRenderer implements TextureRegistry {
   @Nullable private static Handler sharedImageReaderHandler = null;
 
   @NonNull
-  private static Handler getOrCreateSharedImageReaderHandler() {
+  @VisibleForTesting
+  static Handler getOrCreateSharedImageReaderHandler() {
     synchronized (sharedImageReaderLock) {
       if (sharedImageReaderHandler == null
           || sharedImageReaderThread == null
@@ -195,6 +196,43 @@ public class FlutterRenderer implements TextureRegistry {
         producer.notifiedDestroy = false;
         producer.callback.onSurfaceAvailable();
       }
+    }
+  }
+
+  @VisibleForTesting
+  static void stopSharedImageReaderThreadForTest() throws InterruptedException {
+    final HandlerThread threadToJoin;
+    synchronized (sharedImageReaderLock) {
+      threadToJoin = sharedImageReaderThread;
+      sharedImageReaderThread = null;
+      sharedImageReaderHandler = null;
+    }
+    if (threadToJoin != null) {
+      threadToJoin.quitSafely();
+      threadToJoin.join(1000L);
+    }
+  }
+
+  /**
+   * Returns the Linux TID of this {@code FlutterRenderer}'s owning engine raster thread, or {@code
+   * 0} if the underlying {@link FlutterJNI} is not attached.
+   */
+  @androidx.annotation.RestrictTo(androidx.annotation.RestrictTo.Scope.LIBRARY)
+  public int getRasterThreadTid() {
+    return flutterJNI.getRasterThreadTid();
+  }
+
+  /**
+   * Returns the Linux TID of the shared background {@code FlutterImageReader} thread if running, or
+   * {@code 0} if it has not been started or has exited. Does not mutate thread CPU affinity.
+   */
+  @androidx.annotation.RestrictTo(androidx.annotation.RestrictTo.Scope.LIBRARY)
+  public static int getSharedImageReaderTid() {
+    synchronized (sharedImageReaderLock) {
+      if (sharedImageReaderThread == null || !sharedImageReaderThread.isAlive()) {
+        return 0;
+      }
+      return Math.max(0, sharedImageReaderThread.getThreadId());
     }
   }
 
