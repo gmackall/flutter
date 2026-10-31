@@ -497,6 +497,255 @@ void main() {
       expect(moveArgs[kAndroidMotionEventListIndexPointerCount], equals(pointerCount));
     });
 
+    testWidgets('directTouchDispatch suppresses single-pointer move echoes until the gesture ends', (
+      WidgetTester tester,
+    ) async {
+      final log = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform_views,
+        (MethodCall methodCall) async {
+          log.add(methodCall);
+          return null;
+        },
+      );
+      final AndroidViewController viewController = PlatformViewsService.initSurfaceAndroidView(
+        id: 9,
+        viewType: 'web',
+        layoutDirection: TextDirection.ltr,
+      );
+      viewController.pointTransformer = (Offset offset) => offset;
+      const kIndexAction = 3;
+      List<int> touchActions() => log
+          .where((MethodCall call) => call.method == 'touch')
+          .map<int>((MethodCall call) => (call.arguments as List<dynamic>)[kIndexAction] as int)
+          .toList();
+
+      Future<void> notifyDirectDispatch(int id, int downTime, {bool? active}) async {
+        final args = <String, dynamic>{'id': id, 'downTime': downTime};
+        if (active != null) {
+          args['active'] = active;
+        }
+        final ByteData message = SystemChannels.platform_views.codec.encodeMethodCall(
+          MethodCall('directTouchDispatch', args),
+        );
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          SystemChannels.platform_views.name,
+          message,
+          (_) {},
+        );
+      }
+
+      // Gesture 1: the embedding takes over after the down event.
+      const down1 = Duration(milliseconds: 1000);
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 1, position: Offset(10, 10), timeStamp: down1),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(11, 11), timeStamp: Duration(milliseconds: 1004)),
+      );
+      // A notification for another view or another gesture is ignored.
+      await notifyDirectDispatch(8, 1000);
+      await notifyDirectDispatch(9, 999);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(12, 12), timeStamp: Duration(milliseconds: 1008)),
+      );
+      await notifyDirectDispatch(9, 1000);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(13, 13), timeStamp: Duration(milliseconds: 1012)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 1, position: Offset(14, 14), timeStamp: Duration(milliseconds: 1016)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerUpEvent(pointer: 1, position: Offset(14, 14), timeStamp: Duration(milliseconds: 1020)),
+      );
+      expect(touchActions(), <int>[
+        AndroidViewController.kActionDown,
+        AndroidViewController.kActionMove,
+        AndroidViewController.kActionMove,
+        // Moves after the notification are delivered by the embedding and not echoed.
+        AndroidViewController.kActionUp,
+      ]);
+
+      // A late directTouchDispatch(active: true) arriving after PointerUpEvent is ignored.
+      await notifyDirectDispatch(9, 1000, active: true);
+
+      // Gesture 2: a second pointer hands the gesture back to the framework, and the deferred
+      // single-pointer move is flushed before ACTION_POINTER_DOWN is constructed.
+      log.clear();
+      const down2 = Duration(milliseconds: 2000);
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 2, position: Offset(10, 10), timeStamp: down2),
+      );
+      await notifyDirectDispatch(9, 2000);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 2, position: Offset(25, 35), timeStamp: Duration(milliseconds: 2004)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 3, position: Offset(50, 60), timeStamp: Duration(milliseconds: 2008)),
+      );
+      // Verify the deferred move at (25, 35) was flushed into pointer 2's coordinates on the
+      // ACTION_POINTER_DOWN event.
+      const kIndexPointerCoords = 6;
+      const kCoordsIndexX = 7;
+      const kCoordsIndexY = 8;
+      final pointerDownArgs = log.last.arguments as List<dynamic>;
+      final pointerDownCoords = pointerDownArgs[kIndexPointerCoords] as List<dynamic>;
+      expect((pointerDownCoords[0] as List<dynamic>)[kCoordsIndexX], 25.0);
+      expect((pointerDownCoords[0] as List<dynamic>)[kCoordsIndexY], 35.0);
+
+      const kPointerDataFlagMultiple = 2;
+      const int platformData = kPointerDataFlagMultiple | (2 << 8);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 2, position: Offset(12, 12), timeStamp: Duration(milliseconds: 2012), platformData: platformData),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 3, position: Offset(51, 51), timeStamp: Duration(milliseconds: 2012), platformData: platformData),
+      );
+      expect(touchActions(), <int>[
+        AndroidViewController.kActionDown,
+        // Single-pointer move during direct dispatch: not echoed.
+        AndroidViewController.pointerAction(1, AndroidViewController.kActionPointerDown),
+        // Multi-pointer moves are echoed again.
+        AndroidViewController.kActionMove,
+      ]);
+      await viewController.dispatchPointerEvent(
+        const PointerUpEvent(pointer: 3, position: Offset(51, 51), timeStamp: Duration(milliseconds: 2016)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerUpEvent(pointer: 2, position: Offset(12, 12), timeStamp: Duration(milliseconds: 2020)),
+      );
+
+      // Gesture 3: when the embedding exits direct dispatch mid-gesture (active: false, e.g. a
+      // second finger was rejected by the PV in Dart or an in-flight echo mismatched transform),
+      // single-pointer move echoes resume immediately.
+      log.clear();
+      const down3 = Duration(milliseconds: 2500);
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(pointer: 4, position: Offset(10, 10), timeStamp: down3),
+      );
+      await notifyDirectDispatch(9, 2500, active: true);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 4, position: Offset(15, 15), timeStamp: Duration(milliseconds: 2504)),
+      );
+      // Embedding deactivates direct dispatch for downTime 2500.
+      await notifyDirectDispatch(9, 2500, active: false);
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(pointer: 4, position: Offset(20, 20), timeStamp: Duration(milliseconds: 2508)),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerUpEvent(pointer: 4, position: Offset(20, 20), timeStamp: Duration(milliseconds: 2512)),
+      );
+      expect(touchActions(), <int>[
+        AndroidViewController.kActionDown,
+        // Move at 2504 was suppressed while active, move at 2508 is echoed after active: false.
+        AndroidViewController.kActionMove,
+        AndroidViewController.kActionUp,
+      ]);
+
+      // Gesture 4: after dispose the notification is ignored (no callback registered).
+      await viewController.dispose();
+      await notifyDirectDispatch(9, 3000);
+    });
+
+    testWidgets('platform_views_2 handles directTouchDispatch and viewFocused for HCPP views', (
+      WidgetTester tester,
+    ) async {
+      final log = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform_views_2,
+        (MethodCall methodCall) async {
+          log.add(methodCall);
+          return null;
+        },
+      );
+      var focusCalled = false;
+      final HybridAndroidViewController viewController = PlatformViewsService.initHybridAndroidView(
+        id: 19,
+        viewType: 'web',
+        layoutDirection: TextDirection.ltr,
+        onFocus: () {
+          focusCalled = true;
+        },
+      );
+      viewController.pointTransformer = (Offset offset) => offset;
+
+      final ByteData focusMessage = SystemChannels.platform_views_2.codec.encodeMethodCall(
+        const MethodCall('viewFocused', 19),
+      );
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.platform_views_2.name,
+        focusMessage,
+        (_) {},
+      );
+      expect(focusCalled, isTrue);
+
+      const kIndexAction = 3;
+      List<int> touchActions() => log
+          .where((MethodCall call) => call.method == 'touch')
+          .map<int>((MethodCall call) => (call.arguments as List<dynamic>)[kIndexAction] as int)
+          .toList();
+
+      await viewController.dispatchPointerEvent(
+        const PointerDownEvent(
+          pointer: 1,
+          position: Offset(10, 10),
+          timeStamp: Duration(milliseconds: 4000),
+        ),
+      );
+      final ByteData activateMessage = SystemChannels.platform_views_2.codec.encodeMethodCall(
+        const MethodCall('directTouchDispatch', <String, dynamic>{
+          'id': 19,
+          'downTime': 4000,
+          'active': true,
+        }),
+      );
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.platform_views_2.name,
+        activateMessage,
+        (_) {},
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(
+          pointer: 1,
+          position: Offset(12, 12),
+          timeStamp: Duration(milliseconds: 4004),
+        ),
+      );
+      final ByteData deactivateMessage = SystemChannels.platform_views_2.codec.encodeMethodCall(
+        const MethodCall('directTouchDispatch', <String, dynamic>{
+          'id': 19,
+          'downTime': 4000,
+          'active': false,
+        }),
+      );
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.platform_views_2.name,
+        deactivateMessage,
+        (_) {},
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerMoveEvent(
+          pointer: 1,
+          position: Offset(14, 14),
+          timeStamp: Duration(milliseconds: 4008),
+        ),
+      );
+      await viewController.dispatchPointerEvent(
+        const PointerUpEvent(
+          pointer: 1,
+          position: Offset(14, 14),
+          timeStamp: Duration(milliseconds: 4012),
+        ),
+      );
+      expect(touchActions(), <int>[
+        AndroidViewController.kActionDown,
+        AndroidViewController.kActionMove,
+        AndroidViewController.kActionUp,
+      ]);
+      await viewController.dispose();
+    });
+
     // Regression test for https://github.com/flutter/flutter/issues/191105.
     testWidgets('motion event converter orders pointers by Android pointer id', (
       WidgetTester tester,

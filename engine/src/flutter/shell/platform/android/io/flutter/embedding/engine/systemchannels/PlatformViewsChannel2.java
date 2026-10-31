@@ -12,6 +12,7 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.StandardMethodCodec;
 import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -46,6 +47,39 @@ public class PlatformViewsChannel2 {
       return;
     }
     channel.invokeMethod("viewFocused", viewId);
+  }
+
+  /**
+   * Tells the framework that the remainder of the given touch gesture is being delivered directly
+   * to the platform view by the embedding, so the framework can stop echoing the gesture's
+   * single-pointer {@code ACTION_MOVE} events back through the {@code touch} method.
+   *
+   * @param viewId The platform view.
+   * @param downTime The {@code MotionEvent#getDownTime()} of the gesture.
+   */
+  public void invokeDirectTouchDispatch(int viewId, long downTime) {
+    invokeDirectTouchDispatch(viewId, downTime, true);
+  }
+
+  /**
+   * Tells the framework whether the given touch gesture is currently being delivered directly to
+   * the platform view by the embedding.
+   *
+   * @param viewId The platform view.
+   * @param downTime The {@code MotionEvent#getDownTime()} of the gesture.
+   * @param active True when direct dispatch starts for {@code downTime}; false if the embedding
+   *     exits direct dispatch mid-gesture (e.g. on multi-touch or a mid-gesture transform change)
+   *     so the framework resumes echoing single-pointer {@code ACTION_MOVE} events.
+   */
+  public void invokeDirectTouchDispatch(int viewId, long downTime, boolean active) {
+    if (channel == null) {
+      return;
+    }
+    final Map<String, Object> args = new HashMap<>();
+    args.put("id", viewId);
+    args.put("downTime", downTime);
+    args.put("active", active);
+    channel.invokeMethod("directTouchDispatch", args);
   }
 
   private static String detailedExceptionString(Exception exception) {

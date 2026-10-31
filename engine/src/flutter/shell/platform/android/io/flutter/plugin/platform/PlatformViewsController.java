@@ -286,6 +286,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
             viewWrapper.removeAllViews();
             viewWrapper.release();
             viewWrapper.unsetOnDescendantFocusChangeListener();
+            viewWrapper.setOnDirectTouchDeactivatedListener(null);
 
             final ViewGroup wrapperParent = (ViewGroup) viewWrapper.getParent();
             if (wrapperParent != null) {
@@ -299,6 +300,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
           if (parentView != null) {
             parentView.removeAllViews();
             parentView.unsetOnDescendantFocusChangeListener();
+            parentView.setOnDirectTouchDeactivatedListener(null);
 
             final ViewGroup mutatorViewParent = (ViewGroup) parentView.getParent();
             if (mutatorViewParent != null) {
@@ -430,6 +432,46 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
             return;
           }
           final MotionEvent event = toMotionEvent(density, touch, false);
+          final PlatformViewWrapper viewWrapper = viewWrappers.get(viewId);
+          if (viewWrapper != null) {
+            if (viewWrapper.isDirectlyDispatched(event)) {
+              // Already delivered synchronously by the wrapper (or superseded by a newer event
+              // that was); dispatching it again would deliver stale/duplicate motion.
+              viewWrapper.verifyDirectlyDispatchedEcho(event);
+              return;
+            }
+            view.dispatchTouchEvent(event);
+            final int action = event.getActionMasked();
+            if (action != MotionEvent.ACTION_UP
+                && action != MotionEvent.ACTION_CANCEL
+                && event.getPointerCount() == 1) {
+              // The framework only forwards touches once the platform view has won the gesture
+              // arena, so the first forwarded event of a gesture is the signal to switch the
+              // remainder of that gesture to direct dispatch (if the coordinates agree, see
+              // PlatformViewDirectTouchDispatcher).
+              if (viewWrapper.onPlatformViewWonGesture(event)) {
+                platformViewsChannel.invokeDirectTouchDispatch(viewId, event.getDownTime(), true);
+              }
+            }
+            return;
+          }
+          final FlutterMutatorView parentView = platformViewParent.get(viewId);
+          if (parentView != null) {
+            if (parentView.isDirectlyDispatched(event)) {
+              parentView.verifyDirectlyDispatchedEcho(event);
+              return;
+            }
+            view.dispatchTouchEvent(event);
+            final int action = event.getActionMasked();
+            if (action != MotionEvent.ACTION_UP
+                && action != MotionEvent.ACTION_CANCEL
+                && event.getPointerCount() == 1) {
+              if (parentView.onPlatformViewWonGesture(event)) {
+                platformViewsChannel.invokeDirectTouchDispatch(viewId, event.getDownTime(), true);
+              }
+            }
+            return;
+          }
           view.dispatchTouchEvent(event);
         }
 
@@ -691,6 +733,12 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
             platformViewsChannel.invokeViewFocused(request.viewId);
           } else if (textInputPlugin != null) {
             textInputPlugin.clearPlatformViewClient(request.viewId);
+          }
+        });
+    viewWrapper.setOnDirectTouchDeactivatedListener(
+        downTime -> {
+          if (platformViewsChannel != null) {
+            platformViewsChannel.invokeDirectTouchDispatch(request.viewId, downTime, false);
           }
         });
 
@@ -1208,6 +1256,12 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
             platformViewsChannel.invokeViewFocused(viewId);
           } else if (textInputPlugin != null) {
             textInputPlugin.clearPlatformViewClient(viewId);
+          }
+        });
+    parentView.setOnDirectTouchDeactivatedListener(
+        downTime -> {
+          if (platformViewsChannel != null) {
+            platformViewsChannel.invokeDirectTouchDispatch(viewId, downTime, false);
           }
         });
 

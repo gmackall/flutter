@@ -533,6 +533,12 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
             textInputPlugin.clearPlatformViewClient(viewId);
           }
         });
+    parentView.setOnDirectTouchDeactivatedListener(
+        downTime -> {
+          if (platformViewsChannel != null) {
+            platformViewsChannel.invokeDirectTouchDispatch(viewId, downTime, false);
+          }
+        });
 
     platformViewParent.put(viewId, parentView);
 
@@ -1117,6 +1123,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           if (parentView != null) {
             parentView.removeAllViews();
             parentView.unsetOnDescendantFocusChangeListener();
+            parentView.setOnDirectTouchDeactivatedListener(null);
 
             final ViewGroup mutatorViewParent = (ViewGroup) parentView.getParent();
             if (mutatorViewParent != null) {
@@ -1142,6 +1149,29 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
             return;
           }
           final MotionEvent event = toMotionEvent(density, touch);
+          final FlutterMutatorView parentView = platformViewParent.get(viewId);
+          if (parentView != null) {
+            if (parentView.isDirectlyDispatched(event)) {
+              // Already delivered synchronously by the mutator view (or superseded by a newer
+              // event that was); dispatching it again would deliver stale/duplicate motion.
+              parentView.verifyDirectlyDispatchedEcho(event);
+              return;
+            }
+            view.dispatchTouchEvent(event);
+            final int action = event.getActionMasked();
+            if (action != MotionEvent.ACTION_UP
+                && action != MotionEvent.ACTION_CANCEL
+                && event.getPointerCount() == 1) {
+              // The framework only forwards touches once the platform view has won the gesture
+              // arena, so the first forwarded event of a gesture is the signal to switch the
+              // remainder of that gesture to direct dispatch (if the coordinates agree, see
+              // PlatformViewDirectTouchDispatcher).
+              if (parentView.onPlatformViewWonGesture(event)) {
+                platformViewsChannel.invokeDirectTouchDispatch(viewId, event.getDownTime(), true);
+              }
+            }
+            return;
+          }
           view.dispatchTouchEvent(event);
         }
 

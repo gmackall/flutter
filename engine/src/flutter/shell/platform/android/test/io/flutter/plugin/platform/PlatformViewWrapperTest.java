@@ -409,7 +409,8 @@ public class PlatformViewWrapperTest {
         MotionEvent.obtain(100, 101, MotionEvent.ACTION_MOVE, 2.0f, 2.0f, 0);
     wrapper.onTouchEvent(moveEvent);
 
-    verify(touchProcessor, times(2)).onTouchEvent(any(MotionEvent.class), matrixCaptor.capture());
+    verify(touchProcessor, times(2))
+        .onTouchEvent(any(MotionEvent.class), matrixCaptor.capture(), anyBoolean());
     final List<Matrix> matrices = matrixCaptor.getAllValues();
     final float[] values = new float[9];
     matrices.get(0).getValues(values);
@@ -418,6 +419,257 @@ public class PlatformViewWrapperTest {
     matrices.get(1).getValues(values);
     assertEquals(15f, values[Matrix.MTRANS_X], 0f);
     assertEquals(26f, values[Matrix.MTRANS_Y], 0f);
+  }
+
+  /** Child view that records the MotionEvents it receives. */
+  private static class RecordingView extends View {
+    final java.util.ArrayList<MotionEvent> events = new java.util.ArrayList<>();
+
+    RecordingView(Context context) {
+      super(context);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+      events.add(MotionEvent.obtain(event));
+      return true;
+    }
+  }
+
+  private static MotionEvent move(long downTime, long eventTime) {
+    return MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_MOVE, 10.0f, 10.0f, 0);
+  }
+
+  @Test
+  public void directDispatch_deliversRemainderOfGestureSynchronouslyAfterPlatformViewWins() {
+    final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    final RecordingView child = new RecordingView(ctx);
+    wrapper.addView(child);
+    wrapper.setTouchProcessor(touchProcessor);
+
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 0f, 0f, 0);
+    wrapper.onTouchEvent(down);
+    // Arena unresolved: nothing is delivered directly, the event goes to the framework only.
+    assertFalse(wrapper.isDirectDispatchActive());
+    assertEquals(0, child.events.size());
+    assertFalse(wrapper.isDirectlyDispatched(down));
+
+    // A move that is still in flight through the framework.
+    final MotionEvent move1 = move(100, 101);
+    wrapper.onTouchEvent(move1);
+    assertEquals(0, child.events.size());
+
+    // The framework forwarded the DOWN: the platform view won the arena.
+    wrapper.onPlatformViewWonGesture(down);
+    assertTrue(wrapper.isDirectDispatchActive());
+    // The in-flight move's echo has not been superseded yet, so it must still be delivered.
+    assertFalse(wrapper.isDirectlyDispatched(move1));
+
+    // Subsequent events are delivered directly, and still forwarded to the framework.
+    final MotionEvent move2 = move(100, 102);
+    wrapper.onTouchEvent(move2);
+    assertEquals(1, child.events.size());
+    assertEquals(102, child.events.get(0).getEventTime());
+    // Events that went through the round trip are tracked; the directly delivered one is not.
+    verify(touchProcessor, times(2))
+        .onTouchEvent(any(MotionEvent.class), any(Matrix.class), eq(true));
+    verify(touchProcessor, times(1)).onTouchEvent(eq(move2), any(Matrix.class), eq(false));
+
+    // Echoes of events older than (or equal to) the newest direct delivery are dropped.
+    assertTrue(wrapper.isDirectlyDispatched(move1));
+    assertTrue(wrapper.isDirectlyDispatched(move2));
+    assertFalse(wrapper.isDirectlyDispatched(move(100, 103)));
+    // Echoes belonging to another gesture are never dropped.
+    assertFalse(wrapper.isDirectlyDispatched(move(200, 102)));
+
+    // UP ends direct dispatch, but is itself delivered directly.
+    final MotionEvent up = MotionEvent.obtain(100, 110, MotionEvent.ACTION_UP, 10f, 10f, 0);
+    wrapper.onTouchEvent(up);
+    assertEquals(2, child.events.size());
+    assertEquals(MotionEvent.ACTION_UP, child.events.get(1).getActionMasked());
+    assertFalse(wrapper.isDirectDispatchActive());
+    assertTrue(wrapper.isDirectlyDispatched(move(100, 105)));
+
+    // A new gesture starts buffered again.
+    final MotionEvent down2 = MotionEvent.obtain(200, 200, MotionEvent.ACTION_DOWN, 0f, 0f, 0);
+    wrapper.onTouchEvent(down2);
+    wrapper.onTouchEvent(move(200, 201));
+    assertEquals(2, child.events.size());
+    assertFalse(wrapper.isDirectlyDispatched(move(100, 105)));
+  }
+
+  @Test
+  public void directDispatch_ignoresWinForOtherOrFinishedGesture() {
+    final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    final RecordingView child = new RecordingView(ctx);
+    wrapper.addView(child);
+    wrapper.setTouchProcessor(touchProcessor);
+
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 0f, 0f, 0);
+    wrapper.onTouchEvent(down);
+    // Stale win for a previous gesture.
+    wrapper.onPlatformViewWonGesture(
+        MotionEvent.obtain(50, 50, MotionEvent.ACTION_DOWN, 0f, 0f, 0));
+    assertFalse(wrapper.isDirectDispatchActive());
+    wrapper.onTouchEvent(move(100, 101));
+    assertEquals(0, child.events.size());
+
+    // Win arriving after the gesture ended.
+    wrapper.onTouchEvent(MotionEvent.obtain(100, 110, MotionEvent.ACTION_UP, 0f, 0f, 0));
+    wrapper.onPlatformViewWonGesture(down);
+    assertFalse(wrapper.isDirectDispatchActive());
+  }
+
+  @Test
+  public void directDispatch_handsMultiTouchBackToTheFramework() {
+    final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    final RecordingView child = new RecordingView(ctx);
+    wrapper.addView(child);
+    wrapper.setTouchProcessor(touchProcessor);
+
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 0f, 0f, 0);
+    wrapper.onTouchEvent(down);
+    wrapper.onPlatformViewWonGesture(down);
+    wrapper.onTouchEvent(move(100, 101));
+    assertEquals(1, child.events.size());
+
+    final MotionEvent.PointerProperties[] props = {
+      new MotionEvent.PointerProperties(), new MotionEvent.PointerProperties()
+    };
+    props[0].id = 0;
+    props[1].id = 1;
+    final MotionEvent.PointerCoords[] coords = {
+      new MotionEvent.PointerCoords(), new MotionEvent.PointerCoords()
+    };
+    final MotionEvent pointerDown =
+        MotionEvent.obtain(
+            100,
+            102,
+            MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+            2,
+            props,
+            coords,
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            0,
+            0);
+    wrapper.onTouchEvent(pointerDown);
+    // Not delivered directly; the framework round trip owns the rest of the gesture.
+    assertEquals(1, child.events.size());
+    assertFalse(wrapper.isDirectDispatchActive());
+    assertFalse(wrapper.isDirectlyDispatched(pointerDown));
+    // ...but the echo of the move that was already delivered directly is still dropped.
+    assertTrue(wrapper.isDirectlyDispatched(move(100, 101)));
+    // A later win notification for the same gesture does not re-enable direct dispatch.
+    wrapper.onPlatformViewWonGesture(down);
+    assertFalse(wrapper.isDirectDispatchActive());
+  }
+
+  @Test
+  public void directDispatch_staysOffWhenFrameworkCoordinatesDiffer() {
+    // A Flutter ancestor scales the platform view: the framework's PV-local coordinates (what the
+    // round trip delivers) are not the wrapper-local coordinates of the raw event.
+    final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    final RecordingView child = new RecordingView(ctx);
+    wrapper.addView(child);
+    wrapper.setTouchProcessor(touchProcessor);
+
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 10f, 20f, 0);
+    wrapper.onTouchEvent(down);
+    final MotionEvent scaledEcho =
+        MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 20f, 40f, 0);
+    wrapper.onPlatformViewWonGesture(scaledEcho);
+    assertFalse(wrapper.isDirectDispatchActive());
+    wrapper.onTouchEvent(MotionEvent.obtain(100, 101, MotionEvent.ACTION_MOVE, 11f, 21f, 0));
+    assertEquals(0, child.events.size());
+
+    // Sub-pixel differences (density rounding) are tolerated.
+    final MotionEvent down2 = MotionEvent.obtain(200, 200, MotionEvent.ACTION_DOWN, 10f, 20f, 0);
+    wrapper.onTouchEvent(down2);
+    wrapper.onPlatformViewWonGesture(
+        MotionEvent.obtain(200, 200, MotionEvent.ACTION_DOWN, 10.6f, 19.5f, 0));
+    assertTrue(wrapper.isDirectDispatchActive());
+    final MotionEvent move = MotionEvent.obtain(200, 201, MotionEvent.ACTION_MOVE, 11f, 21f, 0);
+    wrapper.onTouchEvent(move);
+    assertEquals(1, child.events.size());
+
+    // If the transform changes mid-gesture, the echo of a directly delivered event no longer
+    // matches and the remainder of the gesture falls back to the round trip.
+    final java.util.ArrayList<Long> deactivated = new java.util.ArrayList<>();
+    wrapper.setOnDirectTouchDeactivatedListener(deactivated::add);
+    assertTrue(
+        wrapper.verifyDirectlyDispatchedEcho(
+            MotionEvent.obtain(200, 201, MotionEvent.ACTION_MOVE, 22f, 42f, 0)));
+    assertFalse(wrapper.isDirectDispatchActive());
+    assertEquals(1, deactivated.size());
+    assertEquals(200L, (long) deactivated.get(0));
+    wrapper.onTouchEvent(MotionEvent.obtain(200, 202, MotionEvent.ACTION_MOVE, 12f, 22f, 0));
+    assertEquals(1, child.events.size());
+    // ...while echoes of events that were already delivered directly are still dropped.
+    assertTrue(wrapper.isDirectlyDispatched(move));
+  }
+
+  @Test
+  public void directDispatch_forwardsUnmutatedEventToTouchProcessorBeforeChildMutatesIt() {
+    final float[] capturedProcessorCoords = new float[2];
+    final AndroidTouchProcessor touchProcessor =
+        new AndroidTouchProcessor(mock(FlutterRenderer.class), true) {
+          @Override
+          public boolean onTouchEvent(
+              MotionEvent event, Matrix transformMatrix, boolean trackEvent) {
+            capturedProcessorCoords[0] = event.getX();
+            capturedProcessorCoords[1] = event.getY();
+            return true;
+          }
+        };
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    final View mutatingChild =
+        new View(ctx) {
+          @Override
+          public boolean dispatchTouchEvent(MotionEvent event) {
+            event.offsetLocation(500f, 600f);
+            return true;
+          }
+        };
+    wrapper.addView(mutatingChild);
+    wrapper.setTouchProcessor(touchProcessor);
+
+    final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 10f, 20f, 0);
+    wrapper.onTouchEvent(down);
+    wrapper.onPlatformViewWonGesture(down);
+
+    final MotionEvent move = MotionEvent.obtain(100, 101, MotionEvent.ACTION_MOVE, 15f, 25f, 0);
+    wrapper.onTouchEvent(move);
+    assertEquals(15f, capturedProcessorCoords[0], 0.001f);
+    assertEquals(25f, capturedProcessorCoords[1], 0.001f);
+  }
+
+  @Test
+  public void directDispatch_canBeDisabled() {
+    final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
+    final PlatformViewWrapper wrapper = new PlatformViewWrapper(ctx);
+    final RecordingView child = new RecordingView(ctx);
+    wrapper.addView(child);
+    wrapper.setTouchProcessor(touchProcessor);
+    PlatformViewDirectTouchDispatcher.enabled = false;
+    try {
+      final MotionEvent down = MotionEvent.obtain(100, 100, MotionEvent.ACTION_DOWN, 0f, 0f, 0);
+      wrapper.onTouchEvent(down);
+      wrapper.onPlatformViewWonGesture(down);
+      wrapper.onTouchEvent(move(100, 101));
+      assertFalse(wrapper.isDirectDispatchActive());
+      assertEquals(0, child.events.size());
+    } finally {
+      PlatformViewDirectTouchDispatcher.enabled = true;
+    }
   }
 
   @Implements(ViewGroup.class)

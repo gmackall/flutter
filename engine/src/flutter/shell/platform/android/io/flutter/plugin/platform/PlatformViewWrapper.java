@@ -246,6 +246,56 @@ public class PlatformViewWrapper extends FrameLayout {
     requestUnbufferedDispatch(event);
   }
 
+  /**
+   * Delivers the remainder of a gesture synchronously to the embedded view once the framework has
+   * resolved the gesture arena in the platform view's favour. See {@link
+   * PlatformViewDirectTouchDispatcher}.
+   */
+  private final PlatformViewDirectTouchDispatcher directTouchDispatcher =
+      new PlatformViewDirectTouchDispatcher();
+
+  /**
+   * Sets a listener invoked when direct touch dispatch transitions from active to inactive
+   * mid-gesture (see {@link
+   * PlatformViewDirectTouchDispatcher#setOnDirectTouchDeactivatedListener}).
+   */
+  public void setOnDirectTouchDeactivatedListener(
+      @Nullable PlatformViewDirectTouchDispatcher.OnDirectTouchDeactivatedListener listener) {
+    directTouchDispatcher.setOnDirectTouchDeactivatedListener(listener);
+  }
+
+  /**
+   * Informs this view that the Flutter framework started forwarding the given gesture to the
+   * platform view (the platform view won the gesture arena).
+   *
+   * @param forwardedEvent The first event of the gesture forwarded by the framework, with the
+   *     framework's PV-local coordinates.
+   * @return true if this call activated direct dispatch for {@code forwardedEvent}'s gesture.
+   */
+  public boolean onPlatformViewWonGesture(@NonNull MotionEvent forwardedEvent) {
+    return directTouchDispatcher.onPlatformViewWonGesture(
+        gestureTracker.isGestureActive(), gestureTracker.getCurrentDownTime(), forwardedEvent);
+  }
+
+  /** See {@link PlatformViewDirectTouchDispatcher#isDirectlyDispatched(MotionEvent)}. */
+  public boolean isDirectlyDispatched(@NonNull MotionEvent echoedEvent) {
+    return directTouchDispatcher.isDirectlyDispatched(echoedEvent);
+  }
+
+  /** See {@link PlatformViewDirectTouchDispatcher#verifyDirectlyDispatchedEcho(MotionEvent)}. */
+  public boolean verifyDirectlyDispatchedEcho(@NonNull MotionEvent echoedEvent) {
+    return directTouchDispatcher.verifyDirectlyDispatchedEcho(echoedEvent);
+  }
+
+  /** Whether the active gesture is currently delivered directly to the embedded view. */
+  public boolean isDirectDispatchActive() {
+    return directTouchDispatcher.isActive();
+  }
+
+  private Matrix cachedScreenMatrix = null;
+  private int cachedScreenMatrixLeft = Integer.MIN_VALUE;
+  private int cachedScreenMatrixTop = Integer.MIN_VALUE;
+
   @Override
   @SuppressLint("ClickableViewAccessibility")
   public boolean onTouchEvent(@NonNull MotionEvent event) {
@@ -253,11 +303,30 @@ public class PlatformViewWrapper extends FrameLayout {
       return super.onTouchEvent(event);
     }
     gestureTracker.onTouchEvent(event, this::requestUnbuffered);
+    final View embeddedView = getChildAt(0);
+    final boolean deliverDirectly = directTouchDispatcher.prepareTouchEvent(event, embeddedView);
     // The parent transformed this event into this view's coordinate space using the view's current
     // position, so the same position maps it back into the parent's (the FlutterView's) space.
-    final Matrix screenMatrix = new Matrix();
-    screenMatrix.postTranslate(getLeft(), getTop());
-    return touchProcessor.onTouchEvent(event, screenMatrix);
+    if (cachedScreenMatrix == null
+        || getLeft() != cachedScreenMatrixLeft
+        || getTop() != cachedScreenMatrixTop) {
+      cachedScreenMatrix = new Matrix();
+      cachedScreenMatrix.postTranslate(getLeft(), getTop());
+      cachedScreenMatrixLeft = getLeft();
+      cachedScreenMatrixTop = getTop();
+    }
+    // Forward to touchProcessor before embeddedView.dispatchTouchEvent(event) so a child view that
+    // mutates its MotionEvent in place cannot corrupt the coordinates sent to Flutter. Events that
+    // are delivered directly need no tracked copy: the framework is told not to echo them (see
+    // PlatformViewsChannel#invokeDirectTouchDispatch), and any echo that still arrives is dropped
+    // by PlatformViewsController regardless.
+    final boolean handled =
+        touchProcessor.onTouchEvent(
+            event, cachedScreenMatrix, /*trackEvent=*/ !deliverDirectly);
+    if (deliverDirectly) {
+      embeddedView.dispatchTouchEvent(event);
+    }
+    return handled;
   }
 
   @VisibleForTesting

@@ -72,6 +72,7 @@ typedef PlatformViewCreatedCallback = void Function(int id);
 class PlatformViewsService {
   PlatformViewsService._() {
     SystemChannels.platform_views.setMethodCallHandler(_onMethodCall);
+    SystemChannels.platform_views_2.setMethodCallHandler(_onMethodCall);
   }
 
   static final PlatformViewsService _instance = PlatformViewsService._();
@@ -83,6 +84,15 @@ class PlatformViewsService {
         if (_focusCallbacks.containsKey(id)) {
           _focusCallbacks[id]!();
         }
+      case 'directTouchDispatch':
+        // The Android embedding notifies whether it is delivering the remainder of this gesture
+        // to the platform view directly; see AndroidViewController._onDirectTouchDispatch.
+        final args = call.arguments as Map<dynamic, dynamic>;
+        final bool active = (args['active'] as bool?) ?? true;
+        _directTouchDispatchCallbacks[args['id'] as int]?.call(
+          args['downTime'] as int,
+          active: active,
+        );
       default:
         throw UnimplementedError(
           "${call.method} was invoked but isn't implemented by PlatformViewsService",
@@ -95,6 +105,11 @@ class PlatformViewsService {
   ///
   /// The callbacks are invoked when the platform view asks to be focused.
   final Map<int, VoidCallback> _focusCallbacks = <int, VoidCallback>{};
+
+  /// Maps Android platform view IDs to the callback invoked when the embedding
+  /// starts or stops delivering a touch gesture directly to the platform view.
+  final Map<int, void Function(int downTime, {required bool active})>
+  _directTouchDispatchCallbacks = <int, void Function(int downTime, {required bool active})>{};
 
   /// {@template flutter.services.PlatformViewsService.initAndroidView}
   /// Creates a controller for a new Android view.
@@ -753,7 +768,9 @@ abstract class AndroidViewController extends PlatformViewController {
   }) : assert(creationParams == null || creationParamsCodec != null),
        _creationParams = creationParams == null
            ? null
-           : _CreationParams(creationParams, creationParamsCodec!);
+           : _CreationParams(creationParams, creationParamsCodec!) {
+    PlatformViewsService._instance._directTouchDispatchCallbacks[viewId] = _onDirectTouchDispatch;
+  }
 
   /// Action code for when a primary pointer touched the screen.
   ///
@@ -814,6 +831,34 @@ abstract class AndroidViewController extends PlatformViewController {
 
   // Helps convert PointerEvents to AndroidMotionEvents.
   final _AndroidMotionEventConverter _motionEventConverter = _AndroidMotionEventConverter();
+
+  // The downTime of the gesture whose single-pointer move events the Android embedding is
+  // delivering directly to the platform view, or null.
+  //
+  // Once the gesture arena has been resolved in favour of the platform view, the embedding
+  // (PlatformViewWrapper / FlutterMutatorView) delivers the rest of the gesture to the embedded
+  // Android view synchronously and tells us so via the `directTouchDispatch` method. Echoing those
+  // move events back through the `touch` method would only cost a platform message per event
+  // (the embedding drops them anyway), so they are skipped. Down, pointer-down/up, up and cancel
+  // events keep flowing so the embedding's bookkeeping stays in sync.
+  int? _directTouchDispatchDownTime;
+
+  void _onDirectTouchDispatch(int downTime, {required bool active}) {
+    if (!active) {
+      if (_directTouchDispatchDownTime == downTime) {
+        _directTouchDispatchDownTime = null;
+        if (_deferredSinglePointerMove != null) {
+          _motionEventConverter.updatePointerPositions(_deferredSinglePointerMove!);
+          _deferredSinglePointerMove = null;
+        }
+      }
+      return;
+    }
+    if (_motionEventConverter.downTimeMillis == downTime &&
+        _motionEventConverter.pointerProperties.length == 1) {
+      _directTouchDispatchDownTime = downTime;
+    }
+  }
 
   TextDirection _layoutDirection;
 
@@ -1003,14 +1048,33 @@ abstract class AndroidViewController extends PlatformViewController {
   /// The Android MotionEvent object is created with [MotionEvent.obtain](https://developer.android.com/reference/android/view/MotionEvent.html#obtain(long,%20long,%20int,%20float,%20float,%20float,%20float,%20int,%20float,%20float,%20int,%20int)).
   /// See documentation of [MotionEvent.obtain](https://developer.android.com/reference/android/view/MotionEvent.html#obtain(long,%20long,%20int,%20float,%20float,%20float,%20float,%20int,%20float,%20float,%20int,%20int))
   /// for description of the parameters.
+  PointerMoveEvent? _deferredSinglePointerMove;
+
   @override
-  Future<void> dispatchPointerEvent(PointerEvent event) async {
+  Future<void> dispatchPointerEvent(PointerEvent event) {
     if (event is PointerHoverEvent) {
-      return;
+      return Future<void>.value();
     }
 
     if (event is PointerDownEvent) {
       _motionEventConverter.handlePointerDownEvent(event);
+    }
+
+    final bool isSinglePointerMove = event is PointerMoveEvent && _motionEventConverter.pointerProperties.length == 1;
+    final bool deliveredDirectly = isSinglePointerMove &&
+        _directTouchDispatchDownTime != null &&
+        _motionEventConverter.downTimeMillis == _directTouchDispatchDownTime;
+
+    if (deliveredDirectly) {
+      // Fast path: skip matrix transform and object allocation for pure direct touch moves.
+      // We defer updating the coords until an UP event forces us to resolve it.
+      _deferredSinglePointerMove = event;
+      return Future<void>.value();
+    }
+
+    if (_deferredSinglePointerMove != null) {
+      _motionEventConverter.updatePointerPositions(_deferredSinglePointerMove!);
+      _deferredSinglePointerMove = null;
     }
 
     _motionEventConverter.updatePointerPositions(event);
@@ -1024,8 +1088,16 @@ abstract class AndroidViewController extends PlatformViewController {
     }
 
     if (androidEvent != null) {
-      await sendMotionEvent(androidEvent);
+      if (_directTouchDispatchDownTime != null &&
+          (_motionEventConverter.downTimeMillis == null ||
+              androidEvent.downTime != _directTouchDispatchDownTime ||
+              androidEvent.pointerCount != 1)) {
+        // The gesture ended, or became a multi-touch gesture that the embedding hands back to us.
+        _directTouchDispatchDownTime = null;
+      }
+      return sendMotionEvent(androidEvent);
     }
+    return Future<void>.value();
   }
 
   /// Clears the focus from the Android View if it is focused.
@@ -1044,8 +1116,10 @@ abstract class AndroidViewController extends PlatformViewController {
   /// disposed.
   @override
   Future<void> dispose() async {
+    _deferredSinglePointerMove = null;
     final _AndroidViewState state = _state;
     _state = _AndroidViewState.disposed;
+    PlatformViewsService._instance._directTouchDispatchCallbacks.remove(viewId);
     _platformViewCreatedCallbacks.clear();
     PlatformViewsService._instance._focusCallbacks.remove(viewId);
     if (state == _AndroidViewState.creating || state == _AndroidViewState.created) {
