@@ -15,6 +15,7 @@
 #include "flutter/shell/platform/android/surface/android_native_window.h"
 
 #if FML_OS_ANDROID
+#include "flutter/fml/platform/android/jni_weak_ref.h"
 #include "flutter/fml/platform/android/scoped_java_ref.h"
 #endif
 
@@ -24,8 +25,10 @@ namespace flutter {
 
 #if FML_OS_ANDROID
 using JavaLocalRef = fml::jni::ScopedJavaLocalRef<jobject>;
+using JavaWeakGlobalRefPtr = fml::jni::JavaObjectWeakGlobalRef*;
 #else
 using JavaLocalRef = std::nullptr_t;
+using JavaWeakGlobalRefPtr = void*;
 #endif
 
 //------------------------------------------------------------------------------
@@ -136,6 +139,34 @@ class PlatformViewAndroidJNI {
   ///
   virtual JavaLocalRef ImageProducerTextureEntryAcquireLatestImage(
       JavaLocalRef image_texture_entry) = 0;
+
+  struct AcquiredHardwareBuffer {
+    JavaLocalRef hardware_buffer;
+    bool owned_by_producer = false;
+  };
+
+  //----------------------------------------------------------------------------
+  /// @brief      Fast-path acquisition of the latest HardwareBuffer directly,
+  ///             avoiding per-frame WeakReference.get(),
+  ///             Image.getHardwareBuffer(), and HardwareBuffer.close() JNI
+  ///             round-trips when backed by ImageReaderSurfaceProducer.
+  ///
+  virtual AcquiredHardwareBuffer
+  ImageProducerTextureEntryAcquireLatestHardwareBuffer(
+      JavaLocalRef image_texture_entry,
+      JavaWeakGlobalRefPtr cached_consumer = nullptr,
+      bool* cached_is_surface_producer = nullptr) {
+#if FML_OS_ANDROID
+    JavaLocalRef image = ImageProducerTextureEntryAcquireLatestImage(
+        std::move(image_texture_entry));
+    if (image.is_null()) {
+      return {};
+    }
+    return {ImageGetHardwareBuffer(std::move(image)), false};
+#else
+    return {};
+#endif
+  }
 
   //----------------------------------------------------------------------------
   /// @brief      Grab the HardwareBuffer from image.
