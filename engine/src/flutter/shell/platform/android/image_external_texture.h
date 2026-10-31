@@ -5,10 +5,17 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_IMAGE_EXTERNAL_TEXTURE_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_IMAGE_EXTERNAL_TEXTURE_H_
 
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <thread>
+
 #include "flutter/common/graphics/texture.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/unique_fd.h"
 #include "flutter/shell/platform/android/image_lru.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
+#include "flutter/shell/platform/android/ndk_surface_producer.h"
 #include "flutter/shell/platform/android/platform_view_android_jni_impl.h"
 
 #include <android/hardware_buffer.h>
@@ -47,7 +54,27 @@ class ImageExternalTexture : public flutter::Texture {
   // |flutter::Texture|
   virtual ~ImageExternalTexture();
 
+  void SetNdkSurfaceProducer(std::shared_ptr<NdkSurfaceProducer> ndk_producer);
+
+  void SetFenceWaitTimeoutMsForTest(int timeout_ms) {
+    fence_wait_timeout_ms_ = timeout_ms;
+  }
+
+  void SetPendingFrameReadyCallbackForTest(std::function<void()> callback);
+
+  bool HasPendingFrameForTest() const { return pending_frame_.has_value(); }
+
  protected:
+  struct AcquiredFrame {
+    JavaLocalRef java_hardware_buffer;
+    AHardwareBuffer* ahardware_buffer = nullptr;
+    fml::UniqueFD acquire_fence_fd;
+    bool owned_by_producer = false;
+    bool caller_owns_ahb_ref = false;
+    bool acquired_from_ndk_producer = false;
+    bool is_pending_retry = false;
+    bool displayed = false;
+  };
   //----------------------------------------------------------------------------
   /// @brief      Subclasses override this method to bind the latest
   ///             representation of the hardware buffer wrapped by this texture
@@ -71,6 +98,8 @@ class ImageExternalTexture : public flutter::Texture {
   virtual PlatformViewAndroidJNI::AcquiredHardwareBuffer
   AcquireLatestHardwareBuffer();
 
+  virtual AcquiredFrame AcquireLatestFrame();
+
   void CloseImage(const fml::jni::JavaRef<jobject>& image);
 
   JavaLocalRef HardwareBufferFor(const fml::jni::JavaRef<jobject>& image);
@@ -81,15 +110,34 @@ class ImageExternalTexture : public flutter::Texture {
   virtual AHardwareBuffer* AHardwareBufferFor(
       const fml::jni::JavaRef<jobject>& hardware_buffer);
 
+  AcquiredFrame AcquireNextOrPendingFrame();
+
+  void RetainPendingFrameOnTimeout(AcquiredFrame frame);
+
+  void MarkFrameDisplayed(AcquiredFrame& frame);
+
+  void ReleaseAcquiredFrame(AcquiredFrame& frame);
+
+  void CancelPendingFrameWaiter();
+
+  void ClearPendingFrameAndWaiter();
+
+  void StartPendingFrameWaiter(int fence_fd);
+
+  void NotifyPendingFrameReadyListeners();
+
   fml::jni::ScopedJavaGlobalRef<jobject> image_texture_entry_;
   fml::jni::JavaObjectWeakGlobalRef cached_consumer_;
   bool cached_is_surface_producer_ = false;
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
+  std::shared_ptr<NdkSurfaceProducer> ndk_producer_;
 
   enum class AttachmentState { kUninitialized, kAttached, kDetached };
   AttachmentState state_ = AttachmentState::kUninitialized;
   sk_sp<flutter::DlImage> dl_image_;
   ImageLRU image_lru_ = ImageLRU();
+  std::optional<AcquiredFrame> pending_frame_;
+  int fence_wait_timeout_ms_ = NdkSurfaceProducer::kDefaultFenceWaitTimeoutMs;
 
  private:
   // |flutter::Texture|.
@@ -114,6 +162,14 @@ class ImageExternalTexture : public flutter::Texture {
   void OnGrContextDestroyed() override;
 
   const ImageLifecycle texture_lifecycle_;
+
+  mutable std::mutex waiter_mutex_;
+  uint64_t waiter_generation_ = 0;
+  bool waiter_active_for_pending_ = false;
+  fml::UniqueFD waiter_cancel_write_fd_;
+  std::thread waiter_thread_;
+  std::function<void()> on_pending_frame_ready_callback_;
+
   FML_DISALLOW_COPY_AND_ASSIGN(ImageExternalTexture);
 };
 

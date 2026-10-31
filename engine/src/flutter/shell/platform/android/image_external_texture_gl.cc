@@ -5,7 +5,10 @@
 #include "flutter/shell/platform/android/image_external_texture_gl.h"
 
 #include <android/hardware_buffer_jni.h>
-#include <android/sensor.h>
+#include <errno.h>
+#include <poll.h>
+
+#include <cstring>
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/fml/closure.h"
@@ -43,12 +46,12 @@ void ImageExternalTextureGL::Attach(PaintContext& context) {
   }
 }
 
-void ImageExternalTextureGL::UpdateImage(
+bool ImageExternalTextureGL::UpdateImage(
     AHardwareBuffer* latest_hardware_buffer,
     const SkRect& bounds,
     PaintContext& context) {
   if (latest_hardware_buffer == nullptr) {
-    return;
+    return false;
   }
   std::optional<HardwareBufferKey> key =
       impeller::android::HardwareBuffer::GetSystemUniqueID(
@@ -58,64 +61,137 @@ void ImageExternalTextureGL::UpdateImage(
   };
   if (auto cached_image = image_lru_.TryFindImage(key, evict_cb)) {
     dl_image_ = std::move(cached_image);
-    return;
+    return true;
   }
   auto descriptor =
       impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
   if (!descriptor.has_value()) {
-    return;
+    return false;
   }
   auto existing_image = image_lru_.FindImage(key, descriptor.value(), evict_cb);
   if (existing_image != nullptr) {
     dl_image_ = existing_image;
-    return;
+    return true;
   }
 
   auto egl_image = CreateEGLImage(latest_hardware_buffer);
   if (!egl_image.is_valid()) {
-    return;
+    return false;
   }
 
   auto image = CreateDlImage(context, bounds, key, std::move(egl_image));
   if (!image) {
-    return;
+    return false;
   }
   dl_image_ = std::move(image);
   if (key.has_value()) {
     gl_entries_.erase(image_lru_.AddImage(dl_image_, key.value()));
   }
+  return true;
+}
+
+NdkSurfaceProducer::FenceWaitResult
+ImageExternalTextureGL::WaitAcquireFenceOnGL(fml::UniqueFD& acquire_fence_fd,
+                                             int timeout_ms) {
+  if (!acquire_fence_fd.is_valid()) {
+    return NdkSurfaceProducer::FenceWaitResult::kSignaled;
+  }
+  EGLDisplay display = eglGetCurrentDisplay();
+  if (display != EGL_NO_DISPLAY) {
+    static const auto default_create_sync =
+        reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(
+            eglGetProcAddress("eglCreateSyncKHR"));
+    static const auto default_wait_sync =
+        reinterpret_cast<PFNEGLWAITSYNCKHRPROC>(
+            eglGetProcAddress("eglWaitSyncKHR"));
+    static const auto default_destroy_sync =
+        reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(
+            eglGetProcAddress("eglDestroySyncKHR"));
+    const PFNEGLCREATESYNCKHRPROC create_sync =
+        egl_sync_procs_for_test_.has_value()
+            ? egl_sync_procs_for_test_->create_sync
+            : default_create_sync;
+    const PFNEGLWAITSYNCKHRPROC wait_sync =
+        egl_sync_procs_for_test_.has_value()
+            ? egl_sync_procs_for_test_->wait_sync
+            : default_wait_sync;
+    const PFNEGLDESTROYSYNCKHRPROC destroy_sync =
+        egl_sync_procs_for_test_.has_value()
+            ? egl_sync_procs_for_test_->destroy_sync
+            : default_destroy_sync;
+    if (create_sync && wait_sync && destroy_sync) {
+      thread_local EGLDisplay t_checked_display = EGL_NO_DISPLAY;
+      thread_local bool t_has_native_fence = false;
+      if (t_checked_display != display) {
+        t_checked_display = display;
+        const char* exts = eglQueryString(display, EGL_EXTENSIONS);
+        t_has_native_fence =
+            exts != nullptr &&
+            std::strstr(exts, "EGL_ANDROID_native_fence_sync") != nullptr &&
+            std::strstr(exts, "EGL_KHR_wait_sync") != nullptr;
+      }
+      const bool has_native_fence =
+          t_has_native_fence ||
+          (egl_sync_procs_for_test_.has_value() &&
+           egl_sync_procs_for_test_->force_native_fence_supported);
+      if (has_native_fence) {
+        // Release Bionic fdsan ownership BEFORE eglCreateSyncKHR, because the
+        // EGL driver takes ownership of (and may close/dup) the sync_file FD
+        // inside the call on success. Reclaim on failure for poll() fallback.
+        const int raw_fd = acquire_fence_fd.release();
+        const EGLint attribs[] = {
+            EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
+            raw_fd,
+            EGL_NONE,
+        };
+        EGLSyncKHR sync =
+            create_sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+        if (sync != EGL_NO_SYNC_KHR) {
+          const EGLint wait_result = wait_sync(display, sync, 0);
+          destroy_sync(display, sync);
+          if (wait_result != EGL_TRUE) {
+            FML_LOG(WARNING)
+                << "eglWaitSyncKHR failed for AImageReader acquire fence.";
+            return NdkSurfaceProducer::FenceWaitResult::kError;
+          }
+          return NdkSurfaceProducer::FenceWaitResult::kSignaled;
+        }
+        acquire_fence_fd.reset(raw_fd);
+      }
+    }
+  }
+  return NdkSurfaceProducer::WaitAcquireFenceFdBounded(acquire_fence_fd,
+                                                       timeout_ms);
 }
 
 void ImageExternalTextureGL::ProcessFrame(PaintContext& context,
                                           const SkRect& bounds) {
-  auto acquired = AcquireLatestHardwareBuffer();
-  if (acquired.hardware_buffer.is_null()) {
+  AcquiredFrame acquired = AcquireNextOrPendingFrame();
+  if (acquired.ahardware_buffer == nullptr) {
     return;
   }
-  fml::ScopedCleanupClosure close_java_hb([this, &acquired]() {
-    if (!acquired.owned_by_producer) {
-      CloseHardwareBuffer(acquired.hardware_buffer);
-    }
-  });
-  AHardwareBuffer* latest_hardware_buffer =
-      AHardwareBufferFor(acquired.hardware_buffer);
-  if (latest_hardware_buffer == nullptr) {
+
+  const int wait_timeout_ms =
+      acquired.is_pending_retry ? 0 : fence_wait_timeout_ms_;
+  const auto wait_result =
+      WaitAcquireFenceOnGL(acquired.acquire_fence_fd, wait_timeout_ms);
+  if (wait_result == NdkSurfaceProducer::FenceWaitResult::kTimedOut) {
+    RetainPendingFrameOnTimeout(std::move(acquired));
     return;
   }
-  const auto& proc_table = impeller::android::GetProcTable();
-  if (proc_table.AHardwareBuffer_acquire.IsAvailable()) {
-    proc_table.AHardwareBuffer_acquire(latest_hardware_buffer);
+  CancelPendingFrameWaiter();
+  fml::ScopedCleanupClosure release_frame(
+      [this, &acquired]() { ReleaseAcquiredFrame(acquired); });
+  if (wait_result != NdkSurfaceProducer::FenceWaitResult::kSignaled) {
+    return;
   }
-  fml::ScopedCleanupClosure release_native_hb(
-      [latest_hardware_buffer, &proc_table]() {
-        if (proc_table.AHardwareBuffer_release.IsAvailable()) {
-          proc_table.AHardwareBuffer_release(latest_hardware_buffer);
-        }
-      });
-  UpdateImage(latest_hardware_buffer, bounds, context);
+  if (UpdateImage(acquired.ahardware_buffer, bounds, context)) {
+    MarkFrameDisplayed(acquired);
+  }
 }
 
 void ImageExternalTextureGL::Detach() {
+  ClearPendingFrameAndWaiter();
   image_lru_.Clear();
   gl_entries_.clear();
 }

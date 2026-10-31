@@ -28,11 +28,16 @@ class ImageExternalTextureVKImpeller : public ImageExternalTexture {
 
   ~ImageExternalTextureVKImpeller() override;
 
- private:
+ protected:
   void Attach(PaintContext& context) override;
   void ProcessFrame(PaintContext& context, const SkRect& bounds) override;
   void Detach() override;
 
+  virtual sk_sp<flutter::DlImage> ImportHardwareBuffer(
+      AHardwareBuffer* latest_hardware_buffer,
+      const AHardwareBuffer_Desc& hb_desc);
+
+ private:
   const std::shared_ptr<impeller::ContextVK> impeller_context_;
 };
 

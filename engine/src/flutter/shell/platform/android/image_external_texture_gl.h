@@ -39,7 +39,7 @@ class ImageExternalTextureGL : public ImageExternalTexture {
       std::optional<HardwareBufferKey> id,
       impeller::UniqueEGLImageKHR&& egl_image) = 0;
 
-  void UpdateImage(AHardwareBuffer* latest_hardware_buffer,
+  bool UpdateImage(AHardwareBuffer* latest_hardware_buffer,
                    const SkRect& bounds,
                    PaintContext& context);
 
@@ -47,6 +47,27 @@ class ImageExternalTextureGL : public ImageExternalTexture {
 
   virtual EGLImageKHR CreateEGLImageKHR(EGLDisplay display,
                                         EGLClientBuffer buffer);
+
+  struct EglSyncProcs {
+    PFNEGLCREATESYNCKHRPROC create_sync = nullptr;
+    PFNEGLWAITSYNCKHRPROC wait_sync = nullptr;
+    PFNEGLDESTROYSYNCKHRPROC destroy_sync = nullptr;
+    bool force_native_fence_supported = false;
+  };
+
+  void SetEglSyncProcsForTest(std::optional<EglSyncProcs> procs) {
+    egl_sync_procs_for_test_ = std::move(procs);
+  }
+
+  NdkSurfaceProducer::FenceWaitResult WaitAcquireFenceOnGL(
+      fml::UniqueFD& acquire_fence_fd,
+      int timeout_ms = NdkSurfaceProducer::kDefaultFenceWaitTimeoutMs);
+
+  NdkSurfaceProducer::FenceWaitResult WaitAcquireFenceOnGL(
+      fml::UniqueFD&& acquire_fence_fd,
+      int timeout_ms = NdkSurfaceProducer::kDefaultFenceWaitTimeoutMs) {
+    return WaitAcquireFenceOnGL(acquire_fence_fd, timeout_ms);
+  }
 
   struct GlEntry {
     impeller::UniqueEGLImageKHR egl_image;
@@ -56,6 +77,7 @@ class ImageExternalTextureGL : public ImageExternalTexture {
   // Impeller's EGL images are keyed by hardware buffer and evicted with the
   // LRU cache entries. Skia's images own their GlEntry via a release callback.
   std::unordered_map<HardwareBufferKey, GlEntry> gl_entries_;
+  std::optional<EglSyncProcs> egl_sync_procs_for_test_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(ImageExternalTextureGL);
 };

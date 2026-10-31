@@ -385,35 +385,43 @@ void PlatformViewAndroid::RegisterExternalTexture(
 void PlatformViewAndroid::RegisterImageTexture(
     int64_t texture_id,
     const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
-    ImageExternalTexture::ImageLifecycle lifecycle) {
+    ImageExternalTexture::ImageLifecycle lifecycle,
+    std::shared_ptr<NdkSurfaceProducer> ndk_producer) {
+  std::shared_ptr<ImageExternalTexture> texture;
   switch (android_context_->RenderingApi()) {
 #if !SLIMPELLER
     case AndroidRenderingAPI::kSkiaOpenGLES:
       // Legacy GL.
-      RegisterTexture(std::make_shared<ImageExternalTextureGLSkia>(
+      texture = std::make_shared<ImageExternalTextureGLSkia>(
           std::static_pointer_cast<AndroidContextGLSkia>(android_context_),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle);
       break;
     case AndroidRenderingAPI::kSoftware:
       FML_LOG(INFO) << "Software rendering does not support external textures.";
-      break;
+      return;
 #endif  // !SLIMPELLER
     case AndroidRenderingAPI::kImpellerOpenGLES:
       // Impeller GLES.
-      RegisterTexture(std::make_shared<ImageExternalTextureGLImpeller>(
+      texture = std::make_shared<ImageExternalTextureGLImpeller>(
           std::static_pointer_cast<impeller::ContextGLES>(
               android_context_->GetImpellerContext()),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle);
       break;
     case AndroidRenderingAPI::kImpellerVulkan:
-      RegisterTexture(std::make_shared<ImageExternalTextureVKImpeller>(
+      texture = std::make_shared<ImageExternalTextureVKImpeller>(
           std::static_pointer_cast<impeller::ContextVK>(
               android_context_->GetImpellerContext()),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle);
       break;
     case AndroidRenderingAPI::kImpellerAutoselect:
       FML_CHECK(false);
-      break;
+      return;
+  }
+  if (texture) {
+    if (ndk_producer) {
+      texture->SetNdkSurfaceProducer(std::move(ndk_producer));
+    }
+    RegisterTexture(texture);
   }
 }
 
