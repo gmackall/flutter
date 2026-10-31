@@ -83,6 +83,11 @@ public class VsyncWaiter {
     listener = null;
   }
 
+  @VisibleForTesting
+  Choreographer.FrameCallback getFrameCallbackForTesting() {
+    return frameCallback;
+  }
+
   private class FrameCallback implements Choreographer.FrameCallback {
 
     private long cookie;
@@ -97,8 +102,8 @@ public class VsyncWaiter {
       if (delay < 0) {
         delay = 0;
       }
-      flutterJNI.onVsync(delay, refreshPeriodNanos, cookie);
       frameCallback = this;
+      flutterJNI.onVsync(delay, refreshPeriodNanos, cookie);
     }
   }
 

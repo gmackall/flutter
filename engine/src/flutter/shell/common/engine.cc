@@ -288,6 +288,7 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
 
 void Engine::BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) {
   runtime_controller_->BeginFrame(frame_time, frame_number);
+  runtime_controller_->FlushMicrotaskQueue();
 }
 
 void Engine::ReportTimings(std::vector<int64_t> timings) {

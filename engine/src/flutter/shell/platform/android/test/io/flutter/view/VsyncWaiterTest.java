@@ -4,10 +4,14 @@
 
 package io.flutter.view;
 
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -15,6 +19,7 @@ import static org.mockito.Mockito.when;
 import static org.robolectric.shadows.ShadowLooper.shadowMainLooper;
 
 import android.hardware.display.DisplayManager;
+import android.view.Choreographer;
 import android.view.Display;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.engine.FlutterJNI;
@@ -93,5 +98,40 @@ public class VsyncWaiterTest {
     verify(mockDisplayManager, times(1)).registerDisplayListener(any(), isNull());
 
     verify(mockFlutterJNI, times(1)).setRefreshRateFPS(90.0f);
+  }
+
+  @Test
+  public void itReusesCachedFrameCallbackWhenRescheduledSynchronouslyInsideOnVsync() {
+    FlutterJNI mockFlutterJNI = mock(FlutterJNI.class);
+    VsyncWaiter waiter = VsyncWaiter.getInstance(120.0f, mockFlutterJNI);
+    waiter.init();
+
+    final Choreographer.FrameCallback initialFrameCallback = waiter.getFrameCallbackForTesting();
+    assertNotNull(initialFrameCallback);
+
+    ArgumentCaptor<FlutterJNI.AsyncWaitForVsyncDelegate> delegateCaptor =
+        ArgumentCaptor.forClass(FlutterJNI.AsyncWaitForVsyncDelegate.class);
+    verify(mockFlutterJNI, times(1)).setAsyncWaitForVsyncDelegate(delegateCaptor.capture());
+    final FlutterJNI.AsyncWaitForVsyncDelegate delegate = delegateCaptor.getValue();
+
+    doAnswer(
+            invocation -> {
+              // Because frameCallback is restored before flutterJNI.onVsync(...), synchronous
+              // re-arming during BeginFrame reuses the cached FrameCallback instance without
+              // allocating a new one.
+              assertSame(initialFrameCallback, waiter.getFrameCallbackForTesting());
+              delegate.asyncWaitForVsync(2L);
+              assertNull(waiter.getFrameCallbackForTesting());
+              return null;
+            })
+        .when(mockFlutterJNI)
+        .onVsync(anyLong(), anyLong(), eq(1L));
+
+    delegate.asyncWaitForVsync(1L);
+    shadowMainLooper().idle();
+    verify(mockFlutterJNI, times(1)).onVsync(anyLong(), eq(1000000000L / 120L), eq(1L));
+    shadowMainLooper().idle();
+    verify(mockFlutterJNI, times(1)).onVsync(anyLong(), eq(1000000000L / 120L), eq(2L));
+    assertSame(initialFrameCallback, waiter.getFrameCallbackForTesting());
   }
 }

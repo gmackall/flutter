@@ -53,6 +53,7 @@ executable("flutter_shell_native_unittests") {
     "image_lru_unittests.cc",
     "platform_view_android_jni_impl_unittests.cc",
     "platform_view_android_unittests.cc",
+    "vsync_waiter_android_unittests.cc",
   ]
   if (!slimpeller) {
     sources += [ "android_context_gl_unittests.cc" ]

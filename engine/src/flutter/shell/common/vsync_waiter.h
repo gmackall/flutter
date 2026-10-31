@@ -15,6 +15,10 @@
 
 namespace flutter {
 
+namespace testing {
+class VsyncWaiterAndroidTest;
+}  // namespace testing
+
 /// Abstract Base Class that represents a platform specific mechanism for
 /// getting callbacks when a vsync event happens.
 ///
@@ -33,6 +37,7 @@ class VsyncWaiter : public std::enable_shared_from_this<VsyncWaiter> {
   // method.
   friend class VsyncWaiterAndroid;
   friend class VsyncWaiterEmbedder;
+  friend class testing::VsyncWaiterAndroidTest;
 
   const TaskRunners task_runners_;
 
@@ -54,8 +59,13 @@ class VsyncWaiter : public std::enable_shared_from_this<VsyncWaiter> {
 
   // Schedules the callback on the UI task runner. Needs to be invoked as close
   // to the `frame_start_time` as possible.
+  //
+  // When `can_target_current_thread` is true and the caller is already running
+  // on the UI task runner thread, `callback` is invoked synchronously on the
+  // current thread instead of posting a task to the UI message loop.
   void FireCallback(fml::TimePoint frame_start_time,
-                    fml::TimePoint frame_target_time);
+                    fml::TimePoint frame_target_time,
+                    bool can_target_current_thread = false);
 
  private:
   void PauseDartEventLoopTasks();
