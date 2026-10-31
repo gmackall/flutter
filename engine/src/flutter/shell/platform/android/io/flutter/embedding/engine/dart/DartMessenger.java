@@ -4,6 +4,7 @@
 
 package io.flutter.embedding.engine.dart;
 
+import android.os.Looper;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
@@ -21,6 +22,7 @@ import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Message conduit for 2-way communication between Android and Dart.
@@ -54,6 +56,7 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
 
   @NonNull private final Map<Integer, BinaryMessenger.BinaryReply> pendingReplies = new HashMap<>();
   private int nextReplyId = 1;
+  @NonNull private final AtomicInteger nextTraceCookie = new AtomicInteger(1);
 
   @NonNull private final DartMessengerTaskQueue platformTaskQueue = new PlatformTaskQueue();
 
@@ -101,16 +104,34 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
   /**
    * Holds information about a platform handler, such as the task queue that processes messages from
    * Dart.
+   *
+   * <p>{@link #pendingQueuedMessages} tracks queued messages for this specific {@code HandlerInfo}
+   * registration so that a {@link DartExecutor.SynchronousMessageHandler} attached to the same
+   * registration does not overtake earlier queued messages. It is preserved when {@link
+   * #setSynchronousMessageHandler} updates an existing registration and replaced when {@link
+   * #setMessageHandler} registers a new {@link BinaryMessenger.BinaryMessageHandler}.
    */
   private static class HandlerInfo {
     @NonNull public final BinaryMessenger.BinaryMessageHandler handler;
     @Nullable public final DartMessengerTaskQueue taskQueue;
+    @Nullable public final DartExecutor.SynchronousMessageHandler synchronousHandler;
+    @NonNull public final AtomicInteger pendingQueuedMessages;
 
     HandlerInfo(
         @NonNull BinaryMessenger.BinaryMessageHandler handler,
         @Nullable DartMessengerTaskQueue taskQueue) {
+      this(handler, taskQueue, null, new AtomicInteger(0));
+    }
+
+    HandlerInfo(
+        @NonNull BinaryMessenger.BinaryMessageHandler handler,
+        @Nullable DartMessengerTaskQueue taskQueue,
+        @Nullable DartExecutor.SynchronousMessageHandler synchronousHandler,
+        @NonNull AtomicInteger pendingQueuedMessages) {
       this.handler = handler;
       this.taskQueue = taskQueue;
+      this.synchronousHandler = synchronousHandler;
+      this.pendingQueuedMessages = pendingQueuedMessages;
     }
   }
 
@@ -230,6 +251,22 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
     }
   }
 
+  void setSynchronousMessageHandler(
+      @NonNull String channel, @Nullable DartExecutor.SynchronousMessageHandler syncHandler) {
+    synchronized (handlersLock) {
+      final HandlerInfo existing = messageHandlers.get(channel);
+      if (existing != null) {
+        messageHandlers.put(
+            channel,
+            new HandlerInfo(
+                existing.handler,
+                existing.taskQueue,
+                syncHandler,
+                existing.pendingQueuedMessages));
+      }
+    }
+  }
+
   @Override
   public void enableBufferingIncomingMessages() {
     enableBufferingIncomingMessages.set(true);
@@ -304,10 +341,12 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
       long messageData) {
     // Called from any thread.
     final DartMessengerTaskQueue taskQueue = (handlerInfo != null) ? handlerInfo.taskQueue : null;
-    TraceSection.beginAsyncSection("PlatformChannel ScheduleHandler on " + channel, replyId);
+    final int traceCookie = nextTraceCookie.getAndIncrement();
+    TraceSection.beginAsyncSection("PlatformChannel ScheduleHandler on " + channel, traceCookie);
     Runnable myRunnable =
         () -> {
-          TraceSection.endAsyncSection("PlatformChannel ScheduleHandler on " + channel, replyId);
+          TraceSection.endAsyncSection(
+              "PlatformChannel ScheduleHandler on " + channel, traceCookie);
           try (TraceSection e =
               TraceSection.scoped("DartMessenger#handleMessageFromDart on " + channel)) {
             invokeHandler(handlerInfo, message, replyId);
@@ -317,13 +356,67 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
               message.limit(0);
             }
           } finally {
+            if (handlerInfo != null) {
+              handlerInfo.pendingQueuedMessages.decrementAndGet();
+            }
             // This is deleting the data underneath the message object.
             flutterJNI.cleanupMessageData(messageData);
           }
         };
     final DartMessengerTaskQueue nonnullTaskQueue =
         taskQueue == null ? platformTaskQueue : taskQueue;
-    nonnullTaskQueue.dispatch(myRunnable);
+    if (handlerInfo != null) {
+      handlerInfo.pendingQueuedMessages.incrementAndGet();
+    }
+    boolean dispatched = false;
+    try {
+      nonnullTaskQueue.dispatch(myRunnable);
+      dispatched = true;
+    } finally {
+      if (!dispatched && handlerInfo != null) {
+        handlerInfo.pendingQueuedMessages.decrementAndGet();
+      }
+    }
+  }
+
+  private boolean tryHandleSynchronously(
+      @NonNull HandlerInfo handlerInfo,
+      @Nullable ByteBuffer message,
+      int replyId,
+      long messageData) {
+    final DartExecutor.SynchronousMessageHandler syncHandler = handlerInfo.synchronousHandler;
+    if (syncHandler == null) {
+      return false;
+    }
+    final int initialPosition = message != null ? message.position() : 0;
+    boolean handled = false;
+    try (TraceSection e = TraceSection.scoped("DartMessenger#handleMessageFromDartSync")) {
+      final BinaryMessenger.BinaryReply reply =
+          replyId != 0 ? new Reply(flutterJNI, replyId) : null;
+      handled = syncHandler.tryHandleSynchronously(message, reply);
+      if (!handled && message != null) {
+        message.position(initialPosition);
+      }
+      return handled;
+    } catch (Exception ex) {
+      Log.e(TAG, "Uncaught exception in synchronous binary message listener", ex);
+      if (replyId != 0) {
+        flutterJNI.invokePlatformMessageEmptyResponseCallback(replyId);
+      }
+      handled = true;
+      return true;
+    } catch (Error err) {
+      handled = true;
+      handleError(err);
+      return true;
+    } finally {
+      if (handled) {
+        if (message != null && message.isDirect()) {
+          message.limit(0);
+        }
+        flutterJNI.cleanupMessageData(messageData);
+      }
+    }
   }
 
   @Override
@@ -334,6 +427,7 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
 
     HandlerInfo handlerInfo;
     boolean messageDeferred;
+    boolean canRunSynchronously;
     // This lock can potentially be a bottleneck and could replaced with a
     // read/write lock.
     synchronized (handlersLock) {
@@ -353,6 +447,18 @@ class DartMessenger implements BinaryMessenger, PlatformMessageHandler {
         }
         List<BufferedMessageInfo> buffer = bufferedMessages.get(channel);
         buffer.add(new BufferedMessageInfo(message, replyId, messageData));
+      }
+      canRunSynchronously =
+          !messageDeferred
+              && handlerInfo != null
+              && handlerInfo.synchronousHandler != null
+              && handlerInfo.taskQueue == null
+              && handlerInfo.pendingQueuedMessages.get() == 0
+              && !bufferedMessages.containsKey(channel);
+    }
+    if (canRunSynchronously && Looper.myLooper() == Looper.getMainLooper()) {
+      if (tryHandleSynchronously(handlerInfo, message, replyId, messageData)) {
+        return;
       }
     }
     if (!messageDeferred) {
