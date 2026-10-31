@@ -7,6 +7,7 @@ package io.flutter.embedding.engine.dart;
 import android.content.res.AssetManager;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RestrictTo;
 import androidx.annotation.UiThread;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.FlutterInjector;
@@ -198,6 +199,60 @@ public class DartExecutor implements BinaryMessenger {
   @NonNull
   public BinaryMessenger getBinaryMessenger() {
     return binaryMessenger;
+  }
+
+  /**
+   * Engine-internal handler invoked synchronously on the UI thread for incoming Dart platform
+   * messages before falling back to {@link PlatformTaskQueue} dispatch.
+   *
+   * <p>This interface is intended only for built-in system channels in {@code
+   * io.flutter.embedding.engine.systemchannels} and is not supported for external plugins.
+   *
+   * <p>Contract and threading guarantees:
+   *
+   * <ul>
+   *   <li>{@link #tryHandleSynchronously} is only invoked when the message arrives on the Android
+   *       main looper ({@code Looper.myLooper() == Looper.getMainLooper()}), the channel is not
+   *       buffering incoming messages, and no earlier messages on the same channel are currently
+   *       pending in {@link PlatformTaskQueue}. This preserves per-channel FIFO ordering.
+   *   <li>Because this handler executes re-entrantly inside the Dart isolate's native {@code
+   *       PlatformDispatcher.sendPlatformMessage} call on the merged UI/platform thread,
+   *       implementations must be fast, non-blocking, and must <b>not</b> send platform messages
+   *       back to Dart (other than invoking {@code reply}, which posts completion asynchronously).
+   *       Sending a new platform message to Dart during synchronous handling would re-enter the
+   *       Dart VM while a frame or microtask is active.
+   * </ul>
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY)
+  public interface SynchronousMessageHandler {
+    /**
+     * Attempts to handle {@code message} synchronously on the UI thread.
+     *
+     * <p>If this method returns {@code true} and {@code reply != null}, the implementation must
+     * submit a response via {@code reply}. If {@code reply == null}, the caller in Dart sent a
+     * one-way message and did not request a response callback. If this method returns {@code
+     * false}, {@code message} position is rewound and the message is dispatched through the
+     * channel's normal queue.
+     */
+    @UiThread
+    boolean tryHandleSynchronously(
+        @Nullable ByteBuffer message, @Nullable BinaryMessenger.BinaryReply reply);
+  }
+
+  /**
+   * Registers an engine-internal {@link SynchronousMessageHandler} for {@code channel} on a
+   * previously registered UI-thread message handler.
+   *
+   * <p>Must be called after {@link #setMessageHandler(String, BinaryMessageHandler)} for {@code
+   * channel}. Subsequent calls to {@code setMessageHandler} on {@code channel} replace the
+   * channel's handler registration and clear any previously attached {@link
+   * SynchronousMessageHandler}.
+   */
+  @UiThread
+  @RestrictTo(RestrictTo.Scope.LIBRARY)
+  public void setSynchronousMessageHandler(
+      @NonNull String channel, @Nullable SynchronousMessageHandler handler) {
+    dartMessenger.setSynchronousMessageHandler(channel, handler);
   }
 
   // ------ START BinaryMessenger (Deprecated: use getBinaryMessenger() instead) -----

@@ -5,6 +5,7 @@
 package io.flutter.embedding.engine.dart;
 
 import static junit.framework.TestCase.assertEquals;
+import static junit.framework.TestCase.assertFalse;
 import static junit.framework.TestCase.assertNotNull;
 import static junit.framework.TestCase.assertTrue;
 import static org.junit.Assert.assertArrayEquals;
@@ -23,6 +24,7 @@ import io.flutter.embedding.engine.dart.DartMessenger.DartMessengerTaskQueue;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.common.BinaryMessenger.BinaryMessageHandler;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -343,5 +345,223 @@ public class DartMessengerTest {
     for (int i = 0; i < count - 1; ++i) {
       assertEquals((int) ints.get(i), ints.get(i + 1) - 1);
     }
+  }
+
+  @Test
+  public void synchronousHandlerNotInvokedFromBackgroundThreadAndMessageQueued()
+      throws InterruptedException {
+    final FlutterJNI fakeFlutterJni = mock(FlutterJNI.class);
+    final DartMessenger messenger = new DartMessenger(fakeFlutterJni);
+    final String channel = "sync_channel";
+    final boolean[] syncCalled = {false};
+    final boolean[] asyncCalled = {false};
+
+    messenger.setMessageHandler(channel, (msg, reply) -> asyncCalled[0] = true);
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          syncCalled[0] = true;
+          return true;
+        });
+
+    final ByteBuffer message = ByteBuffer.allocateDirect(4);
+    final CountDownLatch backgroundLatch = new CountDownLatch(1);
+    final Thread bgThread =
+        new Thread(
+            () -> {
+              messenger.handleMessageFromDart(channel, message, 7, 456L);
+              backgroundLatch.countDown();
+            });
+    bgThread.start();
+    backgroundLatch.await();
+
+    assertFalse(syncCalled[0]);
+    assertFalse(asyncCalled[0]);
+
+    shadowMainLooper().idle();
+    assertFalse(syncCalled[0]);
+    assertTrue(asyncCalled[0]);
+    verify(fakeFlutterJni).cleanupMessageData(eq(456L));
+  }
+
+  @Test
+  public void synchronousHandlerRestoresBufferPositionAndQueuesWhenReturningFalse() {
+    final FlutterJNI fakeFlutterJni = mock(FlutterJNI.class);
+    final DartMessenger messenger = new DartMessenger(fakeFlutterJni);
+    final String channel = "sync_channel";
+    final int[] observedPositionInAsyncHandler = {-1};
+
+    messenger.setMessageHandler(
+        channel, (msg, reply) -> observedPositionInAsyncHandler[0] = msg.position());
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          // Consume 2 bytes and decline synchronous handling.
+          msg.getShort();
+          return false;
+        });
+
+    final ByteBuffer message = ByteBuffer.allocateDirect(8);
+    message.putInt(0x12345678);
+    message.putInt(0x9abcdef0);
+    message.position(2);
+
+    messenger.handleMessageFromDart(channel, message, 3, 789L);
+    // Position must be restored immediately to 2 and async handler not yet invoked.
+    assertEquals(2, message.position());
+    assertEquals(-1, observedPositionInAsyncHandler[0]);
+
+    shadowMainLooper().idle();
+    assertEquals(2, observedPositionInAsyncHandler[0]);
+    verify(fakeFlutterJni).cleanupMessageData(eq(789L));
+  }
+
+  @Test
+  public void synchronousHandlerExceptionSendsEmptyReplyAndCleansUpOnce() {
+    final FlutterJNI fakeFlutterJni = mock(FlutterJNI.class);
+    final DartMessenger messenger = new DartMessenger(fakeFlutterJni);
+    final String channel = "sync_channel";
+    final boolean[] asyncCalled = {false};
+
+    messenger.setMessageHandler(channel, (msg, reply) -> asyncCalled[0] = true);
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          throw new RuntimeException("sync failure");
+        });
+
+    final ByteBuffer message = ByteBuffer.allocateDirect(4);
+    messenger.handleMessageFromDart(channel, message, 99, 321L);
+
+    shadowMainLooper().idle();
+    assertFalse(asyncCalled[0]);
+    verify(fakeFlutterJni, times(1)).invokePlatformMessageEmptyResponseCallback(eq(99));
+    verify(fakeFlutterJni, times(1)).cleanupMessageData(eq(321L));
+    assertEquals(0, message.limit());
+  }
+
+  @Test
+  public void synchronousHandlerPreservesFifoWhenChannelBuffersOrHasPendingQueuedMessages() {
+    final FlutterJNI fakeFlutterJni = mock(FlutterJNI.class);
+    final DartMessenger messenger = new DartMessenger(fakeFlutterJni);
+    final String channel = "sync_channel";
+    final LinkedList<Integer> order = new LinkedList<>();
+
+    messenger.enableBufferingIncomingMessages();
+    final ByteBuffer msg1 = ByteBuffer.allocateDirect(4);
+    msg1.putInt(0, 1);
+    messenger.handleMessageFromDart(channel, msg1, 1, 1001L);
+
+    messenger.setMessageHandler(channel, (msg, reply) -> order.add(msg.getInt(0)));
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          order.add(msg.getInt(0) * 10);
+          return true;
+        });
+
+    // Because msg1 was just dispatched from bufferedMessages to PlatformTaskQueue and has not run
+    // yet, msg2 must also be queued rather than overtaking msg1 synchronously.
+    final ByteBuffer msg2 = ByteBuffer.allocateDirect(4);
+    msg2.putInt(0, 2);
+    messenger.handleMessageFromDart(channel, msg2, 2, 1002L);
+    assertTrue(order.isEmpty());
+
+    shadowMainLooper().idle();
+    assertEquals(2, order.size());
+    assertEquals(Integer.valueOf(1), order.get(0));
+    assertEquals(Integer.valueOf(2), order.get(1));
+
+    // Once the queue has drained, msg3 runs synchronously (multiplied by 10).
+    final ByteBuffer msg3 = ByteBuffer.allocateDirect(4);
+    msg3.putInt(0, 3);
+    messenger.handleMessageFromDart(channel, msg3, 0, 1003L);
+    assertEquals(3, order.size());
+    assertEquals(Integer.valueOf(30), order.get(2));
+  }
+
+  @Test
+  public void setMessageHandlerReplacesHandlerInfoAndClearsSynchronousHandler() {
+    final FlutterJNI fakeFlutterJni = mock(FlutterJNI.class);
+    final DartMessenger messenger = new DartMessenger(fakeFlutterJni);
+    final String channel = "sync_channel";
+    final boolean[] syncCalled = {false};
+    final boolean[] secondAsyncCalled = {false};
+
+    messenger.setMessageHandler(channel, (msg, reply) -> {});
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          syncCalled[0] = true;
+          return true;
+        });
+
+    // Re-registering setMessageHandler replaces HandlerInfo and clears the synchronous handler.
+    messenger.setMessageHandler(channel, (msg, reply) -> secondAsyncCalled[0] = true);
+
+    final ByteBuffer message = ByteBuffer.allocateDirect(4);
+    messenger.handleMessageFromDart(channel, message, 0, 555L);
+    assertFalse(syncCalled[0]);
+    assertFalse(secondAsyncCalled[0]);
+
+    shadowMainLooper().idle();
+    assertTrue(secondAsyncCalled[0]);
+  }
+
+  @Test
+  public void replacingMessageHandlerWhileQueuedMessagesInFlightPreservesNewRegistrationOrdering() {
+    final FlutterJNI fakeFlutterJni = mock(FlutterJNI.class);
+    final DartMessenger messenger = new DartMessenger(fakeFlutterJni);
+    final String channel = "sync_channel";
+    final LinkedList<String> events = new LinkedList<>();
+
+    messenger.setMessageHandler(channel, (msg, reply) -> events.add("h1:" + msg.getInt(0)));
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          // Decline msg1 so it queues on PlatformTaskQueue under the first HandlerInfo.
+          if (msg.getInt(0) == 1) {
+            return false;
+          }
+          events.add("sync1:" + msg.getInt(0));
+          return true;
+        });
+
+    final ByteBuffer msg1 = ByteBuffer.allocateDirect(4);
+    msg1.putInt(0, 1);
+    messenger.handleMessageFromDart(channel, msg1, 0, 2001L);
+    assertTrue(events.isEmpty());
+
+    // Replace the message handler while msg1 is still pending in PlatformTaskQueue.
+    messenger.setMessageHandler(channel, (msg, reply) -> events.add("h2:" + msg.getInt(0)));
+
+    // Queue msg2 on the new HandlerInfo before attaching a new synchronous handler.
+    final ByteBuffer msg2 = ByteBuffer.allocateDirect(4);
+    msg2.putInt(0, 2);
+    messenger.handleMessageFromDart(channel, msg2, 0, 2002L);
+    assertTrue(events.isEmpty());
+
+    // Attach a new synchronous handler to the second registration; because msg2 is still queued
+    // on the second HandlerInfo, msg3 must not overtake msg2 synchronously.
+    messenger.setSynchronousMessageHandler(
+        channel,
+        (msg, reply) -> {
+          events.add("sync2:" + msg.getInt(0));
+          return true;
+        });
+
+    final ByteBuffer msg3 = ByteBuffer.allocateDirect(4);
+    msg3.putInt(0, 3);
+    messenger.handleMessageFromDart(channel, msg3, 0, 2003L);
+    assertTrue(events.isEmpty());
+
+    shadowMainLooper().idle();
+    assertEquals(Arrays.asList("h1:1", "h2:2", "h2:3"), events);
+
+    // Once the second registration's queue has drained, msg4 executes synchronously via sync2.
+    final ByteBuffer msg4 = ByteBuffer.allocateDirect(4);
+    msg4.putInt(0, 4);
+    messenger.handleMessageFromDart(channel, msg4, 0, 2004L);
+    assertEquals(Arrays.asList("h1:1", "h2:2", "h2:3", "sync2:4"), events);
   }
 }
