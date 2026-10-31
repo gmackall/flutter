@@ -4,13 +4,19 @@
 
 package io.flutter.plugin.platform;
 
+import static io.flutter.Build.API_LEVELS;
+
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.HardwareRenderer;
 import android.graphics.Matrix;
 import android.graphics.PorterDuff;
+import android.graphics.RecordingCanvas;
 import android.graphics.Rect;
+import android.graphics.RenderNode;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
@@ -24,6 +30,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
 import io.flutter.embedding.android.AndroidTouchProcessor;
@@ -59,6 +66,33 @@ public class PlatformViewWrapper extends FrameLayout {
   @Nullable private Canvas pendingFrameCanvas;
   private final Runnable postPendingFrameRunnable = () -> postPendingFrame(true);
 
+  /**
+   * Whether this view's subtree is rendered into the render target with a dedicated {@link
+   * HardwareRenderer} rather than with {@link Surface#lockHardwareCanvas()}.
+   *
+   * <p>{@link Surface#lockHardwareCanvas()} renders through {@code Surface.HwuiContext}, which
+   * submits every frame with {@code System.nanoTime()} as its vsync time. HWUI derives the work
+   * duration that it reports to the Android Dynamic Performance Framework (ADPF) hint session of
+   * the UI thread and RenderThread from that frame start time, so none of the UI thread work of the
+   * frame (input, animation, recording the platform view) is reported, and the session gets starved
+   * of its CPU boost (UI thread and RenderThread end up on little cores). A dedicated renderer lets
+   * us submit frames with the Choreographer frame time instead.
+   */
+  @VisibleForTesting
+  static boolean useDedicatedHardwareRenderer = Build.VERSION.SDK_INT >= API_LEVELS.API_29;
+
+  // Present when useDedicatedHardwareRenderer is true. See drawWithHardwareRenderer().
+  @Nullable private HardwareRenderer hardwareRenderer;
+  @Nullable private RenderNode hardwareRendererRoot;
+  @Nullable private Surface hardwareRendererSurface;
+  // Whether hardwareRendererRoot holds a recorded frame that hasn't been submitted yet.
+  private boolean hasPendingHardwareRendererFrame;
+  private long pendingFrameVsyncNanos;
+
+  // Frame times older than this are considered stale (e.g. draw() outside of a Choreographer
+  // traversal), and the current time is used instead.
+  private static final long MAX_FRAME_TIME_AGE_NANOS = 100_000_000L;
+
   public PlatformViewWrapper(@NonNull Context context) {
     super(context);
     setWillNotDraw(false);
@@ -71,6 +105,25 @@ public class PlatformViewWrapper extends FrameLayout {
 
     Surface surface = renderTarget.getSurface();
     if (surface != null && !FlutterRenderer.debugDisableSurfaceClear) {
+      if (useDedicatedHardwareRenderer && Build.VERSION.SDK_INT >= API_LEVELS.API_29) {
+        if (!surface.isValid()) {
+          Log.e(TAG, "Platform view cannot be cleared without a valid RenderTarget surface.");
+          return;
+        }
+        // A surface can only have one producer connected, so the dedicated renderer must also be
+        // used for the initial clear. Passing System.nanoTime() advances HWUI's process-wide
+        // TimeLord; if the first traversal draw runs within ~2ms of construction, HWUI may report
+        // SYNC_FRAME_DROPPED ("AlreadyDrawn") once and self-heal on the next vsync via its own
+        // RenderThread retry callback.
+        final RecordingCanvas canvas = beginHardwareRendererFrame(surface);
+        try {
+          canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+        } finally {
+          hardwareRendererRoot.endRecording();
+        }
+        syncAndDrawHardwareRendererFrame(hardwareRenderer, System.nanoTime());
+        return;
+      }
       final Canvas canvas = surface.lockHardwareCanvas();
       try {
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
@@ -149,11 +202,34 @@ public class PlatformViewWrapper extends FrameLayout {
     return 0;
   }
 
+  @Override
+  protected void onWindowVisibilityChanged(int visibility) {
+    super.onWindowVisibilityChanged(visibility);
+    if (visibility != View.VISIBLE) {
+      // Flush any pending frame before detaching the surface.
+      postPendingFrame(true);
+      // When backgrounded on API 29-34, ImageReaderSurfaceProducer.cleanup() closes its
+      // ImageReaders on TRIM_MEMORY_BACKGROUND. Detach the surface from the dedicated
+      // HardwareRenderer so it releases its native ANativeWindow reference and GraphicBuffer
+      // slot cache; the next draw() will re-bind via setSurface().
+      if (hardwareRenderer != null && Build.VERSION.SDK_INT >= API_LEVELS.API_29) {
+        setHardwareRendererSurface(hardwareRenderer, null);
+        hardwareRendererSurface = null;
+      }
+    }
+  }
+
   /** Releases resources. */
   public void release() {
     // Unlock any pending canvas without scheduling a redundant engine frame for a texture that is
     // about to be released.
     postPendingFrame(false);
+    if (hardwareRenderer != null && Build.VERSION.SDK_INT >= API_LEVELS.API_29) {
+      hardwareRenderer.destroy();
+      hardwareRenderer = null;
+      hardwareRendererRoot = null;
+      hardwareRendererSurface = null;
+    }
     if (renderTarget != null) {
       renderTarget.release();
       renderTarget = null;
@@ -213,6 +289,11 @@ public class PlatformViewWrapper extends FrameLayout {
       return;
     }
 
+    if (useDedicatedHardwareRenderer && Build.VERSION.SDK_INT >= API_LEVELS.API_29) {
+      drawWithHardwareRenderer(targetSurface);
+      return;
+    }
+
     final Canvas targetCanvas = targetSurface.lockHardwareCanvas();
     if (targetCanvas == null) {
       // Cannot render right now.
@@ -246,8 +327,121 @@ public class PlatformViewWrapper extends FrameLayout {
     }
   }
 
+  /**
+   * Records this view's subtree into {@link #hardwareRendererRoot} and schedules its submission to
+   * the render target, like the {@link Surface#lockHardwareCanvas()} path in {@link #draw(Canvas)}.
+   */
+  @RequiresApi(API_LEVELS.API_29)
+  private void drawWithHardwareRenderer(@NonNull Surface targetSurface) {
+    final RecordingCanvas canvas = beginHardwareRendererFrame(targetSurface);
+    try {
+      // Fill the render target with transparent pixels. This is needed for platform views that
+      // expect a transparent background.
+      canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+      super.draw(canvas);
+    } finally {
+      hardwareRendererRoot.endRecording();
+      // See draw() for why the frame is submitted after the current Choreographer frame.
+      pendingFrameVsyncNanos = getFrameTimeNanos();
+      hasPendingHardwareRendererFrame = true;
+      mainHandler.postAtFrontOfQueue(postPendingFrameRunnable);
+    }
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  @NonNull
+  private RecordingCanvas beginHardwareRendererFrame(@NonNull Surface targetSurface) {
+    if (hardwareRenderer == null) {
+      hardwareRendererRoot = new RenderNode("PlatformViewWrapper");
+      hardwareRendererRoot.setClipToBounds(false);
+      hardwareRendererRoot.setForceDarkAllowed(false);
+      hardwareRenderer = new HardwareRenderer();
+      hardwareRenderer.setContentRoot(hardwareRendererRoot);
+      hardwareRenderer.setOpaque(false);
+      // Match Surface.HwuiContext, which disables elevation shadows.
+      hardwareRenderer.setLightSourceAlpha(0.0f, 0.0f);
+      hardwareRenderer.setLightSourceGeometry(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    if (hardwareRendererSurface != targetSurface) {
+      setHardwareRendererSurface(hardwareRenderer, targetSurface);
+      hardwareRendererSurface = targetSurface;
+    }
+    final int width = renderTarget.getWidth();
+    final int height = renderTarget.getHeight();
+    // Keep the root RenderNode's bounds equal to the buffer dimensions; re-recording the root's
+    // display list below then damages the full bounds every frame (important because public
+    // HardwareRenderer.setSurface() uses buffer-preserving swap behavior with partial damage).
+    hardwareRendererRoot.setPosition(0, 0, width, height);
+    return hardwareRendererRoot.beginRecording(width, height);
+  }
+
+  /**
+   * Returns the start time of the current frame in the {@link System#nanoTime()} time base.
+   *
+   * <p>During a traversal, {@link #getDrawingTime()} is the Choreographer frame time (in ms).
+   * Reporting it as the vsync time makes HWUI account for the UI thread work of this frame in the
+   * ADPF work duration of the platform view's frames.
+   */
+  @VisibleForTesting
+  long getFrameTimeNanos() {
+    return getFrameTimeNanos(System.nanoTime());
+  }
+
+  @VisibleForTesting
+  long getFrameTimeNanos(long nowNanos) {
+    final long frameTimeNanos = getDrawingTime() * 1_000_000L;
+    if (frameTimeNanos <= 0
+        || frameTimeNanos > nowNanos
+        || nowNanos - frameTimeNanos > MAX_FRAME_TIME_AGE_NANOS) {
+      return nowNanos;
+    }
+    return frameTimeNanos;
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  @VisibleForTesting
+  void setHardwareRendererSurface(
+      @NonNull HardwareRenderer renderer, @Nullable Surface surface) {
+    renderer.setSurface(surface);
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  @VisibleForTesting
+  int syncAndDrawHardwareRendererFrame(@NonNull HardwareRenderer renderer, long vsyncNanos) {
+    return renderer.createRenderRequest().setVsyncTime(vsyncNanos).syncAndDraw();
+  }
+
   /** Posts the frame recorded by the last {@link #draw(Canvas)} call to the render target. */
   private void postPendingFrame(boolean scheduleFrame) {
+    if (hasPendingHardwareRendererFrame) {
+      hasPendingHardwareRendererFrame = false;
+      mainHandler.removeCallbacks(postPendingFrameRunnable);
+      // Unlike lockHardwareCanvas(), the display list recording is already closed in
+      // drawWithHardwareRenderer(), so release() (scheduleFrame == false) only needs to cancel the
+      // pending callback before destroying the renderer.
+      if (hardwareRenderer == null
+          || !scheduleFrame
+          || Build.VERSION.SDK_INT < API_LEVELS.API_29) {
+        return;
+      }
+      final int syncResult =
+          syncAndDrawHardwareRendererFrame(hardwareRenderer, pendingFrameVsyncNanos);
+      if ((syncResult & HardwareRenderer.SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) {
+        // If HWUI lost or dropped the surface (e.g. after a dequeue timeout), clear the cached
+        // reference and request a redraw so the next draw() re-attaches via setSurface().
+        hardwareRendererSurface = null;
+        invalidate();
+      }
+      // When SYNC_FRAME_DROPPED is set (e.g. "AlreadyDrawn" when vsyncNanos is within ~2ms of
+      // HWUI TimeLord's latest vsync), HWUI posts its own RenderThread frame callback and draws
+      // the synced RenderNode tree at the next vsync. ImageReaderSurfaceProducer's onImage
+      // listener then schedules an engine frame when that buffer arrives, so skipping
+      // scheduleFrame() here is safe and recovers the content on the next vsync.
+      if ((syncResult & HardwareRenderer.SYNC_FRAME_DROPPED) == 0 && renderTarget != null) {
+        renderTarget.scheduleFrame();
+      }
+      return;
+    }
     final Surface surface = pendingFrameSurface;
     final Canvas canvas = pendingFrameCanvas;
     if (surface == null || canvas == null) {

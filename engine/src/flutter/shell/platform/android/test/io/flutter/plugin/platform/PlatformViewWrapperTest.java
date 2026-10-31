@@ -14,6 +14,7 @@ import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.HardwareRenderer;
 import android.graphics.Matrix;
 import android.os.Looper;
 import android.view.Gravity;
@@ -29,8 +30,10 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -44,9 +47,279 @@ import org.robolectric.annotation.Implements;
 public class PlatformViewWrapperTest {
   private final Context ctx = ApplicationProvider.getApplicationContext();
 
+  private static class HardwareRendererTestWrapper extends PlatformViewWrapper {
+    int syncAndDrawCalls;
+    long lastVsyncNanos = -1L;
+    int nextSyncResult = HardwareRenderer.SYNC_OK;
+    long stubbedDrawingTimeMs;
+    List<Surface> boundSurfaces;
+
+    HardwareRendererTestWrapper(Context context, PlatformViewRenderTarget renderTarget) {
+      super(context, renderTarget);
+      if (boundSurfaces == null) {
+        boundSurfaces = new ArrayList<>();
+      }
+    }
+
+    @Override
+    public long getDrawingTime() {
+      return stubbedDrawingTimeMs != 0L ? stubbedDrawingTimeMs : super.getDrawingTime();
+    }
+
+    @Override
+    void setHardwareRendererSurface(HardwareRenderer renderer, Surface surface) {
+      super.setHardwareRendererSurface(renderer, surface);
+      if (boundSurfaces == null) {
+        boundSurfaces = new ArrayList<>();
+      }
+      boundSurfaces.add(surface);
+    }
+
+    @Override
+    int syncAndDrawHardwareRendererFrame(HardwareRenderer renderer, long vsyncNanos) {
+      syncAndDrawCalls++;
+      lastVsyncNanos = vsyncNanos;
+      if (nextSyncResult != HardwareRenderer.SYNC_OK) {
+        return nextSyncResult;
+      }
+      return super.syncAndDrawHardwareRendererFrame(renderer, vsyncNanos);
+    }
+  }
+
+  @Before
+  public void setUp() {
+    // Most tests exercise the Surface#lockHardwareCanvas() path with a mocked Surface.
+    PlatformViewWrapper.useDedicatedHardwareRenderer = false;
+  }
+
   @After
   public void tearDown() {
     FlutterRenderer.debugDisableSurfaceClear = false;
+    PlatformViewWrapper.useDedicatedHardwareRenderer =
+        android.os.Build.VERSION.SDK_INT >= API_LEVELS.API_29;
+  }
+
+  @Test
+  public void constructor_withDedicatedHardwareRenderer_clearsSurfaceWithoutLockingSurfaceCanvas() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = false;
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+
+    verify(surface, never()).lockHardwareCanvas();
+    verify(renderTarget, never()).scheduleFrame();
+    assertEquals(1, wrapper.boundSurfaces.size());
+    assertSame(surface, wrapper.boundSurfaces.get(0));
+    assertEquals(1, wrapper.syncAndDrawCalls);
+    wrapper.release();
+
+    // An invalid surface is skipped without throwing IllegalArgumentException.
+    final Surface invalidSurface = mock(Surface.class);
+    when(invalidSurface.isValid()).thenReturn(false);
+    final PlatformViewRenderTarget invalidTarget = mock(PlatformViewRenderTarget.class);
+    when(invalidTarget.getSurface()).thenReturn(invalidSurface);
+    final HardwareRendererTestWrapper invalidWrapper =
+        new HardwareRendererTestWrapper(ctx, invalidTarget);
+    assertTrue(invalidWrapper.boundSurfaces.isEmpty());
+    assertEquals(0, invalidWrapper.syncAndDrawCalls);
+    invalidWrapper.release();
+  }
+
+  @Test
+  public void draw_withDedicatedHardwareRenderer_doesNotLockSurfaceCanvas() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+    wrapper.stubbedDrawingTimeMs = System.nanoTime() / 1_000_000L;
+
+    wrapper.draw(mock(Canvas.class));
+
+    // The subtree is recorded into the wrapper's own RenderNode, never into a Surface canvas.
+    verify(surface, never()).lockHardwareCanvas();
+    verify(renderTarget, never()).scheduleFrame();
+    assertEquals(0, wrapper.syncAndDrawCalls);
+
+    shadowOf(Looper.getMainLooper()).idle();
+
+    verify(surface, never()).unlockCanvasAndPost(any());
+    assertEquals(1, wrapper.syncAndDrawCalls);
+    assertTrue(wrapper.lastVsyncNanos > 0);
+    verify(renderTarget, times(1)).scheduleFrame();
+    wrapper.release();
+  }
+
+  @Test
+  public void draw_withDedicatedHardwareRenderer_doesNotScheduleFrameWhenSyncFrameDropped() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+    wrapper.nextSyncResult = HardwareRenderer.SYNC_FRAME_DROPPED;
+
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+
+    assertEquals(1, wrapper.syncAndDrawCalls);
+    verify(renderTarget, never()).scheduleFrame();
+    wrapper.release();
+  }
+
+  @Test
+  public void draw_withDedicatedHardwareRenderer_rebindsWhenSurfaceChangesOrIsLost() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final Surface surface1 = mock(Surface.class);
+    when(surface1.isValid()).thenReturn(true);
+    final Surface surface2 = mock(Surface.class);
+    when(surface2.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface1);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+
+    // First draw binds surface1; second draw with same surface1 does not re-bind.
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(1, wrapper.boundSurfaces.size());
+    assertSame(surface1, wrapper.boundSurfaces.get(0));
+
+    // Rotating/resizing the render target to surface2 triggers setSurface(surface2).
+    when(renderTarget.getSurface()).thenReturn(surface2);
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(2, wrapper.boundSurfaces.size());
+    assertSame(surface2, wrapper.boundSurfaces.get(1));
+
+    // SYNC_LOST_SURFACE_REWARD_IF_FOUND clears the cached surface so the next draw re-attaches.
+    wrapper.nextSyncResult = HardwareRenderer.SYNC_LOST_SURFACE_REWARD_IF_FOUND;
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    wrapper.nextSyncResult = HardwareRenderer.SYNC_OK;
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(3, wrapper.boundSurfaces.size());
+    assertSame(surface2, wrapper.boundSurfaces.get(2));
+    wrapper.release();
+  }
+
+  @Test
+  public void resizeRenderTarget_withDedicatedHardwareRenderer_submitsPendingFrameBeforeResizing() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+
+    wrapper.draw(mock(Canvas.class));
+    wrapper.resizeRenderTarget(200, 300);
+
+    assertEquals(1, wrapper.syncAndDrawCalls);
+    final InOrder inOrder = inOrder(renderTarget);
+    inOrder.verify(renderTarget).scheduleFrame();
+    inOrder.verify(renderTarget).resize(200, 300);
+
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(1, wrapper.syncAndDrawCalls);
+    verify(renderTarget, times(1)).scheduleFrame();
+    wrapper.release();
+  }
+
+  @Test
+  public void
+      onWindowVisibilityChanged_withDedicatedHardwareRenderer_flushesPendingFrameAndDetachesSurface() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+
+    wrapper.draw(mock(Canvas.class));
+    wrapper.onWindowVisibilityChanged(View.GONE);
+
+    assertEquals(1, wrapper.syncAndDrawCalls);
+    verify(renderTarget, times(1)).scheduleFrame();
+    assertEquals(2, wrapper.boundSurfaces.size());
+    assertSame(surface, wrapper.boundSurfaces.get(0));
+    assertNull(wrapper.boundSurfaces.get(1));
+
+    // Subsequent draw when visible again re-binds the surface.
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(3, wrapper.boundSurfaces.size());
+    assertSame(surface, wrapper.boundSurfaces.get(2));
+    wrapper.release();
+  }
+
+  @Test
+  public void release_withDedicatedHardwareRenderer_cancelsPendingFrameAndDoesNotScheduleFrame() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+
+    wrapper.draw(mock(Canvas.class));
+    wrapper.release();
+
+    verify(renderTarget, times(1)).release();
+    assertEquals(0, wrapper.syncAndDrawCalls);
+    verify(renderTarget, never()).scheduleFrame();
+
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(0, wrapper.syncAndDrawCalls);
+    verify(renderTarget, never()).scheduleFrame();
+  }
+
+  @Test
+  public void getFrameTimeNanos_fallsBackToNowWhenDrawingTimeIsStale() {
+    final PlatformViewWrapper wrapper = spy(new PlatformViewWrapper(ctx));
+    final long nowMs = 1_000L;
+    final long nowNanos = nowMs * 1_000_000L;
+
+    when(wrapper.getDrawingTime()).thenReturn(nowMs - 4);
+    assertEquals((nowMs - 4) * 1_000_000L, wrapper.getFrameTimeNanos(nowNanos));
+
+    // Stale (> 100 ms old), non-positive, or future drawing times fall back to nowNanos.
+    when(wrapper.getDrawingTime()).thenReturn(nowMs - 101);
+    assertEquals(nowNanos, wrapper.getFrameTimeNanos(nowNanos));
+
+    when(wrapper.getDrawingTime()).thenReturn(0L);
+    assertEquals(nowNanos, wrapper.getFrameTimeNanos(nowNanos));
+
+    when(wrapper.getDrawingTime()).thenReturn(nowMs + 10);
+    assertEquals(nowNanos, wrapper.getFrameTimeNanos(nowNanos));
   }
 
   @Test
