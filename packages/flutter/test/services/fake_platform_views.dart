@@ -91,6 +91,18 @@ class FakeAndroidViewController implements AndroidViewController {
   late PointTransformer pointTransformer;
 
   @override
+  LiveTransformProvider? liveTransformProvider;
+
+  @override
+  bool get isDirectTouchDispatchActive => false;
+
+  @override
+  Future<void> invalidateDirectTouch({int? downTime}) async {}
+
+  @override
+  void validateDirectTouchTransform({PointerEvent? event}) {}
+
+  @override
   Future<void> dispatchPointerEvent(PointerEvent event) async {
     dispatchedPointerEvents.add(event);
   }

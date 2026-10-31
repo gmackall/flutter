@@ -144,6 +144,15 @@ public class PlatformViewsControllerDelegator
     }
   }
 
+  @Override
+  public void onInvalidateDirectTouch(int viewId, long downTime) {
+    if (platformViewsController2.getPlatformViewById(viewId) != null) {
+      channelHandler2.onInvalidateDirectTouch(viewId, downTime);
+    } else {
+      channelHandler.onInvalidateDirectTouch(viewId, downTime);
+    }
+  }
+
   /** Returns true if creation of HC++ platform views is currently supported. */
   @Override
   public boolean isHcppEnabled() {
