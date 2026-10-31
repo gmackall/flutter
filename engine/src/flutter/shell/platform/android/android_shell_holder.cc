@@ -5,18 +5,24 @@
 #define FML_USED_ON_EMBEDDER
 
 #include <pthread.h>
+#include <sched.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
-
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "common/settings.h"
 #include "flutter/fml/cpu_affinity.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/message_loop.h"
+#include "flutter/fml/platform/android/cpu_affinity.h"
 #include "flutter/lib/ui/painting/image_generator_registry.h"
 #include "flutter/shell/common/rasterizer.h"
 #include "flutter/shell/common/run_configuration.h"
@@ -29,6 +35,11 @@
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
+
+namespace {
+std::mutex g_saved_affinity_mutex;
+std::unordered_map<pid_t, cpu_set_t> g_saved_thread_affinities;
+}  // namespace
 
 /// Inheriting ThreadConfigurer and use Android platform thread API to configure
 /// the thread priorities
@@ -86,8 +97,9 @@ AndroidShellHolder::AndroidShellHolder(
     : settings_(settings),
       jni_facade_(jni_facade),
       android_rendering_api_(android_rendering_api) {
-  static size_t thread_host_count = 1;
-  auto thread_label = std::to_string(thread_host_count++);
+  static std::atomic<size_t> thread_host_count{1};
+  auto thread_label =
+      std::to_string(thread_host_count.fetch_add(1, std::memory_order_relaxed));
 
   auto mask = ThreadHost::Type::kRaster | ThreadHost::Type::kIo;
   if (settings.merged_platform_ui_thread !=
@@ -95,8 +107,18 @@ AndroidShellHolder::AndroidShellHolder(
     mask |= ThreadHost::Type::kUi;
   }
 
+  auto raster_tid_cell = std::make_shared<std::atomic<pid_t>>(0);
+  raster_thread_tid_ = raster_tid_cell;
+
   flutter::ThreadHost::ThreadHostConfig host_config(
-      thread_label, mask, AndroidPlatformThreadConfigSetter);
+      thread_label, mask,
+      [raster_tid_cell](const fml::Thread::ThreadConfig& config) {
+        if (config.priority == fml::Thread::ThreadPriority::kRaster) {
+          raster_tid_cell->store(static_cast<pid_t>(gettid()),
+                                 std::memory_order_release);
+        }
+        AndroidPlatformThreadConfigSetter(config);
+      });
   host_config.ui_config = fml::Thread::ThreadConfig(
       flutter::ThreadHost::ThreadHostConfig::MakeThreadName(
           flutter::ThreadHost::Type::kUi, thread_label),
@@ -110,7 +132,15 @@ AndroidShellHolder::AndroidShellHolder(
           flutter::ThreadHost::Type::kIo, thread_label),
       fml::Thread::ThreadPriority::kNormal);
 
-  thread_host_ = std::make_shared<ThreadHost>(host_config);
+  auto* raw_thread_host = new ThreadHost(host_config);
+  thread_host_ = std::shared_ptr<ThreadHost>(
+      raw_thread_host, [raster_tid_cell](ThreadHost* host) {
+        // Clear the shared raster thread TID cell before ~ThreadHost() joins
+        // the raster thread, so all AndroidShellHolders sharing this ThreadHost
+        // observe 0 only when the last holder is destroyed.
+        raster_tid_cell->store(0, std::memory_order_release);
+        delete host;
+      });
 
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
@@ -186,6 +216,7 @@ AndroidShellHolder::AndroidShellHolder(
 AndroidShellHolder::AndroidShellHolder(
     const Settings& settings,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
+    const std::shared_ptr<std::atomic<pid_t>>& raster_thread_tid,
     const std::shared_ptr<ThreadHost>& thread_host,
     std::unique_ptr<Shell> shell,
     std::unique_ptr<APKAssetProvider> apk_asset_provider,
@@ -194,6 +225,7 @@ AndroidShellHolder::AndroidShellHolder(
     : settings_(settings),
       jni_facade_(jni_facade),
       platform_view_(platform_view),
+      raster_thread_tid_(raster_thread_tid),
       thread_host_(thread_host),
       shell_(std::move(shell)),
       apk_asset_provider_(std::move(apk_asset_provider)),
@@ -217,6 +249,48 @@ bool AndroidShellHolder::IsValid() const {
 
 const flutter::Settings& AndroidShellHolder::GetSettings() const {
   return settings_;
+}
+
+pid_t AndroidShellHolder::GetRasterThreadTid() const {
+  return raster_thread_tid_
+             ? raster_thread_tid_->load(std::memory_order_acquire)
+             : 0;
+}
+
+bool AndroidShellHolder::EnterScopedWorkloadAffinityForThread(pid_t tid) {
+  if (tid <= 0) {
+    return false;
+  }
+  cpu_set_t baseline_mask;
+  CPU_ZERO(&baseline_mask);
+  if (::sched_getaffinity(tid, sizeof(cpu_set_t), &baseline_mask) != 0) {
+    return false;
+  }
+  if (!fml::AndroidRequestAffinityForThread(tid,
+                                            fml::CpuAffinity::kNotEfficiency)) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_saved_affinity_mutex);
+  g_saved_thread_affinities.try_emplace(tid, baseline_mask);
+  return true;
+}
+
+bool AndroidShellHolder::RestoreScopedWorkloadAffinityForThread(pid_t tid) {
+  if (tid <= 0) {
+    return false;
+  }
+  cpu_set_t saved_mask;
+  CPU_ZERO(&saved_mask);
+  {
+    std::lock_guard<std::mutex> lock(g_saved_affinity_mutex);
+    auto it = g_saved_thread_affinities.find(tid);
+    if (it == g_saved_thread_affinities.end()) {
+      return false;
+    }
+    saved_mask = it->second;
+    g_saved_thread_affinities.erase(it);
+  }
+  return ::sched_setaffinity(tid, sizeof(cpu_set_t), &saved_mask) == 0;
 }
 
 std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
@@ -279,8 +353,8 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
                     on_create_platform_view, on_create_rasterizer);
 
   return std::unique_ptr<AndroidShellHolder>(new AndroidShellHolder(
-      GetSettings(), jni_facade, thread_host_, std::move(shell),
-      apk_asset_provider_->Clone(), weak_platform_view,
+      GetSettings(), jni_facade, raster_thread_tid_, thread_host_,
+      std::move(shell), apk_asset_provider_->Clone(), weak_platform_view,
       android_context->RenderingApi()));
 }
 

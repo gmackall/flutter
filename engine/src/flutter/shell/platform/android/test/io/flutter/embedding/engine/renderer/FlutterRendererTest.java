@@ -196,6 +196,24 @@ public class FlutterRendererTest {
   }
 
   @Test
+  public void getSharedImageReaderTid_tracksLivenessAndRespawnsAfterThreadExit()
+      throws InterruptedException {
+    FlutterRenderer.stopSharedImageReaderThreadForTest();
+    assertEquals(0, FlutterRenderer.getSharedImageReaderTid());
+
+    assertNotNull(FlutterRenderer.getOrCreateSharedImageReaderHandler());
+    final int firstTid = FlutterRenderer.getSharedImageReaderTid();
+    assertTrue(firstTid > 0);
+
+    FlutterRenderer.stopSharedImageReaderThreadForTest();
+    assertEquals(0, FlutterRenderer.getSharedImageReaderTid());
+
+    assertNotNull(FlutterRenderer.getOrCreateSharedImageReaderHandler());
+    assertTrue(FlutterRenderer.getSharedImageReaderTid() > 0);
+    FlutterRenderer.stopSharedImageReaderThreadForTest();
+  }
+
+  @Test
   public void itRegistersExistingSurfaceTexture() {
     // Setup the test.
     Surface fakeSurface = mock(Surface.class);
