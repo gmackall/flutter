@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "impeller/core/texture.h"
+#include "impeller/geometry/matrix.h"
 #include "impeller/geometry/rect.h"
 #include "impeller/typographer/font_glyph_pair.h"
 #include "impeller/typographer/rectangle_packer.h"
@@ -170,7 +171,45 @@ class GlyphAtlas {
   /// @brief      Update the atlas generation.
   void SetAtlasGeneration(size_t value);
 
+  bool HasVerifiedTextFrame(uint64_t text_frame_id,
+                            const Matrix& origin_transform,
+                            const GlyphProperties& properties) const;
+
+  void RecordVerifiedTextFrame(uint64_t text_frame_id,
+                               const Matrix& origin_transform,
+                               const GlyphProperties& properties);
+
  private:
+  struct VerifiedTextFrameKey {
+    uint64_t text_frame_id = 0;
+    Matrix origin_transform;
+    GlyphProperties properties;
+
+    template <typename H>
+    friend H AbslHashValue(H h, const VerifiedTextFrameKey& key) {
+      StrokeParameters stroke;
+      bool has_stroke = key.properties.stroke.has_value();
+      if (has_stroke) {
+        stroke = key.properties.stroke.value();
+      }
+      return H::combine(std::move(h), key.text_frame_id,
+                        key.origin_transform.m[0], key.origin_transform.m[1],
+                        key.origin_transform.m[4], key.origin_transform.m[5],
+                        key.origin_transform.m[12], key.origin_transform.m[13],
+                        key.properties.tone_or_color, has_stroke, stroke.cap,
+                        stroke.join, stroke.miter_limit, stroke.width);
+    }
+
+    struct Equal {
+      inline bool operator()(const VerifiedTextFrameKey& lhs,
+                             const VerifiedTextFrameKey& rhs) const {
+        return lhs.text_frame_id == rhs.text_frame_id &&
+               lhs.origin_transform == rhs.origin_transform &&
+               GlyphProperties::Equal{}(lhs.properties, rhs.properties);
+      }
+    };
+  };
+
   const Type type_;
   std::shared_ptr<Texture> texture_;
   size_t generation_ = 0;
@@ -181,6 +220,14 @@ class GlyphAtlas {
                                            ScaledFont::Equal>;
 
   FontAtlasMap font_atlas_map_;
+
+  using VerifiedTextFrameMap =
+      absl::flat_hash_map<VerifiedTextFrameKey,
+                          bool,
+                          absl::Hash<VerifiedTextFrameKey>,
+                          VerifiedTextFrameKey::Equal>;
+
+  VerifiedTextFrameMap verified_text_frames_;
 
   GlyphAtlas(const GlyphAtlas&) = delete;
 
