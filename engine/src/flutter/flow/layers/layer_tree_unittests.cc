@@ -33,6 +33,11 @@ class LayerTreeTest : public CanvasTest {
                                                        nullptr)) {}
 
   CompositorContext::ScopedFrame& frame() { return *scoped_frame_.get(); }
+  std::unique_ptr<CompositorContext::ScopedFrame> AcquireFrameWithTransform(
+      const DlMatrix& transform) {
+    return compositor_context_.AcquireFrame(
+        nullptr, &builder_, nullptr, transform, false, true, nullptr, nullptr);
+  }
   const DlMatrix& root_transform() { return root_transform_; }
   sk_sp<DisplayList> display_list() { return builder_.Build(); }
 
@@ -314,6 +319,74 @@ TEST_F(LayerTreeTest, FlattenInitializesContexts) {
       });
   layer_tree->Flatten(DlRect::MakeWH(100, 100), /*texture_registry=*/nullptr,
                       /*gr_context=*/nullptr, fake_aiks);
+}
+
+TEST_F(LayerTreeTest, ReusedLayerTreeSkipsRedundantPrerollWhenEligible) {
+  auto layer = std::make_shared<MockFlattenLayer>();
+  auto layer_tree = BuildLayerTree(layer);
+
+  // First Preroll (with ignore_raster_cache = true) executes
+  // root_layer->Preroll and caches the preroll state.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true));
+
+  // Once marked reusable (as Rasterizer::DrawToSurfacesUnsafe does after a
+  // successful draw), a subsequent Preroll with identical cull_rect and root
+  // surface transformation skips walking the layer tree.
+  layer_tree->MarkPrerollReusable();
+  EXPECT_TRUE(layer_tree->IsPrerollReusable());
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true));
+
+  // Changing cull_rect invalidates the cached preroll and re-walks the tree.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+
+  // Calling with the new cull_rect again reuses the updated preroll state.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(0);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+
+  // Changing root_surface_transformation invalidates the cached preroll and
+  // re-walks the tree.
+  auto transformed_frame =
+      AcquireFrameWithTransform(DlMatrix::MakeTranslation({10.0f, 20.0f}));
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(*transformed_frame,
+                                   /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(0);
+  EXPECT_FALSE(layer_tree->Preroll(*transformed_frame,
+                                   /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+
+  // Calling Preroll with ignore_raster_cache = false invalidates the cached
+  // preroll and re-walks the tree, and also forces the next
+  // ignore_raster_cache = true Preroll to re-walk the tree.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(*transformed_frame,
+                                   /*ignore_raster_cache=*/false,
+                                   DlRect::MakeWH(32, 32)));
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+
+  // Offscreen/screenshot Flatten() between texture redraws mutates layer
+  // preroll state and must invalidate the cached preroll so the next on-screen
+  // Preroll() re-walks the tree.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_CALL(*layer, Paint(::testing::_)).Times(1);
+  layer_tree->Flatten(DlRect::MakeWH(100, 100));
+
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+
+  // When subtree_has_platform_view() is true, Preroll is never skipped.
+  layer->set_subtree_has_platform_view(true);
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
 }
 
 }  // namespace testing

@@ -35,6 +35,13 @@ bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
     return false;
   }
 
+  if (preroll_reusable_ && has_valid_preroll_ && ignore_raster_cache &&
+      !root_layer_->subtree_has_platform_view() &&
+      cull_rect == last_preroll_cull_rect_ &&
+      frame.root_surface_transformation() == last_preroll_surface_transform_) {
+    return last_surface_needs_readback_;
+  }
+
   SkColorSpace* color_space = GetColorSpace(frame.canvas());
   LayerStateStack state_stack;
   state_stack.set_preroll_delegate(cull_rect,
@@ -59,6 +66,15 @@ bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
   };
 
   root_layer_->Preroll(&context);
+
+  if (ignore_raster_cache && !root_layer_->subtree_has_platform_view()) {
+    has_valid_preroll_ = true;
+    last_surface_needs_readback_ = context.surface_needs_readback;
+    last_preroll_cull_rect_ = cull_rect;
+    last_preroll_surface_transform_ = frame.root_surface_transformation();
+  } else {
+    has_valid_preroll_ = false;
+  }
 
   return context.surface_needs_readback;
 }
@@ -197,6 +213,10 @@ sk_sp<DisplayList> LayerTree::Flatten(
   // Even if we don't have a root layer, we still need to create an empty
   // picture.
   if (root_layer_) {
+    // Flatten() prerolls `root_layer_` with `bounds` and an identity surface
+    // transformation, mutating cached per-layer state. Invalidate any cached
+    // on-screen preroll so a subsequent texture-only redraw re-runs Preroll().
+    has_valid_preroll_ = false;
     root_layer_->Preroll(&preroll_context);
 
     // The needs painting flag may be set after the preroll. So check it after.

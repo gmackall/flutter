@@ -491,31 +491,25 @@ TypographerContextSkia::CollectNewGlyphs(
     const std::vector<RenderableText>& renderable_texts) {
   std::vector<FontGlyphPair> new_glyphs;
   std::vector<Rect> glyph_sizes;
+  const bool atlas_is_valid = atlas->IsValid();
   for (const auto& frame : renderable_texts) {
+    const uint64_t text_frame_id = frame.text_frame->GetUniqueId();
+    if (atlas_is_valid &&
+        atlas->HasVerifiedTextFrame(text_frame_id, frame.origin_transform,
+                                    frame.properties)) {
+      continue;
+    }
+    bool frame_all_glyphs_ready = true;
     Rational rounded_scale = TextFrame::RoundScaledFontSize(
         frame.origin_transform.GetMaxBasisLengthXY());
     for (const auto& run : frame.text_frame->GetRuns()) {
-      auto metrics = run.GetFont().GetMetrics();
-
       ScaledFont scaled_font{.font = run.GetFont(), .scale = rounded_scale};
 
       FontGlyphAtlas* font_glyph_atlas =
           atlas->GetOrCreateFontGlyphAtlas(scaled_font);
       FML_DCHECK(!!font_glyph_atlas);
 
-      SkFont sk_font(
-          TypefaceSkia::Cast(*scaled_font.font.GetTypeface()).GetSkiaTypeface(),
-          metrics.point_size, metrics.scaleX, metrics.skewX);
-      sk_font.setEdging(SkFont::Edging::kAntiAlias);
-      sk_font.setHinting(SkFontHinting::kSlight);
-      sk_font.setEmbolden(metrics.embolden);
-      // Rather than computing the bounds at the requested point size and
-      // scaling up the bounds, we scale up the font size and request the
-      // bounds. This seems to give more accurate bounds information.
-      sk_font.setSize(sk_font.getSize() *
-                      static_cast<Scalar>(scaled_font.scale));
-      sk_font.setSubpixel(true);
-
+      std::optional<SkFont> sk_font;
       for (const auto& glyph_position : run.GetGlyphPositions()) {
         SubpixelPosition subpixel = TextFrame::ComputeSubpixelPosition(
             glyph_position, scaled_font.font.GetAxisAlignment(),
@@ -526,9 +520,25 @@ TypographerContextSkia::CollectNewGlyphs(
             font_glyph_atlas->FindGlyphBounds(subpixel_glyph);
 
         if (!font_glyph_bounds.has_value()) {
+          frame_all_glyphs_ready = false;
+          if (!sk_font.has_value()) {
+            const auto& metrics = run.GetFont().GetMetrics();
+            sk_font.emplace(TypefaceSkia::Cast(*scaled_font.font.GetTypeface())
+                                .GetSkiaTypeface(),
+                            metrics.point_size, metrics.scaleX, metrics.skewX);
+            sk_font->setEdging(SkFont::Edging::kAntiAlias);
+            sk_font->setHinting(SkFontHinting::kSlight);
+            sk_font->setEmbolden(metrics.embolden);
+            // Rather than computing the bounds at the requested point size and
+            // scaling up the bounds, we scale up the font size and request the
+            // bounds. This seems to give more accurate bounds information.
+            sk_font->setSize(sk_font->getSize() *
+                             static_cast<Scalar>(scaled_font.scale));
+            sk_font->setSubpixel(true);
+          }
           new_glyphs.push_back(FontGlyphPair{scaled_font, subpixel_glyph});
           auto glyph_bounds = ComputeGlyphSize(
-              sk_font, subpixel_glyph, static_cast<Scalar>(scaled_font.scale));
+              *sk_font, subpixel_glyph, static_cast<Scalar>(scaled_font.scale));
           glyph_sizes.push_back(glyph_bounds);
 
           auto frame_bounds = FrameBounds{
@@ -538,8 +548,14 @@ TypographerContextSkia::CollectNewGlyphs(
           };
 
           font_glyph_atlas->AppendGlyph(subpixel_glyph, frame_bounds);
+        } else if (font_glyph_bounds->is_placeholder) {
+          frame_all_glyphs_ready = false;
         }
       }
+    }
+    if (atlas_is_valid && frame_all_glyphs_ready) {
+      atlas->RecordVerifiedTextFrame(text_frame_id, frame.origin_transform,
+                                     frame.properties);
     }
   }
   return {std::move(new_glyphs), std::move(glyph_sizes)};
@@ -619,6 +635,11 @@ std::shared_ptr<GlyphAtlas> TypographerContextSkia::CreateGlyphAtlas(
 
     // If all glyphs fit, just return the old atlas.
     if (first_missing_index == new_glyphs.size()) {
+      for (const auto& frame : renderable_texts) {
+        last_atlas->RecordVerifiedTextFrame(frame.text_frame->GetUniqueId(),
+                                            frame.origin_transform,
+                                            frame.properties);
+      }
       return last_atlas;
     }
   }
@@ -733,6 +754,11 @@ std::shared_ptr<GlyphAtlas> TypographerContextSkia::CreateGlyphAtlas(
   // ---------------------------------------------------------------------------
   // Step 8b: Record the texture in the glyph atlas.
   // ---------------------------------------------------------------------------
+  for (const auto& frame : renderable_texts) {
+    new_atlas->RecordVerifiedTextFrame(frame.text_frame->GetUniqueId(),
+                                       frame.origin_transform,
+                                       frame.properties);
+  }
 
   return new_atlas;
 }

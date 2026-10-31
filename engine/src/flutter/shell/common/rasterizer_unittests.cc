@@ -1520,4 +1520,93 @@ TEST(RasterizerTest, presentationTimeNotSetWhenVsyncTargetInPast) {
 #endif  // false
 }
 
+TEST(RasterizerTest, DrawLastLayerTreesRetainsReusableTaskWhenRedrawFails) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillOnce(Return(ByMove(std::make_unique<GLContextDefaultResult>(true))));
+
+  int acquire_count = 0;
+  int submitted_count = 0;
+  EXPECT_CALL(*surface, AcquireFrame(DlISize()))
+      .Times(3)
+      .WillRepeatedly([&](const DlISize&) -> std::unique_ptr<SurfaceFrame> {
+        acquire_count++;
+        if (acquire_count == 2) {
+          return nullptr;
+        }
+        SurfaceFrame::FramebufferInfo framebuffer_info;
+        framebuffer_info.supports_readback = true;
+        return std::make_unique<SurfaceFrame>(
+            /*surface=*/nullptr, framebuffer_info,
+            /*encode_callback=*/
+            [](const SurfaceFrame&, DlCanvas*) { return true; },
+            /*submit_callback=*/
+            [&](const SurfaceFrame&) {
+              submitted_count++;
+              return true;
+            },
+            /*frame_size=*/DlISize(800, 600));
+      });
+
+  rasterizer->Setup(std::move(surface));
+  fml::AutoResetWaitableEvent latch;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    auto pipeline = std::make_shared<FramePipeline>(/*depth=*/10);
+    auto layer_tree = std::make_unique<LayerTree>(
+        /*root_layer=*/nullptr, /*frame_size=*/DlISize());
+    auto layer_tree_item = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(layer_tree),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    PipelineProduceResult result =
+        pipeline->Produce().Complete(std::move(layer_tree_item));
+    EXPECT_TRUE(result.success);
+    ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+    DrawStatus status = rasterizer->Draw(pipeline);
+    EXPECT_EQ(status, DrawStatus::kDone);
+    EXPECT_EQ(rasterizer->GetLastDrawStatus(kImplicitViewId),
+              DrawSurfaceStatus::kSuccess);
+    EXPECT_EQ(submitted_count, 1);
+    ASSERT_NE(rasterizer->GetLastLayerTree(kImplicitViewId), nullptr);
+    EXPECT_TRUE(
+        rasterizer->GetLastLayerTree(kImplicitViewId)->IsPrerollReusable());
+
+    // First DrawLastLayerTrees fails (AcquireFrame returns nullptr), but must
+    // preserve the reusable last_layer_tree_tasks_ entry.
+    rasterizer->DrawLastLayerTrees(CreateFinishedBuildRecorder());
+    EXPECT_EQ(rasterizer->GetLastDrawStatus(kImplicitViewId),
+              DrawSurfaceStatus::kFailed);
+    EXPECT_EQ(submitted_count, 1);
+    EXPECT_NE(rasterizer->GetLastLayerTree(kImplicitViewId), nullptr);
+
+    // Subsequent DrawLastLayerTrees succeeds using the retained layer tree.
+    rasterizer->DrawLastLayerTrees(CreateFinishedBuildRecorder());
+    EXPECT_EQ(rasterizer->GetLastDrawStatus(kImplicitViewId),
+              DrawSurfaceStatus::kSuccess);
+    EXPECT_EQ(submitted_count, 2);
+    latch.Signal();
+  });
+  latch.Wait();
+}
+
 }  // namespace flutter

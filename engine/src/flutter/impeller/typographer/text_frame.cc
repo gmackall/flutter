@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "impeller/typographer/text_frame.h"
+#include <atomic>
 #include "flutter/display_list/geometry/dl_path.h"  // nogncheck
 #include "impeller/geometry/scalar.h"
 #include "impeller/typographer/font.h"
@@ -10,8 +11,14 @@
 #include "third_party/abseil-cpp/absl/status/status.h"
 
 namespace impeller {
+namespace {
+uint64_t NextTextFrameUniqueId() {
+  static std::atomic<uint64_t> next_id{1};
+  return next_id.fetch_add(1, std::memory_order_relaxed);
+}
+}  // namespace
 
-TextFrame::TextFrame() = default;
+TextFrame::TextFrame() : unique_id_(NextTextFrameUniqueId()) {}
 
 TextFrame::TextFrame(std::vector<TextRun>& runs,
                      Rect bounds,
@@ -20,7 +27,8 @@ TextFrame::TextFrame(std::vector<TextRun>& runs,
     : runs_(std::move(runs)),
       bounds_(bounds),
       has_color_(has_color),
-      path_creator_(path_creator) {}
+      path_creator_(path_creator),
+      unique_id_(NextTextFrameUniqueId()) {}
 
 TextFrame::~TextFrame() = default;
 
