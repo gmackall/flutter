@@ -26,6 +26,7 @@
 #include "flutter/shell/platform/android/apk_asset_provider.h"
 #include "flutter/shell/platform/android/flutter_main.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
+#include "flutter/shell/platform/android/ndk_surface_producer.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 #define ANDROID_SHELL_HOLDER \
@@ -592,6 +593,146 @@ static void RegisterImageTexture(JNIEnv* env,
   );
 }
 
+static void RegisterNdkSurfaceProducerTexture(JNIEnv* env,
+                                              jobject jcaller,
+                                              jlong shell_holder,
+                                              jlong texture_id,
+                                              jobject image_texture_entry,
+                                              jboolean reset_on_background,
+                                              jlong ndk_producer_ptr) {
+  ImageExternalTexture::ImageLifecycle lifecycle =
+      reset_on_background ? ImageExternalTexture::ImageLifecycle::kReset
+                          : ImageExternalTexture::ImageLifecycle::kKeepAlive;
+  std::shared_ptr<NdkSurfaceProducer> ndk_producer;
+  if (ndk_producer_ptr != 0) {
+    ndk_producer = *reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(
+        ndk_producer_ptr);
+  }
+  ANDROID_SHELL_HOLDER->GetPlatformView()->RegisterImageTexture(
+      static_cast<int64_t>(texture_id),
+      fml::jni::ScopedJavaGlobalRef<jobject>(env, image_texture_entry),
+      lifecycle, std::move(ndk_producer));
+}
+
+static jlong CreateNdkSurfaceProducer(JNIEnv* env,
+                                      jobject jcaller,
+                                      jlong shell_holder,
+                                      jlong texture_id,
+                                      jboolean is_displaying_ui) {
+  if (shell_holder == 0 || !NdkSurfaceProducer::IsAvailable()) {
+    return 0;
+  }
+  auto platform_view = ANDROID_SHELL_HOLDER->GetPlatformView();
+  if (!platform_view) {
+    return 0;
+  }
+  auto producer = std::make_shared<NdkSurfaceProducer>(
+      static_cast<int64_t>(texture_id), platform_view,
+      platform_view->GetPlatformTaskRunner(), is_displaying_ui == JNI_TRUE);
+  auto* handle = new std::shared_ptr<NdkSurfaceProducer>(std::move(producer));
+  return reinterpret_cast<jlong>(handle);
+}
+
+static void DestroyNdkSurfaceProducer(JNIEnv* env, jclass clazz, jlong ptr) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->Release();
+  }
+  delete handle;
+}
+
+static void NdkSurfaceProducerSetSize(JNIEnv* env,
+                                      jclass clazz,
+                                      jlong ptr,
+                                      jint width,
+                                      jint height) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->SetSize(width, height);
+  }
+}
+
+static jobject NdkSurfaceProducerGetSurface(JNIEnv* env,
+                                            jclass clazz,
+                                            jlong ptr,
+                                            jboolean force_new) {
+  if (ptr == 0) {
+    return nullptr;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (!(*handle)) {
+    return nullptr;
+  }
+  return (*handle)->GetSurface(env, force_new == JNI_TRUE).Release();
+}
+
+static void NdkSurfaceProducerScheduleFrame(JNIEnv* env,
+                                            jclass clazz,
+                                            jlong ptr,
+                                            jboolean is_displaying_ui) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->ScheduleFrameFromPlatform(is_displaying_ui == JNI_TRUE);
+  }
+}
+
+static void NdkSurfaceProducerSetDisplayingUi(JNIEnv* env,
+                                              jclass clazz,
+                                              jlong ptr,
+                                              jboolean is_displaying_ui) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->SetDisplayingFlutterUi(is_displaying_ui == JNI_TRUE);
+  }
+}
+
+static void NdkSurfaceProducerOnTrimMemory(JNIEnv* env,
+                                           jclass clazz,
+                                           jlong ptr) {
+  if (ptr == 0) {
+    return;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (*handle) {
+    (*handle)->OnTrimMemoryCleanup();
+  }
+}
+
+static jint NdkSurfaceProducerGetCount(JNIEnv* env,
+                                       jclass clazz,
+                                       jlong ptr,
+                                       jint kind) {
+  if (ptr == 0) {
+    return 0;
+  }
+  auto* handle = reinterpret_cast<std::shared_ptr<NdkSurfaceProducer>*>(ptr);
+  if (!(*handle)) {
+    return 0;
+  }
+  switch (kind) {
+    case 0:
+      return (*handle)->GetNumImageReadersForTest();
+    case 1:
+      return (*handle)->GetNumQueuedImagesForTest();
+    case 2:
+      return (*handle)->GetPendingDequeuedImagesForTest();
+    default:
+      return 0;
+  }
+}
+
 static void UnregisterTexture(JNIEnv* env,
                               jobject jcaller,
                               jlong shell_holder,
@@ -961,6 +1102,51 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeIsSurfaceControlEnabled",
           .signature = "(J)Z",
           .fnPtr = reinterpret_cast<void*>(&IsSurfaceControlEnabled),
+      },
+      {
+          .name = "nativeRegisterNdkSurfaceProducerTexture",
+          .signature = "(JJLjava/lang/ref/WeakReference;ZJ)V",
+          .fnPtr = reinterpret_cast<void*>(&RegisterNdkSurfaceProducerTexture),
+      },
+      {
+          .name = "nativeCreateNdkSurfaceProducer",
+          .signature = "(JJZ)J",
+          .fnPtr = reinterpret_cast<void*>(&CreateNdkSurfaceProducer),
+      },
+      {
+          .name = "nativeDestroyNdkSurfaceProducer",
+          .signature = "(J)V",
+          .fnPtr = reinterpret_cast<void*>(&DestroyNdkSurfaceProducer),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerSetSize",
+          .signature = "(JII)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerSetSize),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerGetSurface",
+          .signature = "(JZ)Landroid/view/Surface;",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerGetSurface),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerScheduleFrame",
+          .signature = "(JZ)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerScheduleFrame),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerSetDisplayingUi",
+          .signature = "(JZ)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerSetDisplayingUi),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerOnTrimMemory",
+          .signature = "(J)V",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerOnTrimMemory),
+      },
+      {
+          .name = "nativeNdkSurfaceProducerGetCount",
+          .signature = "(JI)I",
+          .fnPtr = reinterpret_cast<void*>(&NdkSurfaceProducerGetCount),
       }};
 
   if (env->RegisterNatives(g_flutter_jni_class->obj(), flutter_jni_methods,

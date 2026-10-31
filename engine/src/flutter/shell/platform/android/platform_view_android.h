@@ -95,7 +95,8 @@ class PlatformViewAndroid final : public PlatformView {
   void RegisterImageTexture(
       int64_t texture_id,
       const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
-      ImageExternalTexture::ImageLifecycle lifecycle);
+      ImageExternalTexture::ImageLifecycle lifecycle,
+      std::shared_ptr<NdkSurfaceProducer> ndk_producer = nullptr);
 
   // |PlatformView|
   void LoadDartDeferredLibrary(
@@ -114,6 +115,10 @@ class PlatformViewAndroid final : public PlatformView {
 
   const std::shared_ptr<AndroidContext>& GetAndroidContext() {
     return android_context_;
+  }
+
+  fml::RefPtr<fml::TaskRunner> GetPlatformTaskRunner() const {
+    return task_runners_.GetPlatformTaskRunner();
   }
 
   std::shared_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
