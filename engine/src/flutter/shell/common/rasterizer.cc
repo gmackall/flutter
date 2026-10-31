@@ -238,6 +238,7 @@ void Rasterizer::DrawLastLayerTrees(
     return;
   }
   std::vector<std::unique_ptr<LayerTreeTask>> tasks;
+  tasks.reserve(view_records_.size());
   for (auto& [view_id, view_record] : view_records_) {
     if (view_record.last_successful_task) {
       tasks.push_back(std::move(view_record.last_successful_task));
@@ -708,21 +709,22 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   std::vector<std::unique_ptr<LayerTreeTask>> resubmitted_tasks;
   for (std::unique_ptr<LayerTreeTask>& task : tasks) {
     int64_t view_id = task->view_id;
-    std::unique_ptr<LayerTree> layer_tree = std::move(task->layer_tree);
     float device_pixel_ratio = task->device_pixel_ratio;
 
     DrawSurfaceStatus status = DrawToSurfaceUnsafe(
-        view_id, *layer_tree, device_pixel_ratio, presentation_time);
+        view_id, *task->layer_tree, device_pixel_ratio, presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
-    auto& view_record = EnsureViewRecord(task->view_id);
+    auto& view_record = EnsureViewRecord(view_id);
     view_record.last_draw_status = status;
     if (status == DrawSurfaceStatus::kSuccess) {
-      view_record.last_successful_task = std::make_unique<LayerTreeTask>(
-          view_id, std::move(layer_tree), device_pixel_ratio);
+      task->layer_tree->MarkPrerollReusable();
+      view_record.last_successful_task = std::move(task);
     } else if (status == DrawSurfaceStatus::kRetry) {
-      resubmitted_tasks.push_back(std::make_unique<LayerTreeTask>(
-          view_id, std::move(layer_tree), device_pixel_ratio));
+      resubmitted_tasks.push_back(std::move(task));
+    } else if (!view_record.last_successful_task &&
+               task->layer_tree->IsPrerollReusable()) {
+      view_record.last_successful_task = std::move(task);
     }
   }
   // TODO(dkwingsmt): Pass in raster cache(s) for all views.

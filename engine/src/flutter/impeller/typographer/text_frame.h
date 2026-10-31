@@ -98,12 +98,15 @@ class TextFrame {
     return enable_gamma_correction_;
   }
 
+  uint64_t GetUniqueId() const { return unique_id_; }
+
  private:
   std::vector<TextRun> runs_;
   Rect bounds_;
   bool has_color_ = false;
   const PathCreator path_creator_;
   std::optional<bool> enable_gamma_correction_ = std::nullopt;
+  uint64_t unique_id_;
 };
 
 }  // namespace impeller

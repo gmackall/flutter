@@ -57,6 +57,9 @@ class LayerTree {
   const PaintRegionMap& paint_region_map() const { return paint_region_map_; }
   PaintRegionMap& paint_region_map() { return paint_region_map_; }
 
+  void MarkPrerollReusable() { preroll_reusable_ = true; }
+  bool IsPrerollReusable() const { return preroll_reusable_; }
+
  private:
   std::shared_ptr<Layer> root_layer_;
   DlISize frame_size_;  // Physical pixels.
@@ -64,6 +67,12 @@ class LayerTree {
   PaintRegionMap paint_region_map_;
 
   std::vector<RasterCacheItem*> raster_cache_items_;
+
+  bool preroll_reusable_ = false;
+  bool has_valid_preroll_ = false;
+  bool last_surface_needs_readback_ = false;
+  DlRect last_preroll_cull_rect_;
+  DlMatrix last_preroll_surface_transform_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(LayerTree);
 };

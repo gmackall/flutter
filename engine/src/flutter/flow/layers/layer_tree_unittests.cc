@@ -316,5 +316,27 @@ TEST_F(LayerTreeTest, FlattenInitializesContexts) {
                       /*gr_context=*/nullptr, fake_aiks);
 }
 
+TEST_F(LayerTreeTest, ReusedLayerTreeSkipsRedundantPrerollWhenEligible) {
+  auto layer = std::make_shared<MockFlattenLayer>();
+  auto layer_tree = BuildLayerTree(layer);
+
+  // First Preroll (with ignore_raster_cache = true) executes
+  // root_layer->Preroll and caches the preroll state.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true));
+
+  // Once marked reusable (as Rasterizer::DrawToSurfacesUnsafe does after a
+  // successful draw), a subsequent Preroll with identical cull_rect and root
+  // surface transformation skips walking the layer tree.
+  layer_tree->MarkPrerollReusable();
+  EXPECT_TRUE(layer_tree->IsPrerollReusable());
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true));
+
+  // Changing cull_rect invalidates the cached preroll and re-walks the tree.
+  EXPECT_CALL(*layer, Preroll(::testing::_)).Times(1);
+  EXPECT_FALSE(layer_tree->Preroll(frame(), /*ignore_raster_cache=*/true,
+                                   DlRect::MakeWH(32, 32)));
+}
+
 }  // namespace testing
 }  // namespace flutter
