@@ -69,4 +69,21 @@ bool AndroidRequestAffinity(CpuAffinity affinity) {
   return sched_setaffinity(gettid(), sizeof(set), &set) == 0;
 }
 
+bool AndroidRequestAffinityForThread(pid_t tid, CpuAffinity affinity) {
+  if (tid <= 0 || !SetUpCPUTracker()) {
+    return false;
+  }
+
+  const auto indices = gCPUTracker->GetIndices(affinity);
+  if (indices.empty()) {
+    return false;
+  }
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  for (const auto index : indices) {
+    CPU_SET(index, &set);
+  }
+  return sched_setaffinity(tid, sizeof(set), &set) == 0;
+}
+
 }  // namespace fml

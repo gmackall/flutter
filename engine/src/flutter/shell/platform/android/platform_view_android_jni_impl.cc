@@ -15,6 +15,7 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/flow/embedded_views.h"
+#include "flutter/fml/cpu_affinity.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/platform/android/jni_util.h"
@@ -898,6 +899,30 @@ static void UpdateJavaAssetManager(JNIEnv* env,
       AssetResolver::AssetResolverType::kApkAssetProvider);
 }
 
+static jboolean RequestCpuAffinityForThread(JNIEnv* env,
+                                            jclass clazz,
+                                            jint tid) {
+  return AndroidShellHolder::EnterScopedWorkloadAffinityForThread(
+             static_cast<pid_t>(tid))
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
+static jboolean RestoreCpuAffinityForThread(JNIEnv* env,
+                                            jclass clazz,
+                                            jint tid) {
+  return AndroidShellHolder::RestoreScopedWorkloadAffinityForThread(
+             static_cast<pid_t>(tid))
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
+static jint GetRasterThreadTid(JNIEnv* env,
+                               jobject jcaller,
+                               jlong shell_holder) {
+  return static_cast<jint>(ANDROID_SHELL_HOLDER->GetRasterThreadTid());
+}
+
 bool RegisterApi(JNIEnv* env) {
   static const JNINativeMethod flutter_jni_methods[] = {
       // Start of methods from FlutterJNI
@@ -1087,6 +1112,21 @@ bool RegisterApi(JNIEnv* env) {
           .signature =
               "(JLandroid/content/res/AssetManager;Ljava/lang/String;)V",
           .fnPtr = reinterpret_cast<void*>(&UpdateJavaAssetManager),
+      },
+      {
+          .name = "nativeRequestCpuAffinityForThread",
+          .signature = "(I)Z",
+          .fnPtr = reinterpret_cast<void*>(&RequestCpuAffinityForThread),
+      },
+      {
+          .name = "nativeRestoreCpuAffinityForThread",
+          .signature = "(I)Z",
+          .fnPtr = reinterpret_cast<void*>(&RestoreCpuAffinityForThread),
+      },
+      {
+          .name = "nativeGetRasterThreadTid",
+          .signature = "(J)I",
+          .fnPtr = reinterpret_cast<void*>(&GetRasterThreadTid),
       },
       {
           .name = "nativeDeferredComponentInstallFailure",

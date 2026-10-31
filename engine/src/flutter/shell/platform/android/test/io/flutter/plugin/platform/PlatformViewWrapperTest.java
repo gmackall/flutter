@@ -31,6 +31,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.After;
 import org.junit.Before;
@@ -111,6 +112,7 @@ public class PlatformViewWrapperTest {
     FlutterRenderer.debugDisableSurfaceClear = false;
     PlatformViewWrapper.useDedicatedHardwareRenderer =
         android.os.Build.VERSION.SDK_INT >= API_LEVELS.API_29;
+    PlatformViewWrapper.adpfController.setBridgeForTest(PlatformViewWrapper.DEFAULT_ADPF_BRIDGE);
   }
 
   @Test
@@ -439,6 +441,503 @@ public class PlatformViewWrapperTest {
 
     when(wrapper.getDrawingTime()).thenReturn(nowMs + 10);
     assertEquals(nowNanos, wrapper.getFrameTimeNanos(nowNanos));
+  }
+
+  @Test
+  public void pipelineAdpfController_manages120HzTargetFourPipelineThreadsAndLifecycle() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final java.util.ArrayList<int[]> createdTids = new java.util.ArrayList<>();
+    final java.util.ArrayList<Long> targets = new java.util.ArrayList<>();
+    final java.util.ArrayList<int[]> updatedTids = new java.util.ArrayList<>();
+    final java.util.ArrayList<Long> reportedDurations = new java.util.ArrayList<>();
+    final int[] closedCount = {0};
+    final int[] affinityCalls = {0};
+    final int[] restoreCalls = {0};
+    final float[] fps = {120.0f};
+    final int[] readerTid = {3003};
+    final int[] rasterTid = {4004};
+    final boolean[] allowSetThreads = {true};
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            createdTids.add(tids.clone());
+            targets.add(initialTargetWorkDurationNanos);
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {
+                targets.add(targetDurationNanos);
+              }
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                if (!allowSetThreads[0]) {
+                  return false;
+                }
+                updatedTids.add(newTids.clone());
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {
+                reportedDurations.add(actualDurationNanos);
+              }
+
+              @Override
+              public void close() {
+                closedCount[0]++;
+              }
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return fps[0];
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return readerTid[0];
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity(int tid) {
+            affinityCalls[0]++;
+            return true;
+          }
+
+          @Override
+          public boolean restoreCpuAffinity(int tid) {
+            restoreCalls[0]++;
+            return true;
+          }
+        });
+
+    // CPU affinity defaults to false (pure ADPF uclamp hints with zero affinity mask mutations).
+    assertFalse(controller.isCpuAffinityEnabled());
+
+    final Object owner = new Object();
+    controller.onRendererCreated(owner, () -> rasterTid[0]);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+
+    // Initial session at 120 Hz targets the full 8,333,333 ns vsync period with [mainTid,
+    // readerTid, rasterTid].
+    assertEquals(1, createdTids.size());
+    assertEquals(3, createdTids.get(0).length);
+    assertEquals(3003, createdTids.get(0)[1]);
+    assertEquals(4004, createdTids.get(0)[2]);
+    assertEquals(Long.valueOf(8_333_333L), targets.get(0));
+
+    // First RenderThread commit records renderThreadTid=2002 without mutating CPU affinity while
+    // cpuAffinityEnabled == false.
+    final long vsync1 = 1_000_000_000L;
+    controller.onFrameCommittedOnRenderThread(vsync1, vsync1 + 4_200_000L, 2002);
+    assertEquals(0, affinityCalls[0]);
+    assertEquals(1, reportedDurations.size());
+    assertEquals(Long.valueOf(4_200_000L), reportedDurations.get(0));
+
+    // Next main-thread prepare adds renderThreadTid=2002 via setThreads -> all 4 pipeline threads!
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, updatedTids.size());
+    assertEquals(4, updatedTids.get(0).length);
+    assertEquals(2002, updatedTids.get(0)[1]);
+    assertEquals(3003, updatedTids.get(0)[2]);
+    assertEquals(4004, updatedTids.get(0)[3]);
+
+    // Multi-PV same-vsync: tiny +0.2 ms commit is coalesced, while a second PV pushing batch work
+    // across the 8.33 ms full-frame deadline is reported immediately.
+    final long vsync2 = 1_008_333_333L;
+    controller.onFrameCommittedOnRenderThread(vsync2, vsync2 + 3_500_000L, 2002);
+    controller.onFrameCommittedOnRenderThread(vsync2, vsync2 + 3_700_000L, 2002);
+    controller.onFrameCommittedOnRenderThread(vsync2, vsync2 + 8_900_000L, 2002);
+    assertEquals(3, reportedDurations.size());
+    assertEquals(Long.valueOf(3_500_000L), reportedDurations.get(1));
+    assertEquals(Long.valueOf(8_900_000L), reportedDurations.get(2));
+
+    // Switching display mode to 60 Hz updates target duration to 16,666,667 ns; API 31-33 fallback
+    // recreates session cleanly if setThreads returns false.
+    fps[0] = 60.0f;
+    allowSetThreads[0] = false;
+    rasterTid[0] = 5005;
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_31);
+    assertEquals(1, closedCount[0]);
+    assertEquals(2, createdTids.size());
+    assertEquals(5005, createdTids.get(1)[3]);
+    assertEquals(Long.valueOf(16_666_667L), targets.get(targets.size() - 1));
+
+    // Opting into workload-scoped CPU affinity applies per explicit TID (RenderThread 2002 +
+    // shared ImageReader 3003) on active commit and restores both TIDs on teardown.
+    controller.setCpuAffinityEnabled(true);
+    controller.onFrameCommittedOnRenderThread(vsync2 + 16_666_667L, vsync2 + 20_000_000L, 2002);
+    assertEquals(2, affinityCalls[0]);
+    assertEquals(0, restoreCalls[0]);
+
+    // Destroying the last renderer closes the session cleanly and restores CPU affinity for every
+    // recorded TID; a late RenderThread commit callback arriving after onRendererDestroyed(owner)
+    // does not report on the closed session or re-apply affinity.
+    controller.onRendererDestroyed(owner);
+    assertEquals(2, closedCount[0]);
+    assertEquals(2, restoreCalls[0]);
+    controller.onFrameCommittedOnRenderThread(vsync2 + 33_333_333L, vsync2 + 37_500_000L, 2002);
+    assertEquals(4, reportedDurations.size());
+  }
+
+  @Test
+  public void
+      pipelineAdpfController_multiEngineLiveMembershipSharedThreadHostAndBothTeardownOrders() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final java.util.ArrayList<int[]> observedSessionTids = new java.util.ArrayList<>();
+    final int[] closeCount = {0};
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            observedSessionTids.add(tids.clone());
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {}
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                observedSessionTids.add(newTids.clone());
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {}
+
+              @Override
+              public void close() {
+                closeCount[0]++;
+              }
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 3003;
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity(int tid) {
+            return true;
+          }
+        });
+
+    // Both Engine A (raster TID 4101) and Engine B (raster TID 4202) are alive simultaneously!
+    final int rasterTidA = 4101;
+    final int rasterTidB = 4202;
+    final Object wrapperA = new Object();
+    final Object wrapperB = new Object();
+
+    // 1. Only Engine A renders TLHC while Engine B is alive and idle: session MUST include 4101
+    //    and MUST NOT include 4202!
+    controller.onRendererCreated(wrapperA, () -> rasterTidA);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    int[] active = controller.getSessionActiveTidsForTest();
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidA));
+    assertFalse(Arrays.stream(active).anyMatch(t -> t == rasterTidB));
+
+    // 2. Both Engine A and Engine B render TLHC simultaneously: session includes BOTH 4101 & 4202!
+    controller.onRendererCreated(wrapperB, () -> rasterTidB);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    active = controller.getSessionActiveTidsForTest();
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidA));
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidB));
+
+    // 3. Teardown order B -> A: stopping B immediately shrinks session to A (4101) only!
+    controller.onRendererDestroyed(wrapperB);
+    active = controller.getSessionActiveTidsForTest();
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidA));
+    assertFalse(Arrays.stream(active).anyMatch(t -> t == rasterTidB));
+    controller.onRendererDestroyed(wrapperA);
+    assertEquals(1, closeCount[0]);
+
+    // 4. Teardown order A -> B: both active, then stopping A first shrinks session to B (4202)
+    //    only!
+    controller.onRendererCreated(wrapperA, () -> rasterTidA);
+    controller.onRendererCreated(wrapperB, () -> rasterTidB);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    active = controller.getSessionActiveTidsForTest();
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidA));
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidB));
+
+    controller.onRendererDestroyed(wrapperA);
+    active = controller.getSessionActiveTidsForTest();
+    assertFalse(Arrays.stream(active).anyMatch(t -> t == rasterTidA));
+    assertTrue(Arrays.stream(active).anyMatch(t -> t == rasterTidB));
+    controller.onRendererDestroyed(wrapperB);
+    assertEquals(2, closeCount[0]);
+
+    // 5. Spawned engine sharing parent's ThreadHost (both wrappers report raster TID 4303):
+    //    deduplicates 4303 to 1 entry while both active, retains 4303 when child stops, and closes
+    //    only when parent also stops.
+    final int sharedRasterTid = 4303;
+    final Object parentWrapper = new Object();
+    final Object spawnedWrapper = new Object();
+    controller.onRendererCreated(parentWrapper, () -> sharedRasterTid);
+    controller.onRendererCreated(spawnedWrapper, () -> sharedRasterTid);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    active = controller.getSessionActiveTidsForTest();
+    assertEquals(1L, Arrays.stream(active).filter(t -> t == sharedRasterTid).count());
+
+    controller.onRendererDestroyed(spawnedWrapper);
+    active = controller.getSessionActiveTidsForTest();
+    assertEquals(1L, Arrays.stream(active).filter(t -> t == sharedRasterTid).count());
+    assertEquals(2, closeCount[0]);
+
+    controller.onRendererDestroyed(parentWrapper);
+    assertEquals(3, closeCount[0]);
+  }
+
+  @Test
+  public void pipelineAdpfController_negativeCachesNullSessionAndSingleAttemptsAffinityOnFailure() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final int[] createCalls = {0};
+    final int[] rasterTid = {0};
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            createCalls[0]++;
+            return null;
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 0;
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity(int tid) {
+            return false;
+          }
+        });
+
+    final Object owner = new Object();
+    controller.onRendererCreated(owner, () -> rasterTid[0]);
+    // Repeated frames with the same TID tuple only invoke createSession once when it returns null.
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, createCalls[0]);
+
+    assertFalse(controller.needsFrameCommitCallback(API_LEVELS.API_30));
+    assertTrue(controller.needsFrameCommitCallback(API_LEVELS.API_34));
+    controller.onFrameCommittedOnRenderThread(1_000_000_000L, 1_003_000_000L, 2002);
+    controller.onFrameCommittedOnRenderThread(1_008_000_000L, 1_011_000_000L, 2002);
+    assertFalse(controller.needsFrameCommitCallback(API_LEVELS.API_30));
+    assertFalse(controller.needsFrameCommitCallback(API_LEVELS.API_34));
+
+    // Discovering renderThreadTid=2002 changes the TID tuple, allowing one retry.
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(2, createCalls[0]);
+    assertFalse(controller.needsFrameCommitCallback(API_LEVELS.API_34));
+    controller.onRendererDestroyed(owner);
+  }
+
+  @Test
+  public void pipelineAdpfController_fallsBackToCoreTwoTidsWhenAuxiliaryTidRejected() {
+    final PlatformViewWrapper.PipelineAdpfController controller =
+        new PlatformViewWrapper.PipelineAdpfController();
+    final java.util.ArrayList<int[]> createdTids = new java.util.ArrayList<>();
+    final java.util.ArrayList<int[]> updatedTids = new java.util.ArrayList<>();
+    final int[] rasterTid = {9999}; // Simulate a rejected auxiliary TID.
+
+    controller.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            for (int tid : tids) {
+              if (tid == 9999) {
+                return null;
+              }
+            }
+            createdTids.add(tids.clone());
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {}
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                for (int tid : newTids) {
+                  if (tid == 9999) {
+                    return false;
+                  }
+                }
+                updatedTids.add(newTids.clone());
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {}
+
+              @Override
+              public void close() {}
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 3003;
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity(int tid) {
+            return true;
+          }
+        });
+
+    final Object owner = new Object();
+    controller.onRendererCreated(owner, () -> rasterTid[0]);
+    controller.onFrameCommittedOnRenderThread(1_000_000_000L, 1_003_000_000L, 2002);
+
+    // 4-TID [main, 2002, 3003, 9999] fails createSession, so controller falls back to 2-TID
+    // [main, 2002] and does not re-attempt 9999 on subsequent frames with the same TIDs.
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, createdTids.size());
+    assertEquals(2, createdTids.get(0).length);
+    assertEquals(2002, createdTids.get(0)[1]);
+
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, createdTids.size());
+    assertEquals(0, updatedTids.size());
+
+    // Once a valid raster TID=4004 arrives, setThreads upgrades the session to all 4 threads.
+    rasterTid[0] = 4004;
+    controller.prepareForFrameOnMainThread(ctx, API_LEVELS.API_34);
+    assertEquals(1, updatedTids.size());
+    assertEquals(4, updatedTids.get(0).length);
+    assertEquals(4004, updatedTids.get(0)[3]);
+    controller.onRendererDestroyed(owner);
+  }
+
+  @Test
+  public void
+      draw_withDedicatedHardwareRenderer_closesAdpfSessionOnWindowInvisibleDetachAndRelease() {
+    PlatformViewWrapper.useDedicatedHardwareRenderer = true;
+    FlutterRenderer.debugDisableSurfaceClear = true;
+    final int[] createCount = {0};
+    final int[] closeCount = {0};
+    final List<Integer> requestedAffinityTids = new ArrayList<>();
+    final List<Integer> restoredAffinityTids = new ArrayList<>();
+
+    PlatformViewWrapper.adpfController.setBridgeForTest(
+        new PlatformViewWrapper.AdpfHintBridge() {
+          @Override
+          public PlatformViewWrapper.AdpfSessionHandle createSession(
+              Context context, int[] tids, long initialTargetWorkDurationNanos) {
+            createCount[0]++;
+            return new PlatformViewWrapper.AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {}
+
+              @Override
+              public boolean setThreads(int[] newTids) {
+                return true;
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {}
+
+              @Override
+              public void close() {
+                closeCount[0]++;
+              }
+            };
+          }
+
+          @Override
+          public float getRefreshRateFPS() {
+            return 120.0f;
+          }
+
+          @Override
+          public int getSharedImageReaderTid() {
+            return 3003;
+          }
+
+          @Override
+          public boolean requestNotEfficiencyCpuAffinity(int tid) {
+            requestedAffinityTids.add(tid);
+            return true;
+          }
+
+          @Override
+          public boolean restoreCpuAffinity(int tid) {
+            restoredAffinityTids.add(tid);
+            return true;
+          }
+        });
+
+    // Also verify public production opt-in API and exact TID tracking on main-thread release.
+    PlatformViewWrapper.setCpuAffinityEnabled(true);
+    assertTrue(PlatformViewWrapper.isCpuAffinityEnabled());
+
+    final Surface surface = mock(Surface.class);
+    when(surface.isValid()).thenReturn(true);
+    final PlatformViewRenderTarget renderTarget = mock(PlatformViewRenderTarget.class);
+    when(renderTarget.getSurface()).thenReturn(surface);
+    when(renderTarget.getWidth()).thenReturn(10);
+    when(renderTarget.getHeight()).thenReturn(10);
+    final HardwareRendererTestWrapper wrapper = new HardwareRendererTestWrapper(ctx, renderTarget);
+    wrapper.setRasterThreadTidSupplier(() -> 4004);
+
+    // First foreground draw opens the ADPF session.
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(1, createCount[0]);
+    PlatformViewWrapper.adpfController.onFrameCommittedOnRenderThread(
+        1_000_000_000L, 1_004_000_000L, 2002);
+    assertEquals(Arrays.asList(2002, 3003), requestedAffinityTids);
+    assertTrue(restoredAffinityTids.isEmpty());
+    assertEquals(0, closeCount[0]);
+
+    // Transitioning window visibility to INVISIBLE flushes and closes the ADPF session and
+    // restores the exact pinned TIDs [2002, 3003] from the main thread.
+    wrapper.onWindowVisibilityChanged(View.INVISIBLE);
+    assertEquals(1, closeCount[0]);
+    assertEquals(Arrays.asList(2002, 3003), restoredAffinityTids);
+
+    // Subsequent foreground draw lazily re-opens the ADPF session.
+    wrapper.onWindowVisibilityChanged(View.VISIBLE);
+    wrapper.draw(mock(Canvas.class));
+    shadowOf(Looper.getMainLooper()).idle();
+    assertEquals(2, createCount[0]);
+    assertEquals(1, closeCount[0]);
+
+    // Detaching from window closes the session; release() afterwards does not double-close.
+    wrapper.onDetachedFromWindow();
+    assertEquals(2, closeCount[0]);
+    wrapper.release();
+    assertEquals(2, closeCount[0]);
+    PlatformViewWrapper.setCpuAffinityEnabled(false);
   }
 
   @Test

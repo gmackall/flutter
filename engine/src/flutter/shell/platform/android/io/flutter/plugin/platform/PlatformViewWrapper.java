@@ -19,6 +19,8 @@ import android.graphics.RenderNode;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PerformanceHintManager;
+import android.os.Process;
 import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -35,8 +37,14 @@ import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
 import io.flutter.embedding.android.AndroidTouchProcessor;
+import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.util.ViewUtils;
+import java.util.Arrays;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.concurrent.Executor;
 
 /**
  * Wraps a platform view to intercept gestures and project this view onto a {@link
@@ -104,10 +112,519 @@ public class PlatformViewWrapper extends FrameLayout {
           invalidate();
         }
       };
+  /** Supplies the live Linux TID of an owning engine's raster thread (or 0 if inactive). */
+  public interface IntSupplier {
+    int getAsInt();
+  }
+
+  private boolean registeredWithAdpf;
+  @Nullable private IntSupplier rasterThreadTidSupplier;
 
   // Frame times older than this are considered stale (e.g. draw() outside of a Choreographer
   // traversal), and the current time is used instead.
   private static final long MAX_FRAME_TIME_AGE_NANOS = 100_000_000L;
+  private static final Executor DIRECT_EXECUTOR = Runnable::run;
+
+  @VisibleForTesting
+  interface AdpfSessionHandle {
+    void updateTargetWorkDuration(long targetDurationNanos);
+
+    boolean setThreads(@NonNull int[] tids);
+
+    void reportActualWorkDuration(long actualDurationNanos);
+
+    void close();
+  }
+
+  @VisibleForTesting
+  interface AdpfHintBridge {
+    @Nullable
+    AdpfSessionHandle createSession(
+        @NonNull Context context, @NonNull int[] tids, long initialTargetWorkDurationNanos);
+
+    float getRefreshRateFPS();
+
+    int getSharedImageReaderTid();
+
+    boolean requestNotEfficiencyCpuAffinity(int tid);
+
+    default boolean restoreCpuAffinity(int tid) {
+      return false;
+    }
+  }
+
+  @VisibleForTesting
+  static final AdpfHintBridge DEFAULT_ADPF_BRIDGE =
+      new AdpfHintBridge() {
+        @Override
+        @Nullable
+        @RequiresApi(API_LEVELS.API_31)
+        public AdpfSessionHandle createSession(
+            @NonNull Context context, @NonNull int[] tids, long initialTargetWorkDurationNanos) {
+          if (Build.VERSION.SDK_INT < API_LEVELS.API_31) {
+            return null;
+          }
+          try {
+            final PerformanceHintManager manager =
+                context.getSystemService(PerformanceHintManager.class);
+            if (manager == null) {
+              return null;
+            }
+            final PerformanceHintManager.Session rawSession =
+                manager.createHintSession(tids, initialTargetWorkDurationNanos);
+            if (rawSession == null) {
+              return null;
+            }
+            return new AdpfSessionHandle() {
+              @Override
+              public void updateTargetWorkDuration(long targetDurationNanos) {
+                try {
+                  rawSession.updateTargetWorkDuration(targetDurationNanos);
+                } catch (Throwable ignored) {
+                }
+              }
+
+              @Override
+              public boolean setThreads(@NonNull int[] updatedTids) {
+                if (Build.VERSION.SDK_INT < API_LEVELS.API_34) {
+                  return false;
+                }
+                try {
+                  rawSession.setThreads(updatedTids);
+                  return true;
+                } catch (Throwable ignored) {
+                  return false;
+                }
+              }
+
+              @Override
+              public void reportActualWorkDuration(long actualDurationNanos) {
+                try {
+                  rawSession.reportActualWorkDuration(actualDurationNanos);
+                } catch (Throwable ignored) {
+                }
+              }
+
+              @Override
+              public void close() {
+                try {
+                  rawSession.close();
+                } catch (Throwable ignored) {
+                }
+              }
+            };
+          } catch (Throwable ignored) {
+            return null;
+          }
+        }
+
+        @Override
+        public float getRefreshRateFPS() {
+          return FlutterJNI.getRefreshRateFPS();
+        }
+
+        @Override
+        public int getSharedImageReaderTid() {
+          return FlutterRenderer.getSharedImageReaderTid();
+        }
+
+        @Override
+        public boolean requestNotEfficiencyCpuAffinity(int tid) {
+          if (tid <= 0) {
+            return false;
+          }
+          try {
+            return FlutterJNI.requestCpuAffinityForThread(tid);
+          } catch (UnsatisfiedLinkError ignored) {
+            return false;
+          }
+        }
+
+        @Override
+        public boolean restoreCpuAffinity(int tid) {
+          if (tid <= 0) {
+            return false;
+          }
+          try {
+            return FlutterJNI.restoreCpuAffinityForThread(tid);
+          } catch (UnsatisfiedLinkError ignored) {
+            return false;
+          }
+        }
+      };
+
+  /**
+   * Coordinates display-refresh-aware ADPF hint sessions across active TLHC rendering pipelines
+   * ({@code main}, {@code RenderThread}, {@code FlutterImageReader}, and the exact set of actively
+   * participating engines' raster threads) with strictly opt-in, TID-keyed, cross-thread-restorable
+   * CPU affinity (disabled by default so ordinary scheduling relies purely on kernel {@code uclamp}
+   * hints from {@link PerformanceHintManager.Session}).
+   *
+   * <p>Target duration and reported actual work duration model:
+   *
+   * <ul>
+   *   <li>Target work duration ({@link #computeTargetWorkDurationNanos(float)}) equals the full
+   *       display frame period ({@code Math.round(1_000_000_000.0 / clampedFps)}, e.g. 8,333,333 ns
+   *       at 120 Hz and 16,666,667 ns at 60 Hz), matching the per-frame budget shared by the
+   *       session thread group.
+   *   <li>Reported actual work duration ({@link PerformanceHintManager.Session
+   *       #reportActualWorkDuration(long)}) measures elapsed producer frame work {@code commitNanos
+   *       - vsyncNanos} in {@link #onFrameCommittedOnRenderThread(long, long, int)} (spanning
+   *       main-thread UI traversal plus HWUI {@code RenderThread} sync, recording, and GPU command
+   *       submission up to {@code FrameRenderRequest.setFrameCommitCallback}). Downstream {@code
+   *       FlutterImageReader} and participating engines' {@code raster} threads share the session's
+   *       kernel {@code uclamp} group via thread membership in {@link
+   *       PerformanceHintManager#createHintSession(int[], long)} / {@code setThreads(int[])}.
+   *   <li>When CPU affinity opt-in is enabled ({@link #setCpuAffinityEnabled(boolean)}), baseline
+   *       masks are saved per explicit Linux TID via {@code sched_getaffinity(tid)} and restored
+   *       per explicit Linux TID via {@code sched_setaffinity(tid)} when active TLHC rendering
+   *       stops, regardless of which thread invokes teardown.
+   * </ul>
+   */
+  static final class PipelineAdpfController {
+    private static final long MAX_REPORTED_DURATION_NANOS = 50_000_000L;
+    private static final long SAME_VSYNC_UPDATE_DELTA_NANOS = 1_000_000L;
+
+    private final Object lock = new Object();
+    @NonNull private AdpfHintBridge bridge = DEFAULT_ADPF_BRIDGE;
+    @Nullable private AdpfSessionHandle session;
+    private final IdentityHashMap<Object, IntSupplier> activeRenderers = new IdentityHashMap<>();
+    private final Set<Integer> appliedAffinityTids = new LinkedHashSet<>();
+    private boolean cpuAffinityEnabled = false;
+
+    private int mainTid = 0;
+    private volatile int renderThreadTid = 0;
+    @Nullable private int[] lastFailedSessionTids = null;
+    @NonNull private int[] sessionActiveTids = new int[0];
+    private long targetWorkDurationNanos = 0L;
+
+    private long lastReportedVsyncNanos = 0L;
+    private long lastReportedDurationNanos = 0L;
+
+    static long computeTargetWorkDurationNanos(float refreshRateFPS) {
+      final float clampedFps =
+          (Float.isNaN(refreshRateFPS) || refreshRateFPS <= 0.0f)
+              ? 60.0f
+              : Math.max(30.0f, Math.min(240.0f, refreshRateFPS));
+      return Math.round(1_000_000_000.0 / clampedFps);
+    }
+
+    @NonNull
+    static int[] buildDeduplicatedTids(@NonNull int... candidates) {
+      int count = 0;
+      final int[] temp = new int[candidates.length];
+      for (int c : candidates) {
+        if (c <= 0) {
+          continue;
+        }
+        boolean dup = false;
+        for (int i = 0; i < count; i++) {
+          if (temp[i] == c) {
+            dup = true;
+            break;
+          }
+        }
+        if (!dup) {
+          temp[count++] = c;
+        }
+      }
+      final int[] out = new int[count];
+      System.arraycopy(temp, 0, out, 0, count);
+      return out;
+    }
+
+    private void restoreAppliedAffinitiesLocked() {
+      if (appliedAffinityTids.isEmpty()) {
+        return;
+      }
+      for (Integer tid : appliedAffinityTids) {
+        if (tid != null && tid > 0) {
+          bridge.restoreCpuAffinity(tid);
+        }
+      }
+      appliedAffinityTids.clear();
+    }
+
+    private void applyAffinityForTidLocked(int tid) {
+      if (tid <= 0 || appliedAffinityTids.contains(tid)) {
+        return;
+      }
+      if (bridge.requestNotEfficiencyCpuAffinity(tid)) {
+        appliedAffinityTids.add(tid);
+      }
+    }
+
+    void setBridgeForTest(@NonNull AdpfHintBridge testBridge) {
+      synchronized (lock) {
+        if (session != null) {
+          session.close();
+          session = null;
+        }
+        restoreAppliedAffinitiesLocked();
+        bridge = testBridge;
+        activeRenderers.clear();
+        cpuAffinityEnabled = false;
+        mainTid = 0;
+        renderThreadTid = 0;
+        lastFailedSessionTids = null;
+        sessionActiveTids = new int[0];
+        targetWorkDurationNanos = 0L;
+        lastReportedVsyncNanos = 0L;
+        lastReportedDurationNanos = 0L;
+      }
+    }
+
+    /**
+     * Controls whether explicit kernel CPU affinity ({@code CpuAffinity::kNotEfficiency}) is
+     * applied during active TLHC rendering and restored when active TLHC rendering stops. Defaults
+     * to {@code false} so ordinary apps and default TLHC sessions rely exclusively on ADPF {@link
+     * PerformanceHintManager.Session} hints without mutating thread affinity masks.
+     */
+    void setCpuAffinityEnabled(boolean enabled) {
+      synchronized (lock) {
+        if (cpuAffinityEnabled == enabled) {
+          return;
+        }
+        cpuAffinityEnabled = enabled;
+        if (!enabled) {
+          restoreAppliedAffinitiesLocked();
+        }
+      }
+    }
+
+    boolean isCpuAffinityEnabled() {
+      synchronized (lock) {
+        return cpuAffinityEnabled;
+      }
+    }
+
+    int getActiveRendererCountForTest() {
+      synchronized (lock) {
+        return activeRenderers.size();
+      }
+    }
+
+    @NonNull
+    int[] getSessionActiveTidsForTest() {
+      synchronized (lock) {
+        return sessionActiveTids.clone();
+      }
+    }
+
+    @NonNull
+    private int[] collectDesiredSessionTidsLocked() {
+      final int curMain = mainTid;
+      final int curRender = renderThreadTid;
+      final int curReader = bridge.getSharedImageReaderTid();
+      final int[] raw = new int[3 + activeRenderers.size()];
+      int idx = 0;
+      raw[idx++] = curMain;
+      raw[idx++] = curRender;
+      raw[idx++] = curReader;
+      for (IntSupplier supplier : activeRenderers.values()) {
+        if (supplier != null) {
+          final int tid = supplier.getAsInt();
+          if (tid > 0) {
+            raw[idx++] = tid;
+          }
+        }
+      }
+      // Sort participating raster TIDs deterministically so session equality checks are
+      // order-independent.
+      if (idx > 4) {
+        Arrays.sort(raw, 3, idx);
+      }
+      final int[] trimmed = new int[idx];
+      System.arraycopy(raw, 0, trimmed, 0, idx);
+      return buildDeduplicatedTids(trimmed);
+    }
+
+    void onRendererCreated(@NonNull Object owner, @Nullable IntSupplier rasterTidSupplier) {
+      synchronized (lock) {
+        activeRenderers.put(owner, rasterTidSupplier);
+      }
+    }
+
+    void onRendererDestroyed(@NonNull Object owner) {
+      synchronized (lock) {
+        onRendererDestroyedLocked(owner);
+      }
+    }
+
+    private void onRendererDestroyedLocked(@NonNull Object owner) {
+      activeRenderers.remove(owner);
+      if (activeRenderers.isEmpty()) {
+        lastFailedSessionTids = null;
+        if (session != null) {
+          session.close();
+          session = null;
+          sessionActiveTids = new int[0];
+          targetWorkDurationNanos = 0L;
+        }
+        restoreAppliedAffinitiesLocked();
+      } else if (session != null) {
+        final int[] updatedTids = collectDesiredSessionTidsLocked();
+        if (updatedTids.length > 0 && !Arrays.equals(updatedTids, sessionActiveTids)) {
+          if (session.setThreads(updatedTids)) {
+            sessionActiveTids = updatedTids;
+            lastFailedSessionTids = null;
+          }
+        }
+      }
+    }
+
+    boolean needsFrameCommitCallback(int sdkInt) {
+      synchronized (lock) {
+        if (cpuAffinityEnabled && !appliedAffinityTids.contains(renderThreadTid)) {
+          return true;
+        }
+        if (sdkInt < API_LEVELS.API_31) {
+          return false;
+        }
+        return session != null || renderThreadTid == 0;
+      }
+    }
+
+    void prepareForFrameOnMainThread(@NonNull Context context, int sdkInt) {
+      if (sdkInt < API_LEVELS.API_31) {
+        return;
+      }
+      synchronized (lock) {
+        if (mainTid <= 0 && Looper.myLooper() == Looper.getMainLooper()) {
+          mainTid = Process.myTid();
+        }
+        final int curMain = mainTid;
+        final int curRender = renderThreadTid;
+        final long desiredTarget = computeTargetWorkDurationNanos(bridge.getRefreshRateFPS());
+        final int[] tids = collectDesiredSessionTidsLocked();
+        if (tids.length == 0) {
+          return;
+        }
+        final int[] coreTids = buildDeduplicatedTids(curMain, curRender);
+        final boolean hasAuxTids = !Arrays.equals(coreTids, tids);
+
+        if (session == null) {
+          if (lastFailedSessionTids != null && Arrays.equals(tids, lastFailedSessionTids)) {
+            return;
+          }
+          session = bridge.createSession(context, tids, desiredTarget);
+          if (session != null) {
+            lastFailedSessionTids = null;
+            sessionActiveTids = tids;
+            targetWorkDurationNanos = desiredTarget;
+            return;
+          }
+          if (hasAuxTids && coreTids.length > 0) {
+            session = bridge.createSession(context, coreTids, desiredTarget);
+            if (session != null) {
+              lastFailedSessionTids = tids.clone();
+              sessionActiveTids = coreTids;
+              targetWorkDurationNanos = desiredTarget;
+              return;
+            }
+          }
+          lastFailedSessionTids = tids.clone();
+          return;
+        }
+
+        if (!Arrays.equals(tids, sessionActiveTids)
+            && !(lastFailedSessionTids != null
+                && Arrays.equals(tids, lastFailedSessionTids)
+                && Arrays.equals(coreTids, sessionActiveTids))) {
+          if (session.setThreads(tids)) {
+            lastFailedSessionTids = null;
+            sessionActiveTids = tids;
+          } else if (sdkInt >= API_LEVELS.API_34
+              && hasAuxTids
+              && coreTids.length > 0
+              && session.setThreads(coreTids)) {
+            lastFailedSessionTids = tids.clone();
+            sessionActiveTids = coreTids;
+          } else {
+            session.close();
+            session = bridge.createSession(context, tids, desiredTarget);
+            if (session != null) {
+              lastFailedSessionTids = null;
+              sessionActiveTids = tids;
+              targetWorkDurationNanos = desiredTarget;
+            } else if (hasAuxTids && coreTids.length > 0) {
+              lastFailedSessionTids = tids.clone();
+              session = bridge.createSession(context, coreTids, desiredTarget);
+              if (session != null) {
+                sessionActiveTids = coreTids;
+                targetWorkDurationNanos = desiredTarget;
+              } else {
+                sessionActiveTids = new int[0];
+                targetWorkDurationNanos = 0L;
+              }
+            } else {
+              lastFailedSessionTids = tids.clone();
+              sessionActiveTids = new int[0];
+              targetWorkDurationNanos = 0L;
+            }
+          }
+        }
+
+        if (session != null && desiredTarget != targetWorkDurationNanos) {
+          session.updateTargetWorkDuration(desiredTarget);
+          targetWorkDurationNanos = desiredTarget;
+        }
+      }
+    }
+
+    void onFrameCommittedOnRenderThread(long vsyncNanos, long commitNanos, int currentTid) {
+      if (renderThreadTid != currentTid && currentTid > 0) {
+        renderThreadTid = currentTid;
+      }
+      final long rawDurationNanos = commitNanos - vsyncNanos;
+      synchronized (lock) {
+        if (cpuAffinityEnabled && !activeRenderers.isEmpty()) {
+          applyAffinityForTidLocked(currentTid);
+          applyAffinityForTidLocked(bridge.getSharedImageReaderTid());
+        }
+        if (rawDurationNanos <= 0L || rawDurationNanos > MAX_FRAME_TIME_AGE_NANOS) {
+          return;
+        }
+        final long clampedDurationNanos = Math.min(rawDurationNanos, MAX_REPORTED_DURATION_NANOS);
+        if (session == null || activeRenderers.isEmpty()) {
+          return;
+        }
+        if (vsyncNanos < lastReportedVsyncNanos) {
+          return;
+        }
+        if (vsyncNanos == lastReportedVsyncNanos) {
+          final boolean crossedTarget =
+              clampedDurationNanos > targetWorkDurationNanos
+                  && lastReportedDurationNanos <= targetWorkDurationNanos;
+          final boolean grewMaterially =
+              clampedDurationNanos - lastReportedDurationNanos >= SAME_VSYNC_UPDATE_DELTA_NANOS;
+          if (!crossedTarget && !grewMaterially) {
+            return;
+          }
+        }
+        lastReportedVsyncNanos = vsyncNanos;
+        lastReportedDurationNanos = clampedDurationNanos;
+        session.reportActualWorkDuration(clampedDurationNanos);
+      }
+    }
+  }
+
+  /**
+   * Configures whether workload-scoped non-efficiency CPU affinity hints are applied during active
+   * TLHC rendering. Defaults to {@code false} unless explicitly enabled (for example via {@link
+   * PlatformViewsController#META_DATA_ENABLE_TLHC_CPU_AFFINITY}).
+   */
+  public static void setCpuAffinityEnabled(boolean enabled) {
+    adpfController.setCpuAffinityEnabled(enabled);
+  }
+
+  /** Returns whether workload-scoped TLHC CPU affinity hints are currently enabled. */
+  public static boolean isCpuAffinityEnabled() {
+    return adpfController.isCpuAffinityEnabled();
+  }
+
+  @VisibleForTesting
+  static final PipelineAdpfController adpfController = new PipelineAdpfController();
 
   public PlatformViewWrapper(@NonNull Context context) {
     super(context);
@@ -156,6 +673,19 @@ public class PlatformViewWrapper extends FrameLayout {
    */
   public void setTouchProcessor(@Nullable AndroidTouchProcessor newTouchProcessor) {
     touchProcessor = newTouchProcessor;
+  }
+
+  /**
+   * Sets the supplier for this wrapper's owning Flutter engine raster thread TID. When active, the
+   * ADPF hint session tracks the live raster TID of each participating engine instance (including
+   * shared {@code ThreadHost} groups across spawned engines) rather than a process-global last
+   * engine TID.
+   */
+  public void setRasterThreadTidSupplier(@Nullable IntSupplier supplier) {
+    rasterThreadTidSupplier = supplier;
+    if (registeredWithAdpf) {
+      adpfController.onRendererCreated(this, rasterThreadTidSupplier);
+    }
   }
 
   /**
@@ -235,6 +765,20 @@ public class PlatformViewWrapper extends FrameLayout {
     Choreographer.getInstance().removeFrameCallback(redrawFrameCallback);
   }
 
+  private void registerWithAdpfIfNeeded() {
+    if (!registeredWithAdpf) {
+      registeredWithAdpf = true;
+      adpfController.onRendererCreated(this, rasterThreadTidSupplier);
+    }
+  }
+
+  private void unregisterFromAdpfIfNeeded() {
+    if (registeredWithAdpf) {
+      registeredWithAdpf = false;
+      adpfController.onRendererDestroyed(this);
+    }
+  }
+
   @Override
   protected void onWindowVisibilityChanged(int visibility) {
     super.onWindowVisibilityChanged(visibility);
@@ -250,7 +794,19 @@ public class PlatformViewWrapper extends FrameLayout {
         setHardwareRendererSurface(hardwareRenderer, null);
         hardwareRendererSurface = null;
       }
+      unregisterFromAdpfIfNeeded();
     }
+  }
+
+  @Override
+  protected void onDetachedFromWindow() {
+    super.onDetachedFromWindow();
+    postPendingFrame(true);
+    if (hardwareRenderer != null && Build.VERSION.SDK_INT >= API_LEVELS.API_29) {
+      setHardwareRendererSurface(hardwareRenderer, null);
+      hardwareRendererSurface = null;
+    }
+    unregisterFromAdpfIfNeeded();
   }
 
   /** Releases resources. */
@@ -265,6 +821,7 @@ public class PlatformViewWrapper extends FrameLayout {
       hardwareRendererRoot = null;
       hardwareRendererSurface = null;
     }
+    unregisterFromAdpfIfNeeded();
     if (renderTarget != null) {
       renderTarget.release();
       renderTarget = null;
@@ -399,6 +956,7 @@ public class PlatformViewWrapper extends FrameLayout {
       hardwareRenderer.setLightSourceAlpha(0.0f, 0.0f);
       hardwareRenderer.setLightSourceGeometry(0.0f, 0.0f, 0.0f, 0.0f);
     }
+    registerWithAdpfIfNeeded();
     if (hardwareRendererSurface != targetSurface) {
       setHardwareRendererSurface(hardwareRenderer, targetSurface);
       hardwareRendererSurface = targetSurface;
@@ -444,7 +1002,17 @@ public class PlatformViewWrapper extends FrameLayout {
   @RequiresApi(API_LEVELS.API_29)
   @VisibleForTesting
   int syncAndDrawHardwareRendererFrame(@NonNull HardwareRenderer renderer, long vsyncNanos) {
-    return renderer.createRenderRequest().setVsyncTime(vsyncNanos).syncAndDraw();
+    final int sdkInt = Build.VERSION.SDK_INT;
+    final HardwareRenderer.FrameRenderRequest request =
+        renderer.createRenderRequest().setVsyncTime(vsyncNanos);
+    if (adpfController.needsFrameCommitCallback(sdkInt)) {
+      request.setFrameCommitCallback(
+          DIRECT_EXECUTOR,
+          () ->
+              adpfController.onFrameCommittedOnRenderThread(
+                  vsyncNanos, System.nanoTime(), Process.myTid()));
+    }
+    return request.syncAndDraw();
   }
 
   /** Posts the frame recorded by the last {@link #draw(Canvas)} call to the render target. */
@@ -458,6 +1026,7 @@ public class PlatformViewWrapper extends FrameLayout {
       if (hardwareRenderer == null || !scheduleFrame || Build.VERSION.SDK_INT < API_LEVELS.API_29) {
         return;
       }
+      adpfController.prepareForFrameOnMainThread(getContext(), Build.VERSION.SDK_INT);
       final int syncResult =
           syncAndDrawHardwareRendererFrame(hardwareRenderer, pendingFrameVsyncNanos);
       if ((syncResult & HardwareRenderer.SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) {

@@ -170,6 +170,59 @@ public class FlutterJNI {
 
   private static boolean loadLibraryCalled = false;
 
+  private static native boolean nativeRequestCpuAffinityForThread(int tid);
+
+  private static native boolean nativeRestoreCpuAffinityForThread(int tid);
+
+  private native int nativeGetRasterThreadTid(long nativeShellHolderId);
+
+  /**
+   * Captures the target thread's current kernel CPU affinity mask (keyed by explicit Linux {@code
+   * tid}) and requests non-efficiency core placement when the native library is loaded. Must only
+   * be invoked by opt-in, workload-scoped callers that pair every request with {@link
+   * #restoreCpuAffinityForThread(int)}.
+   */
+  @androidx.annotation.RestrictTo(androidx.annotation.RestrictTo.Scope.LIBRARY)
+  public static boolean requestCpuAffinityForThread(int tid) {
+    if (!FlutterJNI.loadLibraryCalled || tid <= 0) {
+      return false;
+    }
+    return nativeRequestCpuAffinityForThread(tid);
+  }
+
+  /**
+   * Restores the target thread's original kernel CPU affinity mask previously captured by {@link
+   * #requestCpuAffinityForThread(int)}. Safe to call from any thread (including the main thread).
+   */
+  @androidx.annotation.RestrictTo(androidx.annotation.RestrictTo.Scope.LIBRARY)
+  public static boolean restoreCpuAffinityForThread(int tid) {
+    if (!FlutterJNI.loadLibraryCalled || tid <= 0) {
+      return false;
+    }
+    return nativeRestoreCpuAffinityForThread(tid);
+  }
+
+  /**
+   * Returns the Linux TID of this attached {@code FlutterJNI} engine instance's raster thread
+   * (shared across spawned engines sharing the same {@code ThreadHost}), or {@code 0} if detached
+   * or not yet initialized.
+   */
+  @androidx.annotation.RestrictTo(androidx.annotation.RestrictTo.Scope.LIBRARY)
+  public int getRasterThreadTid() {
+    if (!isAttached()) {
+      return 0;
+    }
+    return nativeGetRasterThreadTid(nativeShellHolderId);
+  }
+
+  /**
+   * Returns the current display refresh rate in FPS tracked by {@link io.flutter.view.VsyncWaiter}.
+   */
+  @androidx.annotation.RestrictTo(androidx.annotation.RestrictTo.Scope.LIBRARY)
+  public static float getRefreshRateFPS() {
+    return FlutterJNI.refreshRateFPS;
+  }
+
   private static native void nativePrefetchDefaultFontManager();
 
   /**

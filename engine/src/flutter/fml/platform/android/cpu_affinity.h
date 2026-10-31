@@ -15,6 +15,11 @@ std::optional<size_t> AndroidEfficiencyCoreCount();
 /// @brief Android specific implementation of RequestAffinity.
 bool AndroidRequestAffinity(CpuAffinity affinity);
 
+/// @brief Applies `affinity` to the specified same-process thread `tid`.
+/// Returns false without modifying affinity if `tid <= 0`, if heterogeneous
+/// CPU speed data is unavailable, or if `sched_setaffinity` fails.
+bool AndroidRequestAffinityForThread(pid_t tid, CpuAffinity affinity);
+
 }  // namespace fml
 
 #endif  // FLUTTER_FML_PLATFORM_ANDROID_CPU_AFFINITY_H_

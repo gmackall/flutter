@@ -5,6 +5,7 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_ANDROID_SHELL_HOLDER_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_ANDROID_SHELL_HOLDER_H_
 
+#include <atomic>
 #include <memory>
 
 #include "flutter/fml/macros.h"
@@ -17,6 +18,10 @@
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
+
+namespace testing {
+struct AndroidShellHolderTestAccess;
+}  // namespace testing
 
 //----------------------------------------------------------------------------
 /// @brief      This is the Android owner of the core engine Shell.
@@ -106,13 +111,32 @@ class AndroidShellHolder {
 
   void UpdateDisplayMetrics();
 
+  // Returns the Linux TID of this AndroidShellHolder's raster thread (shared
+  // across spawned engines that share the same ThreadHost), or 0 if not
+  // initialized or after the owning ThreadHost has been destroyed.
+  pid_t GetRasterThreadTid() const;
+
+  // Saves the target thread's current kernel CPU affinity mask (keyed by
+  // explicit `tid`) via sched_getaffinity(tid, ...) and applies non-efficiency
+  // core placement via fml::AndroidRequestAffinityForThread(tid,
+  // CpuAffinity::kNotEfficiency). Returns true (and records the baseline mask
+  // for restoration) only when non-efficiency placement succeeds.
+  static bool EnterScopedWorkloadAffinityForThread(pid_t tid);
+
+  // Restores the target thread's original kernel CPU affinity mask previously
+  // captured by EnterScopedWorkloadAffinityForThread(tid) via
+  // sched_setaffinity(tid, ...). Safe to invoke from any thread.
+  static bool RestoreScopedWorkloadAffinityForThread(pid_t tid);
+
   // Visible for testing.
   const std::unique_ptr<Shell>& GetShellForTesting() const { return shell_; }
 
  private:
+  friend struct testing::AndroidShellHolderTestAccess;
   const flutter::Settings settings_;
   const std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   fml::WeakPtr<PlatformViewAndroid> platform_view_;
+  std::shared_ptr<std::atomic<pid_t>> raster_thread_tid_;
   std::shared_ptr<ThreadHost> thread_host_;
   std::unique_ptr<Shell> shell_;
   bool is_valid_ = false;
@@ -131,13 +155,15 @@ class AndroidShellHolder {
   ///             Used when constructing the Shell from the inside out when
   ///             spawning from an existing Shell.
   ///
-  AndroidShellHolder(const flutter::Settings& settings,
-                     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-                     const std::shared_ptr<ThreadHost>& thread_host,
-                     std::unique_ptr<Shell> shell,
-                     std::unique_ptr<APKAssetProvider> apk_asset_provider,
-                     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+  AndroidShellHolder(
+      const flutter::Settings& settings,
+      const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
+      const std::shared_ptr<std::atomic<pid_t>>& raster_thread_tid,
+      const std::shared_ptr<ThreadHost>& thread_host,
+      std::unique_ptr<Shell> shell,
+      std::unique_ptr<APKAssetProvider> apk_asset_provider,
+      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
+      AndroidRenderingAPI rendering_api);
   static void ThreadDestructCallback(void* value);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,
