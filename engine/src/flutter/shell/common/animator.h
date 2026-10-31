@@ -9,6 +9,7 @@
 
 #include "flutter/common/task_runners.h"
 #include "flutter/flow/frame_timings.h"
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/memory/ref_ptr.h"
 #include "flutter/fml/memory/weak_ptr.h"
 #include "flutter/fml/synchronization/semaphore.h"
@@ -97,6 +98,23 @@ class Animator final {
   // Cleans the |trace_flow_ids_| if there is no active frame scheduled.
   void MaybeCleanTraceFlowIds();
 
+  // Controls whether texture-only frame requests (`RequestFrame(false)`) may
+  // immediately dispatch at most one `DrawLastLayerTrees` on the UI task runner
+  // per extrapolated VSync window when the half-interval headroom heuristic is
+  // satisfied (`cur_vsync_target - now >= period / 2`). Subsequent texture-only
+  // requests within the same VSync window fall back to `AwaitVSync()` so
+  // multiple concurrently updating textures coalesce onto the next VSync
+  // boundary rather than contendedly re-dispatching `DrawLastLayerTrees`.
+  // Enabled by default on Android (`FML_OS_ANDROID`) and disabled by default on
+  // all other platforms.
+  void SetAllowSameVsyncTextureDraw(bool allow) {
+    allow_same_vsync_texture_draw_ = allow;
+  }
+
+  bool GetAllowSameVsyncTextureDraw() const {
+    return allow_same_vsync_texture_draw_;
+  }
+
  private:
   // Animator's work during a vsync is split into two methods, BeginFrame and
   // EndFrame. The two methods should be called synchronously back-to-back to
@@ -111,6 +129,8 @@ class Animator final {
   void DrawLastLayerTrees(
       std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder);
 
+  void ScheduleMaybeDrawLastLayerTrees();
+
   void AwaitVSync();
 
   Delegate& delegate_;
@@ -122,6 +142,11 @@ class Animator final {
       layer_trees_tasks_;
   uint64_t frame_request_number_ = 1;
   fml::TimeDelta dart_frame_deadline_;
+  fml::TimeDelta last_notified_idle_deadline_;
+  fml::TimePoint last_vsync_start_ = fml::TimePoint::Min();
+  fml::TimePoint last_vsync_target_ = fml::TimePoint::Min();
+  fml::TimePoint last_drawn_texture_vsync_target_ = fml::TimePoint::Min();
+  bool has_drawn_texture_in_current_vsync_ = false;
   std::shared_ptr<FramePipeline> layer_tree_pipeline_;
   fml::Semaphore pending_frame_semaphore_;
   FramePipeline::ProducerContinuation producer_continuation_;
@@ -129,6 +154,11 @@ class Animator final {
   bool frame_scheduled_ = false;
   std::deque<uint64_t> trace_flow_ids_;
   bool has_rendered_ = false;
+#if defined(FML_OS_ANDROID)
+  bool allow_same_vsync_texture_draw_ = true;
+#else
+  bool allow_same_vsync_texture_draw_ = false;
+#endif
 
   fml::TaskRunnerAffineWeakPtrFactory<Animator> weak_factory_;
 
