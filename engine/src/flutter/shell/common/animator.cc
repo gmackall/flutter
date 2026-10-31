@@ -20,6 +20,47 @@ namespace {
 constexpr fml::TimeDelta kNotifyIdleTaskWaitTime =
     fml::TimeDelta::FromMilliseconds(51);
 
+// Maximum number of VSync intervals beyond `last_vsync_start_` for which we
+// allow extrapolating the current VSync window without an intervening hardware
+// VSync callback. Clamping to 2 intervals ensures that after idle periods or
+// display refresh-rate switches (e.g. 120 Hz -> 60 Hz), texture-only frames
+// fall back to `AwaitVSync()` to resynchronize with the hardware VSync clock.
+constexpr int64_t kMaxExtrapolatedVsyncIntervals = 2;
+
+bool ComputeCurrentVsyncWindowWithHeadroom(fml::TimePoint now,
+                                           fml::TimePoint last_vsync_start,
+                                           fml::TimePoint last_vsync_target,
+                                           fml::TimePoint* out_vsync_start,
+                                           fml::TimePoint* out_vsync_target) {
+  if (last_vsync_start <= fml::TimePoint::Min() ||
+      last_vsync_target <= last_vsync_start || now < last_vsync_target) {
+    return false;
+  }
+  const fml::TimeDelta period = last_vsync_target - last_vsync_start;
+  const int64_t period_ns = period.ToNanoseconds();
+  if (period_ns <= 0) {
+    return false;
+  }
+  const int64_t elapsed_ns = (now - last_vsync_start).ToNanoseconds();
+  const int64_t k = elapsed_ns / period_ns;
+  if (k <= 0 || k > kMaxExtrapolatedVsyncIntervals) {
+    return false;
+  }
+  const fml::TimePoint cur_vsync_start =
+      last_vsync_start + fml::TimeDelta::FromNanoseconds(k * period_ns);
+  const fml::TimePoint cur_vsync_target = cur_vsync_start + period;
+  if (cur_vsync_target - now < period / 2) {
+    return false;
+  }
+  if (out_vsync_start) {
+    *out_vsync_start = cur_vsync_start;
+  }
+  if (out_vsync_target) {
+    *out_vsync_target = cur_vsync_target;
+  }
+  return true;
+}
+
 }  // namespace
 
 Animator::Animator(Delegate& delegate,
@@ -58,7 +99,7 @@ void Animator::EnqueueTraceFlowId(uint64_t trace_flow_id) {
 }
 
 void Animator::MaybeCleanTraceFlowIds() {
-  if (!frame_scheduled_ && !trace_flow_ids_.empty()) {
+  if (!regenerate_layer_trees_ && !trace_flow_ids_.empty()) {
     size_t flow_id_count = trace_flow_ids_.size();
     std::unique_ptr<uint64_t[]> flow_ids =
         std::make_unique<uint64_t[]>(flow_id_count);
@@ -134,6 +175,9 @@ void Animator::BeginFrame(
   const fml::TimePoint frame_target_time =
       frame_timings_recorder_->GetVsyncTargetTime();
   dart_frame_deadline_ = frame_target_time.ToEpochDelta();
+  last_vsync_start_ = frame_timings_recorder_->GetVsyncStartTime();
+  last_vsync_target_ = frame_target_time;
+  has_drawn_texture_in_current_vsync_ = false;
   uint64_t frame_number = frame_timings_recorder_->GetFrameNumber();
   delegate_.OnAnimatorBeginFrame(frame_target_time, frame_number);
 }
@@ -245,7 +289,14 @@ void Animator::DrawLastLayerTrees(
   // files.
   TRACE_EVENT0("flutter", "Animator::DrawLastLayerTrees");
 
+  frame_scheduled_ = false;
   pending_frame_semaphore_.Signal();
+  const fml::TimePoint vsync_target =
+      frame_timings_recorder->GetVsyncTargetTime();
+  has_drawn_texture_in_current_vsync_ = true;
+  if (vsync_target > last_drawn_texture_vsync_target_) {
+    last_drawn_texture_vsync_target_ = vsync_target;
+  }
   // In this case BeginFrame doesn't get called, we need to
   // adjust frame timings to update build start and end times,
   // given that the frame doesn't get built in this case, we
@@ -254,6 +305,51 @@ void Animator::DrawLastLayerTrees(
   frame_timings_recorder->RecordBuildStart(now);
   frame_timings_recorder->RecordBuildEnd(now);
   delegate_.OnAnimatorDrawLastLayerTrees(std::move(frame_timings_recorder));
+}
+
+void Animator::ScheduleMaybeDrawLastLayerTrees() {
+  if (!allow_same_vsync_texture_draw_ || !has_rendered_ ||
+      !CanReuseLastLayerTrees()) {
+    AwaitVSync();
+    return;
+  }
+  const auto now = fml::TimePoint::Now();
+  fml::TimePoint precheck_vsync_start;
+  fml::TimePoint precheck_vsync_target;
+  if (ComputeCurrentVsyncWindowWithHeadroom(
+          now, last_vsync_start_, last_vsync_target_, &precheck_vsync_start,
+          &precheck_vsync_target) &&
+      (!has_drawn_texture_in_current_vsync_ ||
+       precheck_vsync_target > last_drawn_texture_vsync_target_)) {
+    task_runners_.GetUITaskRunner()->PostTask(
+        [self = weak_factory_.GetWeakPtr()]() {
+          if (!self) {
+            return;
+          }
+          const auto task_now = fml::TimePoint::Now();
+          fml::TimePoint cur_vsync_start;
+          fml::TimePoint cur_vsync_target;
+          if (self->allow_same_vsync_texture_draw_ && self->has_rendered_ &&
+              self->CanReuseLastLayerTrees() &&
+              ComputeCurrentVsyncWindowWithHeadroom(
+                  task_now, self->last_vsync_start_, self->last_vsync_target_,
+                  &cur_vsync_start, &cur_vsync_target) &&
+              (!self->has_drawn_texture_in_current_vsync_ ||
+               cur_vsync_target > self->last_drawn_texture_vsync_target_)) {
+            self->has_drawn_texture_in_current_vsync_ = true;
+            self->last_drawn_texture_vsync_target_ = cur_vsync_target;
+            auto frame_timings_recorder =
+                std::make_unique<FrameTimingsRecorder>();
+            frame_timings_recorder->RecordVsync(cur_vsync_start,
+                                                cur_vsync_target);
+            self->DrawLastLayerTrees(std::move(frame_timings_recorder));
+          } else {
+            self->AwaitVSync();
+          }
+        });
+  } else {
+    AwaitVSync();
+  }
 }
 
 void Animator::RequestFrame(bool regenerate_layer_trees) {
@@ -273,15 +369,19 @@ void Animator::RequestFrame(bool regenerate_layer_trees) {
     return;
   }
 
-  AwaitVSync();
   frame_scheduled_ = true;
-  task_runners_.GetUITaskRunner()->PostTask(
-      [self = weak_factory_.GetWeakPtr()]() {
-        if (!self || !self->has_rendered_) {
-          return;
-        }
-        self->delegate_.OnAnimatorNotifyIdle(self->dart_frame_deadline_);
-      });
+  ScheduleMaybeDrawLastLayerTrees();
+  if (regenerate_layer_trees ||
+      (has_rendered_ && last_notified_idle_deadline_ != dart_frame_deadline_)) {
+    task_runners_.GetUITaskRunner()->PostTask(
+        [self = weak_factory_.GetWeakPtr()]() {
+          if (!self || !self->has_rendered_) {
+            return;
+          }
+          self->last_notified_idle_deadline_ = self->dart_frame_deadline_;
+          self->delegate_.OnAnimatorNotifyIdle(self->dart_frame_deadline_);
+        });
+  }
 }
 
 void Animator::AwaitVSync() {
@@ -290,6 +390,24 @@ void Animator::AwaitVSync() {
           std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) {
         if (self) {
           if (self->CanReuseLastLayerTrees()) {
+            const fml::TimePoint vsync_start =
+                frame_timings_recorder->GetVsyncStartTime();
+            const fml::TimePoint vsync_target =
+                frame_timings_recorder->GetVsyncTargetTime();
+            if (self->has_drawn_texture_in_current_vsync_ &&
+                vsync_target > self->last_vsync_start_ &&
+                vsync_target <= self->last_drawn_texture_vsync_target_ &&
+                fml::TimePoint::Now() <
+                    self->last_drawn_texture_vsync_target_) {
+              self->AwaitVSync();
+              return;
+            }
+            if (vsync_target > self->last_vsync_target_ &&
+                vsync_target > vsync_start) {
+              self->last_vsync_start_ = vsync_start;
+              self->last_vsync_target_ = vsync_target;
+            }
+            self->has_drawn_texture_in_current_vsync_ = false;
             self->DrawLastLayerTrees(std::move(frame_timings_recorder));
           } else {
             self->BeginFrame(std::move(frame_timings_recorder));

@@ -34,6 +34,7 @@ class FakeAnimatorDelegate : public Animator::Delegate {
 
   void OnAnimatorNotifyIdle(fml::TimeDelta deadline) override {
     notify_idle_called_ = true;
+    notify_idle_count_++;
   }
 
   MOCK_METHOD(void,
@@ -47,9 +48,13 @@ class FakeAnimatorDelegate : public Animator::Delegate {
               (override));
 
   void OnAnimatorDrawLastLayerTrees(
-      std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) override {}
+      std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) override {
+    draw_last_layer_trees_count_++;
+  }
 
   bool notify_idle_called_ = false;
+  int notify_idle_count_ = 0;
+  int draw_last_layer_trees_count_ = 0;
 };
 
 class CountingVsyncWaiter : public VsyncWaiter {
@@ -58,6 +63,11 @@ class CountingVsyncWaiter : public VsyncWaiter {
       : VsyncWaiter(task_runners) {}
 
   int await_vsync_call_count() const { return await_vsync_call_count_; }
+
+  void TriggerVsync(fml::TimePoint frame_start_time,
+                    fml::TimePoint frame_target_time) {
+    FireCallback(frame_start_time, frame_target_time);
+  }
 
  protected:
   void AwaitVSync() override { await_vsync_call_count_++; }
@@ -144,6 +154,403 @@ TEST_F(ShellTest, RequestFrameAwaitsVsyncSynchronously) {
   animator.RequestFrame(/*regenerate_layer_trees=*/false);
 
   EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+}
+
+TEST_F(ShellTest, TextureOnlyRequestFrameHeadroomAndFlowIdCleanup) {
+  FakeAnimatorDelegate delegate;
+  TaskRunners task_runners = {
+      "test",
+      CreateNewThread(),  // platform
+      CreateNewThread(),  // raster
+      CreateNewThread(),  // ui
+      CreateNewThread()   // io
+  };
+
+  std::unique_ptr<Animator> animator;
+  CountingVsyncWaiter* counting_vsync_waiter = nullptr;
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    auto vsync_waiter = std::make_unique<CountingVsyncWaiter>(task_runners);
+    counting_vsync_waiter = vsync_waiter.get();
+    animator = std::make_unique<Animator>(delegate, task_runners,
+                                          std::move(vsync_waiter));
+    animator->SetAllowSameVsyncTextureDraw(true);
+
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+    EXPECT_CALL(delegate, OnAnimatorDraw).Times(1);
+
+    // 1. Render initial frame with VSync window [now - 9ms, now - 1ms] (8ms
+    // period), leaving 7ms >= 4ms headroom in the current VSync [now - 1ms,
+    // now + 7ms].
+    const auto now = fml::TimePoint::Now();
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+    counting_vsync_waiter->TriggerVsync(
+        now - fml::TimeDelta::FromMilliseconds(9),
+        now - fml::TimeDelta::FromMilliseconds(1));
+  });
+
+  // Flush the posted UI task from TriggerVsync (BeginFrame + Render + EndFrame)
+  // and then request a texture-only frame with sufficient headroom.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    animator->EnqueueTraceFlowId(42);
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    // Should dispatch DrawLastLayerTrees via UI task without calling
+    // AwaitVSync.
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+    animator->MaybeCleanTraceFlowIds();
+  });
+
+  // Flush the posted UI task that executes DrawLastLayerTrees and
+  // OnAnimatorNotifyIdle.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+    EXPECT_EQ(delegate.notify_idle_count_, 1);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+
+    // 2. Render a frame whose VSync window [now - 14ms, now - 6ms] leaves only
+    // 2ms < 4ms (period / 2) headroom in the current VSync [now - 6ms,
+    // now + 2ms], then verify RequestFrame(false) falls back to AwaitVSync().
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+
+    const auto now = fml::TimePoint::Now();
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 2);
+    counting_vsync_waiter->TriggerVsync(
+        now - fml::TimeDelta::FromMilliseconds(14),
+        now - fml::TimeDelta::FromMilliseconds(6));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    // RequestFrame(true) notified idle once for the new dart_frame_deadline_.
+    EXPECT_EQ(delegate.notify_idle_count_, 2);
+
+    // Late in current VSync (only ~2ms remaining of 8ms period < period / 2):
+    // should fall back to AwaitVSync() to re-lock to the next hardware VSync,
+    // and should not post a redundant OnAnimatorNotifyIdle task when
+    // dart_frame_deadline_ has not changed.
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 3);
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.notify_idle_count_, 2);
+    animator.reset();
+  });
+}
+
+TEST_F(ShellTest, SecondTextureOnlyRequestFrameInSameVsyncDefersToAwaitVsync) {
+  FakeAnimatorDelegate delegate;
+  TaskRunners task_runners = {
+      "test",
+      CreateNewThread(),  // platform
+      CreateNewThread(),  // raster
+      CreateNewThread(),  // ui
+      CreateNewThread()   // io
+  };
+
+  std::unique_ptr<Animator> animator;
+  CountingVsyncWaiter* counting_vsync_waiter = nullptr;
+  fml::TimePoint base_now;
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    auto vsync_waiter = std::make_unique<CountingVsyncWaiter>(task_runners);
+    counting_vsync_waiter = vsync_waiter.get();
+    animator = std::make_unique<Animator>(delegate, task_runners,
+                                          std::move(vsync_waiter));
+    animator->SetAllowSameVsyncTextureDraw(true);
+
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+    EXPECT_CALL(delegate, OnAnimatorDraw).Times(1);
+
+    // Render initial frame with VSync window [base_now - 17ms, base_now - 1ms]
+    // (16ms period), leaving ~15ms >= 8ms headroom in the current VSync window
+    // [base_now - 1ms, base_now + 15ms].
+    base_now = fml::TimePoint::Now();
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(17),
+        base_now - fml::TimeDelta::FromMilliseconds(1));
+  });
+
+  // First texture-only RequestFrame(false) in the current VSync window
+  // (e.g. WebView #1 frame arriving): should dispatch DrawLastLayerTrees
+  // immediately on the UI task runner without calling AwaitVSync().
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+  });
+
+  // Flush the posted UI task that runs the first DrawLastLayerTrees, then
+  // immediately issue a second texture-only RequestFrame(false) in the same
+  // VSync window (e.g. WebView #2 frame arriving in the same VSync): it must
+  // NOT dispatch a second immediate DrawLastLayerTrees, and must instead defer
+  // to AwaitVSync() for the next VSync window.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 2);
+  });
+
+  // Verify the second DrawLastLayerTrees did not run until the next VSync
+  // fires.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+
+    // If VSync fires spuriously for the SAME VSync window [base_now - 1ms,
+    // base_now + 15ms], it re-arms AwaitVSync() rather than double-drawing.
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(1),
+        base_now + fml::TimeDelta::FromMilliseconds(15));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 3);
+
+    // Now fire the NEXT VSync window [base_now + 15ms, base_now + 31ms]:
+    // the deferred second texture draw executes once.
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(1),
+        base_now + fml::TimeDelta::FromMilliseconds(31));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 2);
+    animator.reset();
+  });
+}
+
+TEST_F(ShellTest,
+       TextureOnlyRequestFrameUsesAwaitVsyncWhenSameVsyncDrawDisabled) {
+  FakeAnimatorDelegate delegate;
+  TaskRunners task_runners = {
+      "test",
+      CreateNewThread(),  // platform
+      CreateNewThread(),  // raster
+      CreateNewThread(),  // ui
+      CreateNewThread()   // io
+  };
+
+  std::unique_ptr<Animator> animator;
+  CountingVsyncWaiter* counting_vsync_waiter = nullptr;
+  fml::TimePoint base_now;
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    auto vsync_waiter = std::make_unique<CountingVsyncWaiter>(task_runners);
+    counting_vsync_waiter = vsync_waiter.get();
+    animator = std::make_unique<Animator>(delegate, task_runners,
+                                          std::move(vsync_waiter));
+#if !defined(FML_OS_ANDROID)
+    EXPECT_FALSE(animator->GetAllowSameVsyncTextureDraw());
+#endif
+    animator->SetAllowSameVsyncTextureDraw(false);
+
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+    EXPECT_CALL(delegate, OnAnimatorDraw).Times(1);
+
+    base_now = fml::TimePoint::Now();
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(17),
+        base_now - fml::TimeDelta::FromMilliseconds(1));
+  });
+
+  // With allow_same_vsync_texture_draw == false, RequestFrame(false) must
+  // immediately call AwaitVSync() even when > 1/2 VSync period of headroom
+  // remains, matching legacy behavior byte-for-byte.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 2);
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 0);
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(1),
+        base_now + fml::TimeDelta::FromMilliseconds(15));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+    animator.reset();
+  });
+}
+
+TEST_F(ShellTest,
+       RegenerateRequestFrameRacesPostedImmediateTextureDrawAndRunsBeginFrame) {
+  FakeAnimatorDelegate delegate;
+  TaskRunners task_runners = {
+      "test",
+      CreateNewThread(),  // platform
+      CreateNewThread(),  // raster
+      CreateNewThread(),  // ui
+      CreateNewThread()   // io
+  };
+
+  std::unique_ptr<Animator> animator;
+  CountingVsyncWaiter* counting_vsync_waiter = nullptr;
+  fml::TimePoint base_now;
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    auto vsync_waiter = std::make_unique<CountingVsyncWaiter>(task_runners);
+    counting_vsync_waiter = vsync_waiter.get();
+    animator = std::make_unique<Animator>(delegate, task_runners,
+                                          std::move(vsync_waiter));
+    animator->SetAllowSameVsyncTextureDraw(true);
+
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+    EXPECT_CALL(delegate, OnAnimatorDraw).Times(1);
+
+    base_now = fml::TimePoint::Now();
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(17),
+        base_now - fml::TimeDelta::FromMilliseconds(1));
+  });
+
+  // In the same UI turn, call RequestFrame(false) (posting the immediate
+  // texture draw task) followed by RequestFrame(true) before the posted task
+  // runs.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+  });
+
+  // Flushing the posted UI task must see regenerate_layer_trees_ == true,
+  // skip DrawLastLayerTrees, and fall back to AwaitVSync().
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 0);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 2);
+
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+
+    counting_vsync_waiter->TriggerVsync(
+        base_now - fml::TimeDelta::FromMilliseconds(1),
+        base_now + fml::TimeDelta::FromMilliseconds(15));
+  });
+
+  // Verify BeginFrame ran and pending_frame_semaphore_ is balanced so a
+  // subsequent RequestFrame(true) succeeds.
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 0);
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 3);
+    animator.reset();
+  });
+}
+
+TEST_F(
+    ShellTest,
+    TextureOnlyRequestFrameFallsBackToAwaitVsyncWhenBeforeTargetOrVsyncStale) {
+  FakeAnimatorDelegate delegate;
+  TaskRunners task_runners = {
+      "test",
+      CreateNewThread(),  // platform
+      CreateNewThread(),  // raster
+      CreateNewThread(),  // ui
+      CreateNewThread()   // io
+  };
+
+  std::unique_ptr<Animator> animator;
+  CountingVsyncWaiter* counting_vsync_waiter = nullptr;
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    auto vsync_waiter = std::make_unique<CountingVsyncWaiter>(task_runners);
+    counting_vsync_waiter = vsync_waiter.get();
+    animator = std::make_unique<Animator>(delegate, task_runners,
+                                          std::move(vsync_waiter));
+    animator->SetAllowSameVsyncTextureDraw(true);
+
+    // 1. Pre-first-render RequestFrame(false) (`has_rendered_ == false`):
+    // must fall back to AwaitVSync() and must NOT call OnAnimatorBeginFrame.
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 1);
+    const auto now = fml::TimePoint::Now();
+    counting_vsync_waiter->TriggerVsync(
+        now - fml::TimeDelta::FromMilliseconds(80),
+        now - fml::TimeDelta::FromMilliseconds(64));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+
+    // 2. Render a frame with a VSync window 4 intervals in the past
+    // ([now - 64ms, now - 48ms], `k = 4 > 2` intervals elapsed) to simulate a
+    // post-idle gap or refresh-rate change.
+    EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+      auto layer_tree = std::make_unique<LayerTree>(nullptr, DlISize(600, 800));
+      animator->Render(kImplicitViewId, std::move(layer_tree), 1.0);
+    });
+    EXPECT_CALL(delegate, OnAnimatorUpdateLatestFrameTargetTime).Times(1);
+    EXPECT_CALL(delegate, OnAnimatorDraw).Times(1);
+
+    const auto now = fml::TimePoint::Now();
+    animator->RequestFrame(/*regenerate_layer_trees=*/true);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 2);
+    counting_vsync_waiter->TriggerVsync(
+        now - fml::TimeDelta::FromMilliseconds(64),
+        now - fml::TimeDelta::FromMilliseconds(48));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    // With `last_vsync_start_` 4 intervals in the past (`k = 4 > 2`),
+    // RequestFrame(false) must reject the stale extrapolated window and fall
+    // back to AwaitVSync().
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 3);
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 1);
+
+    // Trigger VSync with a window where `now < last_vsync_target_`
+    // ([now - 4ms, now + 12ms]).
+    const auto now = fml::TimePoint::Now();
+    counting_vsync_waiter->TriggerVsync(
+        now - fml::TimeDelta::FromMilliseconds(4),
+        now + fml::TimeDelta::FromMilliseconds(12));
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 2);
+
+    // 3. Because `now < last_vsync_target_`, RequestFrame(false) must fall back
+    // to AwaitVSync() instead of posting an immediate draw.
+    animator->RequestFrame(/*regenerate_layer_trees=*/false);
+    EXPECT_EQ(counting_vsync_waiter->await_vsync_call_count(), 4);
+  });
+
+  PostTaskSync(task_runners.GetUITaskRunner(), [&] {
+    EXPECT_EQ(delegate.draw_last_layer_trees_count_, 2);
+    animator.reset();
+  });
 }
 
 TEST_F(ShellTest, AnimatorDoesNotNotifyIdleBeforeRender) {
