@@ -11,11 +11,13 @@ namespace flutter {
 
 class TextureLayer : public Layer {
  public:
-  TextureLayer(const DlPoint& offset,
-               const DlSize& size,
-               int64_t texture_id,
-               bool freeze,
-               DlImageSampling sampling);
+  TextureLayer(
+      const DlPoint& offset,
+      const DlSize& size,
+      int64_t texture_id,
+      bool freeze,
+      DlImageSampling sampling,
+      std::optional<TextureSyncRequirement> sync_requirement = std::nullopt);
 
   bool IsReplacing(DiffContext* context, const Layer* layer) const override {
     return layer->as_texture_layer() != nullptr;
@@ -24,6 +26,10 @@ class TextureLayer : public Layer {
   void Diff(DiffContext* context, const Layer* old_layer) override;
 
   const TextureLayer* as_texture_layer() const override { return this; }
+
+  const std::optional<TextureSyncRequirement>& sync_requirement() const {
+    return sync_requirement_;
+  }
 
   void Preroll(PrerollContext* context) override;
   void Paint(PaintContext& context) const override;
@@ -34,6 +40,7 @@ class TextureLayer : public Layer {
   int64_t texture_id_;
   bool freeze_;
   DlImageSampling sampling_;
+  std::optional<TextureSyncRequirement> sync_requirement_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(TextureLayer);
 };

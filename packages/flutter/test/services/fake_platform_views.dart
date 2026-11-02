@@ -190,6 +190,69 @@ class FakeAndroidViewController implements AndroidViewController {
     rejectGestureCount++;
     lastRejectGestureId = gestureId;
   }
+
+  final List<VoidCallback> _syncFrameRequestedCallbacks = <VoidCallback>[];
+  TextureFrameSyncRequirement? _pendingSyncRequirement;
+
+  @override
+  TextureFrameSyncRequirement? get pendingSyncRequirement => _pendingSyncRequirement;
+
+  @override
+  void addOnSyncFrameRequestedListener(VoidCallback listener) {
+    _syncFrameRequestedCallbacks.add(listener);
+  }
+
+  @override
+  void removeOnSyncFrameRequestedListener(VoidCallback listener) {
+    _syncFrameRequestedCallbacks.remove(listener);
+  }
+
+  @override
+  void requestSynchronizedFrame({
+    int minFrameGeneration = 0,
+    int expectedBufferWidth = 0,
+    int expectedBufferHeight = 0,
+    int maxSyncWaitMicros = TextureFrameSyncRequirement.defaultMaxSyncWaitMicros,
+  }) {
+    final candidate = TextureFrameSyncRequirement(
+      minFrameGeneration: minFrameGeneration,
+      expectedBufferWidth: expectedBufferWidth,
+      expectedBufferHeight: expectedBufferHeight,
+      maxSyncWaitMicros: maxSyncWaitMicros,
+    );
+    if (!candidate.isActive) {
+      return;
+    }
+    final TextureFrameSyncRequirement? existing = _pendingSyncRequirement;
+    if (existing == null) {
+      _pendingSyncRequirement = candidate;
+    } else {
+      _pendingSyncRequirement = TextureFrameSyncRequirement(
+        minFrameGeneration: minFrameGeneration > existing.minFrameGeneration
+            ? minFrameGeneration
+            : existing.minFrameGeneration,
+        expectedBufferWidth: expectedBufferWidth > 0
+            ? expectedBufferWidth
+            : existing.expectedBufferWidth,
+        expectedBufferHeight: expectedBufferHeight > 0
+            ? expectedBufferHeight
+            : existing.expectedBufferHeight,
+        maxSyncWaitMicros: maxSyncWaitMicros > existing.maxSyncWaitMicros
+            ? maxSyncWaitMicros
+            : existing.maxSyncWaitMicros,
+      );
+    }
+    for (final callback in List<VoidCallback>.of(_syncFrameRequestedCallbacks)) {
+      callback();
+    }
+  }
+
+  @override
+  TextureFrameSyncRequirement? consumePendingSyncRequirement() {
+    final TextureFrameSyncRequirement? requirement = _pendingSyncRequirement;
+    _pendingSyncRequirement = null;
+    return requirement;
+  }
 }
 
 class FakeAndroidPlatformViewsController {

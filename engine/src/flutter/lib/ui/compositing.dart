@@ -554,6 +554,10 @@ abstract class SceneBuilder {
     double height = 0.0,
     bool freeze = false,
     FilterQuality filterQuality = FilterQuality.low,
+    int minFrameGeneration = 0,
+    int expectedBufferWidth = 0,
+    int expectedBufferHeight = 0,
+    int maxSyncWaitMicros = 0,
   });
 
   /// Adds a platform view (e.g an iOS UIView) to the scene.
@@ -1035,14 +1039,42 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     double height = 0.0,
     bool freeze = false,
     FilterQuality filterQuality = FilterQuality.low,
+    int minFrameGeneration = 0,
+    int expectedBufferWidth = 0,
+    int expectedBufferHeight = 0,
+    int maxSyncWaitMicros = 0,
   }) {
-    _addTexture(offset.dx, offset.dy, width, height, textureId, freeze, filterQuality.index);
+    _addTexture(
+      offset.dx,
+      offset.dy,
+      width,
+      height,
+      textureId,
+      freeze,
+      filterQuality.index,
+      minFrameGeneration,
+      expectedBufferWidth,
+      expectedBufferHeight,
+      maxSyncWaitMicros,
+    );
   }
 
-  @Native<Void Function(Pointer<Void>, Double, Double, Double, Double, Int64, Bool, Int32)>(
-    symbol: 'SceneBuilder::addTexture',
-    isLeaf: true,
-  )
+  @Native<
+    Void Function(
+      Pointer<Void>,
+      Double,
+      Double,
+      Double,
+      Double,
+      Int64,
+      Bool,
+      Int32,
+      Int64,
+      Int32,
+      Int32,
+      Int64,
+    )
+  >(symbol: 'SceneBuilder::addTexture', isLeaf: true)
   external void _addTexture(
     double dx,
     double dy,
@@ -1051,6 +1083,10 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     int textureId,
     bool freeze,
     int filterQuality,
+    int minFrameGeneration,
+    int expectedBufferWidth,
+    int expectedBufferHeight,
+    int maxSyncWaitMicros,
   );
 
   @override

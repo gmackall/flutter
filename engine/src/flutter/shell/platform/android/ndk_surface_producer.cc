@@ -6,7 +6,9 @@
 
 #include <android/api-level.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -68,7 +70,53 @@ NdkSurfaceProducer::Procs LoadDefaultProcs() {
                 procs.AHardwareBuffer_acquire);
   ResolveSymbol(android, "AHardwareBuffer_release",
                 procs.AHardwareBuffer_release);
+  ResolveSymbol(android, "AHardwareBuffer_describe",
+                procs.AHardwareBuffer_describe);
   return procs;
+}
+
+bool IsFenceSignaledNonBlocking(int fence_fd) {
+  if (fence_fd < 0) {
+    return true;
+  }
+  NdkSurfaceProducer::PollFn poll_fn;
+  {
+    std::lock_guard<std::mutex> lock(g_poll_override_mutex);
+    poll_fn = g_poll_override;
+  }
+  struct pollfd pfd = {
+      .fd = fence_fd,
+      .events = POLLIN,
+      .revents = 0,
+  };
+  int ret = 0;
+  do {
+    pfd.revents = 0;
+    ret = poll_fn ? poll_fn(&pfd, 1, 0) : ::poll(&pfd, 1, 0);
+  } while (ret == -1 && errno == EINTR);
+  return ret > 0 && (pfd.revents & POLLIN) != 0 &&
+         (pfd.revents & (POLLERR | POLLNVAL)) == 0;
+}
+
+SkISize QueryHardwareBufferSize(AHardwareBuffer* ahb,
+                                const NdkSurfaceProducer::Procs& procs,
+                                int32_t fallback_width,
+                                int32_t fallback_height) {
+  bool using_test_procs_override = false;
+  {
+    std::lock_guard<std::mutex> lock(g_procs_override_mutex);
+    using_test_procs_override = g_procs_override.has_value();
+  }
+  if (!using_test_procs_override && ahb != nullptr &&
+      procs.AHardwareBuffer_describe != nullptr) {
+    AHardwareBuffer_Desc desc{};
+    procs.AHardwareBuffer_describe(ahb, &desc);
+    if (desc.width > 0 && desc.height > 0) {
+      return SkISize::Make(static_cast<int32_t>(desc.width),
+                           static_cast<int32_t>(desc.height));
+    }
+  }
+  return SkISize::Make(fallback_width, fallback_height);
 }
 
 // Deletes an AImage and transfers ownership of `fence_fd` to libmediandk via
@@ -281,6 +329,8 @@ NdkSurfaceProducer::CreatePerReaderLocked(JNIEnv* env,
   auto per_reader = std::make_shared<PerReader>();
   per_reader->reader = raw_reader;
   per_reader->window = window;
+  per_reader->width = width;
+  per_reader->height = height;
 
   if (create_java_surface) {
     if (env == nullptr) {
@@ -407,6 +457,7 @@ void NdkSurfaceProducer::NotifyFrameDisplayed(AHardwareBuffer* ahb) {
     return;
   }
   bool should_post_idle_cleanup = false;
+  std::vector<fml::closure> ready_callbacks;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto displayed_it = dequeued_images_.end();
@@ -430,6 +481,13 @@ void NdkSurfaceProducer::NotifyFrameDisplayed(AHardwareBuffer* ahb) {
       }
     }
     displayed_it->state = ConsumerImageState::kDisplayed;
+    if (displayed_it->frame_generation > ready_frame_generation_) {
+      ready_frame_generation_ = displayed_it->frame_generation;
+    }
+    if (!displayed_it->frame_size.isEmpty()) {
+      latest_ready_size_ = displayed_it->frame_size;
+    }
+    CollectReadySyncCallbacksLocked(ready_callbacks);
 
     // Retain up to `kMaxDequeuedImages` (2) previously displayed frames to
     // cover in-flight GPU command buffers (`kMaxFramesInFlight = 2`) and
@@ -481,6 +539,11 @@ void NdkSurfaceProducer::NotifyFrameDisplayed(AHardwareBuffer* ahb) {
   }
   if (should_post_idle_cleanup) {
     PostIdleAsyncCleanup();
+  }
+  for (auto& cb : ready_callbacks) {
+    if (cb) {
+      cb();
+    }
   }
 }
 
@@ -681,8 +744,16 @@ void NdkSurfaceProducer::OnImageAvailable(
     return;
   }
 
+  const uint64_t frame_gen =
+      produced_frame_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  const SkISize frame_size = QueryHardwareBufferSize(
+      ahb, procs, per_reader->width, per_reader->height);
+  const bool fence_signaled_now = IsFenceSignaledNonBlocking(fence_fd);
+
   std::vector<QueuedImage> evicted;
   std::shared_ptr<PerReader> deferred_shutdown;
+  std::vector<fml::closure> ready_callbacks;
+  int raw_dup_watch_fd = -1;
   bool is_closed_or_released = false;
   bool woke_waiting_dequeue = false;
   bool should_post_schedule = false;
@@ -700,12 +771,28 @@ void NdkSurfaceProducer::OnImageAvailable(
           .image = image,
           .ahb = ahb,
           .acquire_fence_fd = fml::UniqueFD(fence_fd),
+          .frame_generation = frame_gen,
+          .frame_size = frame_size,
       });
+      if (fence_signaled_now) {
+        if (frame_gen > ready_frame_generation_) {
+          ready_frame_generation_ = frame_gen;
+        }
+        if (!frame_size.isEmpty()) {
+          latest_ready_size_ = frame_size;
+        }
+      }
       const size_t max_queued =
           latest_frame_only_mode_.load(std::memory_order_relaxed) ? 1u : 2u;
       while (per_reader->image_queue.size() > max_queued) {
         evicted.push_back(std::move(per_reader->image_queue.front()));
         per_reader->image_queue.pop_front();
+      }
+      if (!sync_waiters_.empty()) {
+        CollectReadySyncCallbacksLocked(ready_callbacks);
+        if (!sync_waiters_.empty() && !sync_watcher_active_) {
+          raw_dup_watch_fd = FindUnsignaledMatchingFenceFdLocked();
+        }
       }
     }
     if (waiting_dequeue_count_ > 0) {
@@ -731,6 +818,14 @@ void NdkSurfaceProducer::OnImageAvailable(
           [r = std::move(deferred_shutdown)]() { r->ShutdownReader(); });
     } else {
       deferred_shutdown->ShutdownReader();
+    }
+  }
+  if (raw_dup_watch_fd >= 0) {
+    StartSyncFenceWatcher(raw_dup_watch_fd);
+  }
+  for (auto& cb : ready_callbacks) {
+    if (cb) {
+      cb();
     }
   }
   if (should_post_schedule) {
@@ -872,6 +967,8 @@ NdkSurfaceProducer::AcquiredFrame NdkSurfaceProducer::AcquireLatestFrame() {
           .ahb = frame.ahb,
           .reader = reader.get(),
           .state = ConsumerImageState::kPending,
+          .frame_generation = frame.frame_generation,
+          .frame_size = frame.frame_size,
       });
       last_reader_dequeued_from_ = reader.get();
 
@@ -883,6 +980,8 @@ NdkSurfaceProducer::AcquiredFrame NdkSurfaceProducer::AcquireLatestFrame() {
       }
       result.ahardware_buffer = frame.ahb;
       result.acquire_fence_fd = std::move(frame.acquire_fence_fd);
+      result.frame_generation = frame.frame_generation;
+      result.frame_size = frame.frame_size;
       break;
     }
 
@@ -1006,11 +1105,14 @@ void NdkSurfaceProducer::PostIdleAsyncCleanup() {
 }
 
 void NdkSurfaceProducer::OnTrimMemoryCleanup() {
+  CancelSyncFenceWatcher();
   has_been_acquired_with_image_.store(false, std::memory_order_release);
   std::vector<QueuedImage> images_to_delete;
   std::vector<std::shared_ptr<PerReader>> readers_to_shutdown;
+  std::vector<SyncWaiter> canceled_waiters;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    canceled_waiters.swap(sync_waiters_);
     create_new_reader_ = true;
     schedule_from_reader_posted_ = false;
     arm_next_vsync_posted_ = false;
@@ -1104,6 +1206,417 @@ int32_t NdkSurfaceProducer::GetDisplayedImagesCountForTest() {
     }
   }
   return count;
+}
+
+uint64_t NdkSurfaceProducer::GetReadyFrameGeneration() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return ready_frame_generation_;
+}
+
+SkISize NdkSurfaceProducer::GetLatestReadyFrameSize() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return latest_ready_size_;
+}
+
+namespace {
+
+void JoinOrDetachThread(std::thread& thread) {
+  if (!thread.joinable()) {
+    return;
+  }
+  if (thread.get_id() == std::this_thread::get_id()) {
+    thread.detach();
+  } else {
+    thread.join();
+  }
+}
+
+}  // namespace
+
+bool NdkSurfaceProducer::SatisfiesSyncRequirementLocked(uint64_t min_generation,
+                                                        SkISize expected_size) {
+  if (min_generation == 0 && expected_size.isEmpty()) {
+    return true;
+  }
+
+  auto matches = [min_generation, expected_size](uint64_t gen,
+                                                 const SkISize& sz) {
+    if (gen == 0) {
+      return false;
+    }
+    if (min_generation > 0 && gen < min_generation) {
+      return false;
+    }
+    if (!expected_size.isEmpty() && sz != expected_size) {
+      return false;
+    }
+    return true;
+  };
+
+  // Unified sync predicate (#613):
+  // 1. If the newest queued frame's acquire fence is signaled, Paint will
+  //    acquire and present that frame, so it alone decides satisfaction.
+  // 2. Otherwise (the queue is empty, or the newest queued frame's fence is
+  //    still unsignaled so PR #8 keeps displaying the current buffer), check
+  //    the single most recent `kDisplayed` entry so steady-state frames when
+  //    the displayed buffer already matches `expected_size` take the 0 ns fast
+  //    path without holding or spawning a watcher thread.
+  const QueuedImage* newest_queued = nullptr;
+  for (const auto& reader : readers_) {
+    if (!reader || reader->closed || reader->image_queue.empty()) {
+      continue;
+    }
+    const QueuedImage& candidate = reader->image_queue.back();
+    if (newest_queued == nullptr ||
+        candidate.frame_generation >= newest_queued->frame_generation) {
+      newest_queued = &candidate;
+    }
+  }
+
+  if (newest_queued != nullptr &&
+      IsFenceSignaledNonBlocking(newest_queued->acquire_fence_fd.get())) {
+    if (!matches(newest_queued->frame_generation, newest_queued->frame_size)) {
+      return false;
+    }
+    if (newest_queued->frame_generation > ready_frame_generation_) {
+      ready_frame_generation_ = newest_queued->frame_generation;
+    }
+    if (!newest_queued->frame_size.isEmpty()) {
+      latest_ready_size_ = newest_queued->frame_size;
+    }
+    return true;
+  }
+
+  for (auto it = dequeued_images_.rbegin(); it != dequeued_images_.rend();
+       ++it) {
+    if (it->state == ConsumerImageState::kDisplayed) {
+      if (!matches(it->frame_generation, it->frame_size)) {
+        return false;
+      }
+      if (it->frame_generation > ready_frame_generation_) {
+        ready_frame_generation_ = it->frame_generation;
+      }
+      if (!it->frame_size.isEmpty()) {
+        latest_ready_size_ = it->frame_size;
+      }
+      return true;
+    }
+  }
+
+  if (newest_queued == nullptr) {
+    return matches(ready_frame_generation_, latest_ready_size_);
+  }
+
+  return false;
+}
+
+bool NdkSurfaceProducer::HasSignaledNewestQueuedFrame() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const QueuedImage* newest_queued = nullptr;
+  for (const auto& reader : readers_) {
+    if (!reader || reader->closed || reader->image_queue.empty()) {
+      continue;
+    }
+    const QueuedImage& candidate = reader->image_queue.back();
+    if (newest_queued == nullptr ||
+        candidate.frame_generation >= newest_queued->frame_generation) {
+      newest_queued = &candidate;
+    }
+  }
+  return newest_queued != nullptr &&
+         IsFenceSignaledNonBlocking(newest_queued->acquire_fence_fd.get());
+}
+
+bool NdkSurfaceProducer::SatisfiesSyncRequirement(uint64_t min_generation,
+                                                  SkISize expected_size) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return SatisfiesSyncRequirementLocked(min_generation, expected_size);
+}
+
+void NdkSurfaceProducer::CollectReadySyncCallbacksLocked(
+    std::vector<fml::closure>& out_callbacks) {
+  for (auto it = sync_waiters_.begin(); it != sync_waiters_.end();) {
+    if (SatisfiesSyncRequirementLocked(it->min_generation, it->expected_size)) {
+      if (it->on_ready) {
+        out_callbacks.push_back(std::move(it->on_ready));
+      }
+      it = sync_waiters_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+int NdkSurfaceProducer::FindUnsignaledMatchingFenceFdLocked() const {
+  for (const auto& waiter : sync_waiters_) {
+    for (const auto& reader : readers_) {
+      if (!reader || reader->closed) {
+        continue;
+      }
+      for (const auto& queued : reader->image_queue) {
+        const bool gen_ok = waiter.min_generation == 0 ||
+                            queued.frame_generation >= waiter.min_generation;
+        const bool size_ok = waiter.expected_size.isEmpty() ||
+                             queued.frame_size == waiter.expected_size;
+        if (gen_ok && size_ok && queued.acquire_fence_fd.is_valid() &&
+            !IsFenceSignaledNonBlocking(queued.acquire_fence_fd.get())) {
+          int raw_dup =
+              ::fcntl(queued.acquire_fence_fd.get(), F_DUPFD_CLOEXEC, 0);
+          if (raw_dup < 0) {
+            raw_dup = ::dup(queued.acquire_fence_fd.get());
+          }
+          if (raw_dup >= 0) {
+            return raw_dup;
+          }
+        }
+      }
+    }
+  }
+  return -1;
+}
+
+uint64_t NdkSurfaceProducer::RegisterSyncReadyCallback(uint64_t min_generation,
+                                                       SkISize expected_size,
+                                                       fml::closure on_ready) {
+  if (!on_ready) {
+    return 0;
+  }
+  fml::closure canceled_callback;
+  fml::closure immediate_callback;
+  int raw_dup_watch_fd = -1;
+  uint64_t assigned_token = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (released_) {
+      canceled_callback = std::move(on_ready);
+      return 0;
+    }
+    if (SatisfiesSyncRequirementLocked(min_generation, expected_size)) {
+      immediate_callback = std::move(on_ready);
+    } else {
+      assigned_token = next_sync_waiter_token_++;
+      sync_waiters_.push_back(SyncWaiter{
+          .token = assigned_token,
+          .min_generation = min_generation,
+          .expected_size = expected_size,
+          .on_ready = std::move(on_ready),
+      });
+      if (!sync_watcher_active_) {
+        raw_dup_watch_fd = FindUnsignaledMatchingFenceFdLocked();
+      }
+    }
+  }
+  if (immediate_callback) {
+    immediate_callback();
+    return 0;
+  }
+  if (raw_dup_watch_fd >= 0) {
+    StartSyncFenceWatcher(raw_dup_watch_fd);
+  }
+  return assigned_token;
+}
+
+void NdkSurfaceProducer::CancelSyncReadyCallback(uint64_t token) {
+  if (token == 0) {
+    return;
+  }
+  fml::closure extracted_callback;
+  fml::UniqueFD cancel_signal;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = sync_waiters_.begin(); it != sync_waiters_.end(); ++it) {
+      if (it->token == token) {
+        extracted_callback = std::move(it->on_ready);
+        sync_waiters_.erase(it);
+        break;
+      }
+    }
+    // Signal the eventfd non-blockingly without joining on the caller (which
+    // may be the high-priority raster thread). The watcher thread wakes
+    // immediately and exits on its own; any residual std::thread handle is
+    // reaped off the raster thread at the start of the next watcher thread or
+    // in `CancelSyncFenceWatcher` on `Release()`.
+    if (sync_waiters_.empty() && sync_watcher_active_) {
+      ++sync_watcher_generation_;
+      sync_watcher_active_ = false;
+      cancel_signal = std::move(sync_watcher_cancel_fd_);
+    }
+  }
+  if (cancel_signal.is_valid()) {
+    const uint64_t wake = 1;
+    ssize_t written = 0;
+    do {
+      written = ::write(cancel_signal.get(), &wake, sizeof(wake));
+    } while (written == -1 && errno == EINTR);
+    cancel_signal.reset();
+  }
+}
+
+size_t NdkSurfaceProducer::GetSyncWaiterCountForTest() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return sync_waiters_.size();
+}
+
+uint64_t NdkSurfaceProducer::GetSyncWatcherPollIterationsForTest() const {
+  return sync_watcher_poll_iterations_for_test_.load(std::memory_order_acquire);
+}
+
+size_t NdkSurfaceProducer::GetRetiredWatcherThreadCountForTest() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return retired_watcher_threads_.size();
+}
+
+void NdkSurfaceProducer::StartSyncFenceWatcher(int raw_dup_fence_fd) {
+  if (raw_dup_fence_fd < 0) {
+    return;
+  }
+  fml::UniqueFD dup_fence(raw_dup_fence_fd);
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (released_ || sync_watcher_active_) {
+      return;
+    }
+    // Never join on the caller (which may be the high-priority raster thread on
+    // supersede). Park any previous handle in `retired_watcher_threads_` to be
+    // reaped off the raster thread in `CancelSyncFenceWatcher` / `Release()`.
+    if (sync_watcher_thread_.joinable()) {
+      retired_watcher_threads_.push_back(std::move(sync_watcher_thread_));
+    }
+  }
+
+  int raw_cancel_eventfd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  if (raw_cancel_eventfd < 0) {
+    return;
+  }
+  int raw_cancel_wait_fd = ::fcntl(raw_cancel_eventfd, F_DUPFD_CLOEXEC, 0);
+  if (raw_cancel_wait_fd < 0) {
+    raw_cancel_wait_fd = ::dup(raw_cancel_eventfd);
+  }
+  if (raw_cancel_wait_fd < 0) {
+    ::close(raw_cancel_eventfd);
+    return;
+  }
+  fml::UniqueFD cancel_wait(raw_cancel_wait_fd);
+  fml::UniqueFD cancel_signal(raw_cancel_eventfd);
+
+  std::weak_ptr<NdkSurfaceProducer> weak_self = weak_from_this();
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (released_ || sync_watcher_active_) {
+      return;
+    }
+    if (sync_watcher_thread_.joinable()) {
+      retired_watcher_threads_.push_back(std::move(sync_watcher_thread_));
+    }
+    const uint64_t generation = ++sync_watcher_generation_;
+    sync_watcher_active_ = true;
+    sync_watcher_cancel_fd_ = std::move(cancel_signal);
+    sync_watcher_thread_ =
+        std::thread([weak_self, generation, dup_fence = std::move(dup_fence),
+                     cancel_wait = std::move(cancel_wait)]() mutable {
+          // Immediately reap any previously retired watcher thread handles off
+          // the raster thread so finished std::thread stacks never accumulate
+          // across long-lived sessions (`retired_watcher_threads_.size() ==
+          // 0`).
+          if (auto initial_self = weak_self.lock()) {
+            std::vector<std::thread> to_reap;
+            {
+              std::lock_guard<std::mutex> lock(initial_self->mutex_);
+              to_reap.swap(initial_self->retired_watcher_threads_);
+            }
+            for (auto& t : to_reap) {
+              JoinOrDetachThread(t);
+            }
+          }
+          while (dup_fence.is_valid()) {
+            struct pollfd pfds[2] = {
+                {.fd = dup_fence.get(), .events = POLLIN, .revents = 0},
+                {.fd = cancel_wait.get(), .events = POLLIN, .revents = 0},
+            };
+            int ret = 0;
+            do {
+              pfds[0].revents = 0;
+              pfds[1].revents = 0;
+              ret = ::poll(pfds, 2, -1);
+            } while (ret == -1 && errno == EINTR);
+
+            const bool canceled =
+                ret > 0 && (pfds[1].revents &
+                            (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0;
+
+            // Release the watched fence FD immediately upon wakeup so open FD
+            // count returns to baseline before any observer callback executes.
+            dup_fence.reset();
+
+            auto self = weak_self.lock();
+            if (!self) {
+              cancel_wait.reset();
+              return;
+            }
+            self->sync_watcher_poll_iterations_for_test_.fetch_add(
+                1, std::memory_order_release);
+
+            std::vector<fml::closure> ready_callbacks;
+            int next_raw_dup_fd = -1;
+            {
+              std::lock_guard<std::mutex> lock(self->mutex_);
+              if (self->sync_watcher_generation_ != generation || canceled ||
+                  self->released_) {
+                if (self->sync_watcher_generation_ == generation) {
+                  self->sync_watcher_active_ = false;
+                  self->sync_watcher_cancel_fd_.reset();
+                }
+                cancel_wait.reset();
+                return;
+              }
+              self->CollectReadySyncCallbacksLocked(ready_callbacks);
+              if (!self->sync_waiters_.empty()) {
+                next_raw_dup_fd = self->FindUnsignaledMatchingFenceFdLocked();
+              }
+              if (next_raw_dup_fd >= 0) {
+                dup_fence = fml::UniqueFD(next_raw_dup_fd);
+              } else {
+                self->sync_watcher_active_ = false;
+                self->sync_watcher_cancel_fd_.reset();
+                cancel_wait.reset();
+              }
+            }
+            for (auto& cb : ready_callbacks) {
+              if (cb) {
+                cb();
+              }
+            }
+          }
+          cancel_wait.reset();
+        });
+  }
+}
+
+void NdkSurfaceProducer::CancelSyncFenceWatcher() {
+  std::vector<std::thread> retired_threads;
+  std::thread thread_to_join;
+  fml::UniqueFD cancel_signal;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++sync_watcher_generation_;
+    sync_watcher_active_ = false;
+    cancel_signal = std::move(sync_watcher_cancel_fd_);
+    retired_threads = std::move(retired_watcher_threads_);
+    thread_to_join = std::move(sync_watcher_thread_);
+  }
+  if (cancel_signal.is_valid()) {
+    const uint64_t wake = 1;
+    ssize_t written = 0;
+    do {
+      written = ::write(cancel_signal.get(), &wake, sizeof(wake));
+    } while (written == -1 && errno == EINTR);
+    cancel_signal.reset();
+  }
+  for (auto& t : retired_threads) {
+    JoinOrDetachThread(t);
+  }
+  JoinOrDetachThread(thread_to_join);
 }
 
 }  // namespace flutter

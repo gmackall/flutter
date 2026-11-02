@@ -729,6 +729,12 @@ static jint NdkSurfaceProducerGetCount(JNIEnv* env,
       return (*handle)->GetNumQueuedImagesForTest();
     case 2:
       return (*handle)->GetPendingDequeuedImagesForTest();
+    case 3:
+      return static_cast<jint>((*handle)->GetProducedFrameGeneration());
+    case 4:
+      return (*handle)->GetLatestReadyFrameSize().width();
+    case 5:
+      return (*handle)->GetLatestReadyFrameSize().height();
     default:
       return 0;
   }

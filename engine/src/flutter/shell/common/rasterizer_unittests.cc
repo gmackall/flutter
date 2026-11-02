@@ -11,6 +11,8 @@
 #include <optional>
 
 #include "flutter/flow/frame_timings.h"
+#include "flutter/flow/layers/container_layer.h"
+#include "flutter/flow/layers/texture_layer.h"
 #include "flutter/fml/synchronization/count_down_latch.h"
 #include "flutter/fml/time/time_point.h"
 #include "flutter/shell/common/thread_host.h"
@@ -1607,6 +1609,709 @@ TEST(RasterizerTest, DrawLastLayerTreesRetainsReusableTaskWhenRedrawFails) {
     latch.Signal();
   });
   latch.Wait();
+}
+
+namespace {
+
+class SynchronizedMockTexture final : public Texture {
+ public:
+  explicit SynchronizedMockTexture(int64_t id) : Texture(id) {}
+
+  void Paint(PaintContext& context,
+             const DlRect& bounds,
+             bool freeze,
+             const DlImageSampling sampling) override {}
+  void OnGrContextCreated() override {}
+  void OnGrContextDestroyed() override {}
+  void MarkNewFrameAvailable() override {}
+
+  void OnTextureUnregistered() override {
+    std::vector<Waiter> waiters;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      waiters.swap(waiters_);
+    }
+    waiters.clear();
+  }
+
+  uint64_t GetCurrentFrameGeneration() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return generation_;
+  }
+
+  SkISize GetCurrentFrameSize() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return size_;
+  }
+
+  bool SatisfiesSyncRequirement(uint64_t min_generation,
+                                SkISize expected_size) const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return SatisfiesLocked(min_generation, expected_size);
+  }
+
+  uint64_t RegisterSyncReadyCallback(uint64_t min_generation,
+                                     SkISize expected_size,
+                                     fml::closure on_ready) override {
+    if (!on_ready) {
+      return 0;
+    }
+    bool ready_now = false;
+    uint64_t token = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (SatisfiesLocked(min_generation, expected_size)) {
+        ready_now = true;
+      } else {
+        token = next_token_++;
+        waiters_.push_back(Waiter{
+            .token = token,
+            .min_generation = min_generation,
+            .expected_size = expected_size,
+            .on_ready = std::move(on_ready),
+        });
+      }
+    }
+    if (ready_now) {
+      on_ready();
+      return 0;
+    }
+    return token;
+  }
+
+  void CancelSyncReadyCallback(uint64_t token) override {
+    if (token == 0) {
+      return;
+    }
+    fml::closure canceled;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto it = waiters_.begin(); it != waiters_.end(); ++it) {
+        if (it->token == token) {
+          canceled = std::move(it->on_ready);
+          waiters_.erase(it);
+          break;
+        }
+      }
+    }
+  }
+
+  size_t GetActiveWaiterCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return waiters_.size();
+  }
+
+  void PublishFrame(uint64_t generation, SkISize size) {
+    std::vector<fml::closure> ready;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      generation_ = generation;
+      size_ = size;
+      auto it = waiters_.begin();
+      while (it != waiters_.end()) {
+        if (SatisfiesLocked(it->min_generation, it->expected_size)) {
+          if (it->on_ready) {
+            ready.push_back(std::move(it->on_ready));
+          }
+          it = waiters_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+    for (auto& cb : ready) {
+      cb();
+    }
+  }
+
+ private:
+  struct Waiter {
+    uint64_t token = 0;
+    uint64_t min_generation = 0;
+    SkISize expected_size = SkISize::MakeEmpty();
+    fml::closure on_ready;
+  };
+
+  bool SatisfiesLocked(uint64_t min_generation, SkISize expected_size) const {
+    if (min_generation > 0 && generation_ < min_generation) {
+      return false;
+    }
+    if (!expected_size.isEmpty() && size_ != expected_size) {
+      return false;
+    }
+    return true;
+  }
+
+  mutable std::mutex mutex_;
+  uint64_t next_token_ = 1;
+  uint64_t generation_ = 0;
+  SkISize size_ = SkISize::MakeEmpty();
+  std::vector<Waiter> waiters_;
+};
+
+std::unique_ptr<LayerTree> MakeLayerTreeWithTextureSync(
+    int64_t texture_id,
+    uint64_t min_generation,
+    SkISize expected_size,
+    fml::TimeDelta max_wait) {
+  TextureSyncRequirement req;
+  req.texture_id = texture_id;
+  req.min_frame_generation = min_generation;
+  req.expected_physical_size = expected_size;
+  req.max_wait = max_wait;
+
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(std::make_shared<TextureLayer>(
+      DlPoint(0.0f, 0.0f), DlSize(400.0f, 300.0f), texture_id, false,
+      DlImageSampling::kLinear, req));
+  return std::make_unique<LayerTree>(root, DlISize(800, 600));
+}
+
+}  // namespace
+
+TEST(RasterizerTest, SyncLatchZeroDelayPassThroughWhenAlreadySatisfied) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillRepeatedly([]() -> std::unique_ptr<GLContextResult> {
+        return std::make_unique<GLContextDefaultResult>(true);
+      });
+
+  int submitted_count = 0;
+  EXPECT_CALL(*surface, AcquireFrame(DlISize(800, 600)))
+      .WillOnce([&](const DlISize&) -> std::unique_ptr<SurfaceFrame> {
+        SurfaceFrame::FramebufferInfo framebuffer_info;
+        framebuffer_info.supports_readback = true;
+        return std::make_unique<SurfaceFrame>(
+            /*surface=*/nullptr, framebuffer_info,
+            [](const SurfaceFrame&, DlCanvas*) { return true; },
+            [&](const SurfaceFrame&) {
+              submitted_count++;
+              return true;
+            },
+            /*frame_size=*/DlISize(800, 600));
+      });
+
+  constexpr int64_t kTextureId = 501;
+  auto sync_texture = std::make_shared<SynchronizedMockTexture>(kTextureId);
+  sync_texture->PublishFrame(5, SkISize::Make(800, 600));
+
+  rasterizer->Setup(std::move(surface));
+  rasterizer->GetTextureRegistry()->RegisterTexture(sync_texture);
+
+  fml::AutoResetWaitableEvent done;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    auto pipeline = std::make_shared<FramePipeline>(/*depth=*/4);
+    auto tree = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/5, SkISize::Make(800, 600),
+        fml::TimeDelta::FromMilliseconds(50));
+    auto item = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item)).success);
+
+    DrawStatus status = rasterizer->Draw(pipeline);
+    EXPECT_EQ(status, DrawStatus::kDone);
+    EXPECT_EQ(submitted_count, 1);
+    EXPECT_FALSE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(rasterizer->GetSyncFramesHeldCount(), 0u);
+    EXPECT_EQ(rasterizer->GetSyncFramesLatchedCount(), 0u);
+    EXPECT_EQ(rasterizer->GetSyncFramesTimedOutCount(), 0u);
+    done.Signal();
+  });
+  done.Wait();
+}
+
+TEST(RasterizerTest,
+     SyncLatchHoldsFrameAndLatchesAtomicallyWithZeroTornFrames) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  EXPECT_CALL(delegate, OnFrameRasterized(_));
+  ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+  constexpr int64_t kTextureId = 502;
+  auto sync_texture = std::make_shared<SynchronizedMockTexture>(kTextureId);
+  // Initially at frame generation 1 (400x300).
+  sync_texture->PublishFrame(1, SkISize::Make(400, 300));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillRepeatedly([]() -> std::unique_ptr<GLContextResult> {
+        return std::make_unique<GLContextDefaultResult>(true);
+      });
+
+  std::atomic<int> submitted_count{0};
+  std::atomic<uint64_t> texture_gen_at_submit{0};
+  std::atomic<int> texture_width_at_submit{0};
+  fml::AutoResetWaitableEvent frame_latched;
+
+  EXPECT_CALL(*surface, AcquireFrame(DlISize(800, 600)))
+      .WillOnce([&](const DlISize&) -> std::unique_ptr<SurfaceFrame> {
+        SurfaceFrame::FramebufferInfo framebuffer_info;
+        framebuffer_info.supports_readback = true;
+        return std::make_unique<SurfaceFrame>(
+            /*surface=*/nullptr, framebuffer_info,
+            [](const SurfaceFrame&, DlCanvas*) { return true; },
+            [&](const SurfaceFrame&) {
+              texture_gen_at_submit.store(
+                  sync_texture->GetCurrentFrameGeneration());
+              texture_width_at_submit.store(
+                  sync_texture->GetCurrentFrameSize().width());
+              submitted_count.fetch_add(1);
+              frame_latched.Signal();
+              return true;
+            },
+            /*frame_size=*/DlISize(800, 600));
+      });
+
+  rasterizer->Setup(std::move(surface));
+  rasterizer->GetTextureRegistry()->RegisterTexture(sync_texture);
+
+  auto pipeline = std::make_shared<FramePipeline>(/*depth=*/4);
+  fml::AutoResetWaitableEvent held_verified;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    auto tree = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/2, SkISize::Make(800, 600),
+        fml::TimeDelta::FromMilliseconds(250));
+    auto item = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item)).success);
+
+    DrawStatus status = rasterizer->Draw(pipeline);
+    EXPECT_EQ(status, DrawStatus::kDone);
+    // CRITICAL INVARIANT: 0 intermediate torn frames `(LayerTree_k, PV_{k-1})`!
+    EXPECT_EQ(submitted_count.load(), 0);
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(rasterizer->GetSyncFramesHeldCount(), 1u);
+    held_verified.Signal();
+  });
+  held_verified.Wait();
+
+  // Simulate PV_k arriving 4 ms later on the platform/producer thread.
+  std::this_thread::sleep_for(std::chrono::milliseconds(4));
+  sync_texture->PublishFrame(2, SkISize::Make(800, 600));
+
+  EXPECT_FALSE(
+      frame_latched.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(500)));
+  EXPECT_EQ(submitted_count.load(), 1);
+  EXPECT_EQ(texture_gen_at_submit.load(), 2u);
+  EXPECT_EQ(texture_width_at_submit.load(), 800);
+
+  fml::AutoResetWaitableEvent counters_verified;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    EXPECT_FALSE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(rasterizer->GetSyncFramesHeldCount(), 1u);
+    EXPECT_EQ(rasterizer->GetSyncFramesLatchedCount(), 1u);
+    EXPECT_EQ(rasterizer->GetSyncFramesTimedOutCount(), 0u);
+    counters_verified.Signal();
+  });
+  counters_verified.Wait();
+}
+
+TEST(RasterizerTest, SyncLatchBoundedTimeoutDrawsCleanlyWhenProducerStalls) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  EXPECT_CALL(delegate, OnFrameRasterized(_));
+  ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+  constexpr int64_t kTextureId = 503;
+  auto sync_texture = std::make_shared<SynchronizedMockTexture>(kTextureId);
+  sync_texture->PublishFrame(1, SkISize::Make(400, 300));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillRepeatedly([]() -> std::unique_ptr<GLContextResult> {
+        return std::make_unique<GLContextDefaultResult>(true);
+      });
+
+  std::atomic<int> submitted_count{0};
+  fml::AutoResetWaitableEvent timeout_submitted;
+
+  EXPECT_CALL(*surface, AcquireFrame(DlISize(800, 600)))
+      .WillOnce([&](const DlISize&) -> std::unique_ptr<SurfaceFrame> {
+        SurfaceFrame::FramebufferInfo framebuffer_info;
+        framebuffer_info.supports_readback = true;
+        return std::make_unique<SurfaceFrame>(
+            /*surface=*/nullptr, framebuffer_info,
+            [](const SurfaceFrame&, DlCanvas*) { return true; },
+            [&](const SurfaceFrame&) {
+              submitted_count.fetch_add(1);
+              timeout_submitted.Signal();
+              return true;
+            },
+            /*frame_size=*/DlISize(800, 600));
+      });
+
+  rasterizer->Setup(std::move(surface));
+  rasterizer->GetTextureRegistry()->RegisterTexture(sync_texture);
+
+  auto pipeline = std::make_shared<FramePipeline>(/*depth=*/4);
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    // Require generation 99 which never arrives; bounded max_wait = 15ms.
+    auto tree = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/99, SkISize::MakeEmpty(),
+        fml::TimeDelta::FromMilliseconds(15));
+    auto item = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item)).success);
+    EXPECT_EQ(rasterizer->Draw(pipeline), DrawStatus::kDone);
+    EXPECT_EQ(submitted_count.load(), 0);
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+  });
+
+  // Producer never publishes generation 99; fallback deadline MUST fire
+  // cleanly!
+  EXPECT_FALSE(
+      timeout_submitted.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(500)));
+  EXPECT_EQ(submitted_count.load(), 1);
+
+  fml::AutoResetWaitableEvent verified;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    EXPECT_FALSE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(rasterizer->GetSyncFramesHeldCount(), 1u);
+    EXPECT_EQ(rasterizer->GetSyncFramesTimedOutCount(), 1u);
+    EXPECT_EQ(rasterizer->GetSyncFramesLatchedCount(), 0u);
+    verified.Signal();
+  });
+  verified.Wait();
+}
+
+TEST(RasterizerTest,
+     SyncLatchSupersedesOlderHeldFrameIgnoresStaleTimerAndTeardownsCleanly) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+  constexpr int64_t kTextureId = 504;
+  auto sync_texture = std::make_shared<SynchronizedMockTexture>(kTextureId);
+  sync_texture->PublishFrame(1, SkISize::Make(400, 300));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillRepeatedly([]() -> std::unique_ptr<GLContextResult> {
+        return std::make_unique<GLContextDefaultResult>(true);
+      });
+
+  rasterizer->Setup(std::move(surface));
+  rasterizer->GetTextureRegistry()->RegisterTexture(sync_texture);
+
+  auto pipeline = std::make_shared<FramePipeline>(/*depth=*/4);
+  fml::AutoResetWaitableEvent superseded_ready;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    // Hold Frame 1 (gen 10, 30ms timeout).
+    auto tree1 = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/10, SkISize::MakeEmpty(),
+        fml::TimeDelta::FromMilliseconds(30));
+    auto item1 = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree1),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item1)).success);
+    EXPECT_EQ(rasterizer->Draw(pipeline), DrawStatus::kDone);
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(rasterizer->GetSyncFramesHeldCount(), 1u);
+    EXPECT_EQ(sync_texture->GetActiveWaiterCount(), 1u);
+
+    // Supersede immediately with Frame 2 (gen 20, 30ms timeout): Frame 1's
+    // waiter must be immediately canceled so only 1 waiter is active.
+    auto tree2 = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/20, SkISize::MakeEmpty(),
+        fml::TimeDelta::FromMilliseconds(30));
+    auto item2 = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree2),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item2)).success);
+    EXPECT_EQ(rasterizer->Draw(pipeline), DrawStatus::kDone);
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(rasterizer->GetSyncFramesHeldCount(), 2u);
+    EXPECT_EQ(rasterizer->GetSyncFramesSupersededCount(), 1u);
+    EXPECT_EQ(sync_texture->GetActiveWaiterCount(), 1u);
+    superseded_ready.Signal();
+  });
+  superseded_ready.Wait();
+
+  fml::AutoResetWaitableEvent torn_down;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    rasterizer->Teardown();
+    EXPECT_FALSE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(sync_texture->GetActiveWaiterCount(), 0u);
+    torn_down.Signal();
+  });
+  torn_down.Wait();
+
+  // Late producer publication after Teardown must be a safe no-op.
+  sync_texture->PublishFrame(25, SkISize::Make(800, 600));
+  fml::AutoResetWaitableEvent drained;
+  thread_host.raster_thread->GetTaskRunner()->PostTask(
+      [&] { drained.Signal(); });
+  drained.Wait();
+}
+
+TEST(RasterizerTest,
+     SyncLatchNeverExtendsDeadlineOrStarvesAcrossContinuous120HzSupersedes) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  EXPECT_CALL(delegate, OnFrameRasterized(_)).Times(::testing::AtLeast(1));
+  ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+  constexpr int64_t kTextureId = 505;
+  auto sync_texture = std::make_shared<SynchronizedMockTexture>(kTextureId);
+  sync_texture->PublishFrame(1, SkISize::Make(400, 300));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillRepeatedly([]() -> std::unique_ptr<GLContextResult> {
+        return std::make_unique<GLContextDefaultResult>(true);
+      });
+
+  std::atomic<int> submitted_count{0};
+  fml::AutoResetWaitableEvent first_submit;
+  EXPECT_CALL(*surface, AcquireFrame(DlISize(800, 600)))
+      .WillRepeatedly([&](const DlISize&) -> std::unique_ptr<SurfaceFrame> {
+        SurfaceFrame::FramebufferInfo framebuffer_info;
+        framebuffer_info.supports_readback = true;
+        return std::make_unique<SurfaceFrame>(
+            /*surface=*/nullptr, framebuffer_info,
+            [](const SurfaceFrame&, DlCanvas*) { return true; },
+            [&](const SurfaceFrame&) {
+              if (submitted_count.fetch_add(1) == 0) {
+                first_submit.Signal();
+              }
+              return true;
+            },
+            /*frame_size=*/DlISize(800, 600));
+      });
+
+  rasterizer->Setup(std::move(surface));
+  rasterizer->GetTextureRegistry()->RegisterTexture(sync_texture);
+
+  auto pipeline = std::make_shared<FramePipeline>(/*depth=*/4);
+
+  // Submit 4 consecutive frames spaced 8 ms apart (simulating 120 Hz) whose
+  // producer never publishes generation 99. Because supersede inherits and
+  // caps `min(old.deadline, new.deadline)`, the inherited 16 ms deadline
+  // expires on time and submits a frame without unbounded starvation.
+  for (int i = 0; i < 4; ++i) {
+    fml::AutoResetWaitableEvent step_done;
+    thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+      auto tree = MakeLayerTreeWithTextureSync(
+          kTextureId, /*min_generation=*/99, SkISize::Make(800, 600),
+          fml::TimeDelta::FromMilliseconds(16));
+      auto item = std::make_unique<FrameItem>(
+          SingleLayerTreeList(kImplicitViewId, std::move(tree),
+                              kDevicePixelRatio),
+          CreateFinishedBuildRecorder());
+      ASSERT_TRUE(pipeline->Produce().Complete(std::move(item)).success);
+      EXPECT_EQ(rasterizer->Draw(pipeline), DrawStatus::kDone);
+      step_done.Signal();
+    });
+    step_done.Wait();
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+  }
+
+  EXPECT_FALSE(
+      first_submit.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(250)));
+  EXPECT_GE(submitted_count.load(), 1);
+  EXPECT_GE(rasterizer->GetSyncFramesTimedOutCount(), 1u);
+
+  fml::AutoResetWaitableEvent cleanup;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    rasterizer->Teardown();
+    EXPECT_EQ(sync_texture->GetActiveWaiterCount(), 0u);
+    cleanup.Signal();
+  });
+  cleanup.Wait();
+}
+
+TEST(RasterizerTest,
+     SyncLatchCarriesRequirementAcrossUnconstrainedFrameAndDrawLastLayerTrees) {
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+  EXPECT_CALL(delegate, OnFrameRasterized(_)).Times(::testing::AtLeast(1));
+  ON_CALL(delegate, ShouldDiscardLayerTree).WillByDefault(Return(false));
+
+  constexpr int64_t kTextureId = 506;
+  auto sync_texture = std::make_shared<SynchronizedMockTexture>(kTextureId);
+  sync_texture->PublishFrame(1, SkISize::Make(400, 300));
+
+  auto rasterizer = std::make_unique<Rasterizer>(delegate);
+  auto surface = std::make_unique<NiceMock<MockSurface>>();
+  EXPECT_CALL(*surface, AllowsDrawingWhenGpuDisabled())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*surface, MakeRenderContextCurrent())
+      .WillRepeatedly([]() -> std::unique_ptr<GLContextResult> {
+        return std::make_unique<GLContextDefaultResult>(true);
+      });
+
+  std::atomic<int> submitted_count{0};
+  fml::AutoResetWaitableEvent latched_submit;
+  EXPECT_CALL(*surface, AcquireFrame(DlISize(800, 600)))
+      .WillOnce([&](const DlISize&) -> std::unique_ptr<SurfaceFrame> {
+        SurfaceFrame::FramebufferInfo framebuffer_info;
+        framebuffer_info.supports_readback = true;
+        return std::make_unique<SurfaceFrame>(
+            /*surface=*/nullptr, framebuffer_info,
+            [](const SurfaceFrame&, DlCanvas*) { return true; },
+            [&](const SurfaceFrame&) {
+              submitted_count.fetch_add(1);
+              latched_submit.Signal();
+              return true;
+            },
+            /*frame_size=*/DlISize(800, 600));
+      });
+
+  rasterizer->Setup(std::move(surface));
+  rasterizer->GetTextureRegistry()->RegisterTexture(sync_texture);
+
+  auto pipeline = std::make_shared<FramePipeline>(/*depth=*/4);
+  fml::AutoResetWaitableEvent phase1_done;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    // Frame k requires gen >= 5.
+    auto tree_k = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/5, SkISize::Make(800, 600),
+        fml::TimeDelta::FromMilliseconds(30));
+    auto item_k = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree_k),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item_k)).success);
+    EXPECT_EQ(rasterizer->Draw(pipeline), DrawStatus::kDone);
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(submitted_count.load(), 0);
+
+    // Frame k+1 arrives with NO sync requirement on its TextureLayer: it MUST
+    // inherit Frame k's still-unsatisfied requirement and remain held so
+    // `(LayerTree_{k+1}, PV_{k-1})` is never presented torn!
+    auto tree_k1 = MakeLayerTreeWithTextureSync(
+        kTextureId, /*min_generation=*/0, SkISize::MakeEmpty(),
+        fml::TimeDelta::Zero());
+    auto item_k1 = std::make_unique<FrameItem>(
+        SingleLayerTreeList(kImplicitViewId, std::move(tree_k1),
+                            kDevicePixelRatio),
+        CreateFinishedBuildRecorder());
+    ASSERT_TRUE(pipeline->Produce().Complete(std::move(item_k1)).success);
+    EXPECT_EQ(rasterizer->Draw(pipeline), DrawStatus::kDone);
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(submitted_count.load(), 0);
+
+    // Calling DrawLastLayerTrees while still unsatisfied keeps holding.
+    rasterizer->DrawLastLayerTrees(CreateFinishedBuildRecorder());
+    EXPECT_TRUE(rasterizer->HasHeldSyncFrame());
+    EXPECT_EQ(submitted_count.load(), 0);
+    phase1_done.Signal();
+  });
+  phase1_done.Wait();
+
+  // Now publish gen 5 (800x600): the carried-over requirement is satisfied and
+  // Frame k+1 latches immediately with 0 torn frames and 0 leaked waiters!
+  sync_texture->PublishFrame(5, SkISize::Make(800, 600));
+  EXPECT_FALSE(
+      latched_submit.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(250)));
+  EXPECT_EQ(submitted_count.load(), 1);
+  EXPECT_EQ(sync_texture->GetActiveWaiterCount(), 0u);
 }
 
 }  // namespace flutter

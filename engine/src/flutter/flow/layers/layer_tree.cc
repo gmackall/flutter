@@ -7,7 +7,9 @@
 #include "flutter/display_list/skia/dl_sk_canvas.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/flow/frame_timings.h"
+#include "flutter/flow/layers/container_layer.h"
 #include "flutter/flow/layers/layer.h"
+#include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/paint_utils.h"
 #include "flutter/flow/raster_cache.h"
 #include "flutter/flow/raster_cache_item.h"
@@ -23,6 +25,41 @@ LayerTree::LayerTree(const std::shared_ptr<Layer>& root_layer,
 
 inline SkColorSpace* GetColorSpace(DlCanvas* canvas) {
   return canvas ? canvas->GetImageInfo().colorSpace() : nullptr;
+}
+
+namespace {
+
+void CollectSyncRequirementsFromSubtree(
+    const Layer* layer,
+    std::vector<TextureSyncRequirement>& out) {
+  if (!layer) {
+    return;
+  }
+  if (const auto* texture_layer = layer->as_texture_layer()) {
+    const auto& req = texture_layer->sync_requirement();
+    if (req.has_value() && req->IsActive()) {
+      out.push_back(*req);
+    }
+    return;
+  }
+  if (const auto* container_layer = layer->as_container_layer()) {
+    for (const auto& child : container_layer->layers()) {
+      CollectSyncRequirementsFromSubtree(child.get(), out);
+    }
+  }
+}
+
+}  // namespace
+
+const std::vector<TextureSyncRequirement>&
+LayerTree::CollectTextureSyncRequirements() {
+  if (!sync_requirements_collected_) {
+    texture_sync_requirements_.clear();
+    CollectSyncRequirementsFromSubtree(root_layer_.get(),
+                                       texture_sync_requirements_);
+    sync_requirements_collected_ = true;
+  }
+  return texture_sync_requirements_;
 }
 
 bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
@@ -48,6 +85,7 @@ bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
                                    frame.root_surface_transformation());
 
   raster_cache_items_.clear();
+  texture_sync_requirements_.clear();
 
   PrerollContext context = {
 #if !SLIMPELLER
@@ -63,9 +101,11 @@ bool LayerTree::Preroll(CompositorContext::ScopedFrame& frame,
       .ui_time = frame.context().ui_time(),
       .texture_registry = frame.context().texture_registry(),
       .raster_cached_entries = &raster_cache_items_,
+      .texture_sync_requirements = &texture_sync_requirements_,
   };
 
   root_layer_->Preroll(&context);
+  sync_requirements_collected_ = true;
 
   if (ignore_raster_cache && !root_layer_->subtree_has_platform_view()) {
     has_valid_preroll_ = true;

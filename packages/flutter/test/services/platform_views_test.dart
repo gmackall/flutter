@@ -1751,4 +1751,60 @@ void main() {
       expect(calls[1].arguments, <String, dynamic>{'id': 17, 'hybrid': false});
     },
   );
+
+  test(
+    'requestSynchronizedFrame merges requirements, notifies listeners, and consumes cleanly',
+    () async {
+      final viewsController = FakeAndroidPlatformViewsController();
+      viewsController.registerViewType('webview');
+
+      final AndroidViewController controller = PlatformViewsService.initAndroidView(
+        id: 18,
+        viewType: 'webview',
+        layoutDirection: TextDirection.ltr,
+      );
+
+      var listenerCalls = 0;
+      controller.addOnSyncFrameRequestedListener(() {
+        listenerCalls += 1;
+      });
+
+      expect(controller.pendingSyncRequirement, isNull);
+
+      controller.requestSynchronizedFrame(
+        minFrameGeneration: 3,
+        expectedBufferWidth: 400,
+        expectedBufferHeight: 300,
+      );
+      expect(listenerCalls, 1);
+      expect(
+        controller.pendingSyncRequirement,
+        const TextureFrameSyncRequirement(
+          minFrameGeneration: 3,
+          expectedBufferWidth: 400,
+          expectedBufferHeight: 300,
+        ),
+      );
+
+      controller.requestSynchronizedFrame(
+        minFrameGeneration: 7,
+        expectedBufferWidth: 800,
+        expectedBufferHeight: 600,
+        maxSyncWaitMicros: 25000,
+      );
+      expect(listenerCalls, 2);
+      expect(
+        controller.consumePendingSyncRequirement(),
+        const TextureFrameSyncRequirement(
+          minFrameGeneration: 7,
+          expectedBufferWidth: 800,
+          expectedBufferHeight: 600,
+          maxSyncWaitMicros: 25000,
+        ),
+      );
+      expect(controller.pendingSyncRequirement, isNull);
+
+      await controller.dispose();
+    },
+  );
 }

@@ -953,11 +953,21 @@ class TextureLayer extends Layer {
   /// Creates a texture layer bounded by [rect] and with backend texture
   /// identified by [textureId], if [freeze] is true new texture frames will not be
   /// populated to the texture, and use [filterQuality] to set layer's [FilterQuality].
+  ///
+  /// When [minFrameGeneration] is positive or both [expectedBufferWidth] and
+  /// [expectedBufferHeight] are positive, the rasterizer holds this frame up to
+  /// [maxSyncWaitMicros] microseconds until the backend texture satisfies those
+  /// constraints so that coordinated platform view updates and resizes are
+  /// composited atomically without an intermediate torn frame.
   TextureLayer({
     required this.rect,
     required this.textureId,
     this.freeze = false,
     this.filterQuality = ui.FilterQuality.low,
+    this.minFrameGeneration = 0,
+    this.expectedBufferWidth = 0,
+    this.expectedBufferHeight = 0,
+    this.maxSyncWaitMicros = 0,
   });
 
   /// Bounding rectangle of this layer.
@@ -978,6 +988,23 @@ class TextureLayer extends Layer {
   /// {@macro flutter.widgets.Texture.filterQuality}
   final ui.FilterQuality filterQuality;
 
+  /// Minimum producer frame generation required before presenting this layer,
+  /// or `0` when unconstrained.
+  final int minFrameGeneration;
+
+  /// Expected physical buffer width in pixels required before presenting this
+  /// layer, or `0` when unconstrained.
+  final int expectedBufferWidth;
+
+  /// Expected physical buffer height in pixels required before presenting this
+  /// layer, or `0` when unconstrained.
+  final int expectedBufferHeight;
+
+  /// Maximum duration in microseconds that the rasterizer may hold this frame
+  /// while waiting for the backend texture to satisfy synchronization
+  /// requirements, or `0` to use the engine default when synchronized.
+  final int maxSyncWaitMicros;
+
   @override
   void addToScene(ui.SceneBuilder builder) {
     builder.addTexture(
@@ -987,6 +1014,10 @@ class TextureLayer extends Layer {
       height: rect.height,
       freeze: freeze,
       filterQuality: filterQuality,
+      minFrameGeneration: minFrameGeneration,
+      expectedBufferWidth: expectedBufferWidth,
+      expectedBufferHeight: expectedBufferHeight,
+      maxSyncWaitMicros: maxSyncWaitMicros,
     );
   }
 

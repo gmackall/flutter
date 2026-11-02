@@ -258,12 +258,37 @@ void SceneBuilder::addTexture(double dx,
                               double height,
                               int64_t texture_id,
                               bool freeze,
-                              int filter_quality_index) {
+                              int filter_quality_index,
+                              int64_t min_frame_generation,
+                              int32_t expected_buffer_width,
+                              int32_t expected_buffer_height,
+                              int64_t max_sync_wait_micros) {
   auto sampling = ImageFilter::SamplingFromIndex(filter_quality_index);
+  std::optional<TextureSyncRequirement> sync_requirement;
+  if (min_frame_generation > 0 ||
+      (expected_buffer_width > 0 && expected_buffer_height > 0)) {
+    TextureSyncRequirement req;
+    req.texture_id = texture_id;
+    if (min_frame_generation > 0) {
+      req.min_frame_generation = static_cast<uint64_t>(min_frame_generation);
+    }
+    if (expected_buffer_width > 0 && expected_buffer_height > 0) {
+      req.expected_physical_size =
+          SkISize::Make(expected_buffer_width, expected_buffer_height);
+    }
+    if (max_sync_wait_micros > 0) {
+      const fml::TimeDelta requested_wait =
+          fml::TimeDelta::FromMicroseconds(max_sync_wait_micros);
+      req.max_wait = requested_wait < TextureSyncRequirement::kMaxAllowedWait
+                         ? requested_wait
+                         : TextureSyncRequirement::kMaxAllowedWait;
+    }
+    sync_requirement = req;
+  }
   auto layer = std::make_unique<flutter::TextureLayer>(
       DlPoint(SafeNarrow(dx), SafeNarrow(dy)),
       DlSize(SafeNarrow(width), SafeNarrow(height)), texture_id, freeze,
-      sampling);
+      sampling, sync_requirement);
   AddLayer(std::move(layer));
 }
 

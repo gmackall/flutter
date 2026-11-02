@@ -8,16 +8,19 @@
 
 namespace flutter {
 
-TextureLayer::TextureLayer(const DlPoint& offset,
-                           const DlSize& size,
-                           int64_t texture_id,
-                           bool freeze,
-                           DlImageSampling sampling)
+TextureLayer::TextureLayer(
+    const DlPoint& offset,
+    const DlSize& size,
+    int64_t texture_id,
+    bool freeze,
+    DlImageSampling sampling,
+    std::optional<TextureSyncRequirement> sync_requirement)
     : offset_(offset),
       size_(size),
       texture_id_(texture_id),
       freeze_(freeze),
-      sampling_(sampling) {}
+      sampling_(sampling),
+      sync_requirement_(sync_requirement) {}
 
 void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
@@ -43,6 +46,10 @@ void TextureLayer::Preroll(PrerollContext* context) {
   set_paint_bounds(DlRect::MakeOriginSize(offset_, size_));
   context->has_texture_layer = true;
   context->renderable_state_flags = LayerStateStack::kCallerCanApplyOpacity;
+  if (context->texture_sync_requirements && sync_requirement_.has_value() &&
+      sync_requirement_->IsActive()) {
+    context->texture_sync_requirements->push_back(*sync_requirement_);
+  }
 }
 
 void TextureLayer::Paint(PaintContext& context) const {

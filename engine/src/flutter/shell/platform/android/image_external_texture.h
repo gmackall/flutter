@@ -64,11 +64,41 @@ class ImageExternalTexture : public flutter::Texture {
 
   bool HasPendingFrameForTest() const { return pending_frame_.has_value(); }
 
+  // |flutter::Texture|
+  uint64_t GetCurrentFrameGeneration() const override;
+
+  // |flutter::Texture|
+  SkISize GetCurrentFrameSize() const override;
+
+  // |flutter::Texture|
+  bool SatisfiesSyncRequirement(uint64_t min_generation,
+                                SkISize expected_size) const override;
+
+  // |flutter::Texture|
+  uint64_t RegisterSyncReadyCallback(uint64_t min_generation,
+                                     SkISize expected_size,
+                                     fml::closure on_ready) override;
+
+  // |flutter::Texture|
+  void CancelSyncReadyCallback(uint64_t token) override;
+
+  size_t GetSyncWaiterCountForTest() const;
+
  protected:
+  struct TextureSyncWaiter {
+    uint64_t token = 0;
+    uint64_t producer_token = 0;
+    uint64_t min_generation = 0;
+    SkISize expected_size = SkISize::MakeEmpty();
+    fml::closure on_ready;
+  };
+
   struct AcquiredFrame {
     JavaLocalRef java_hardware_buffer;
     AHardwareBuffer* ahardware_buffer = nullptr;
     fml::UniqueFD acquire_fence_fd;
+    uint64_t frame_generation = 0;
+    SkISize frame_size = SkISize::MakeEmpty();
     bool owned_by_producer = false;
     bool caller_owns_ahb_ref = false;
     bool acquired_from_ndk_producer = false;
@@ -126,6 +156,12 @@ class ImageExternalTexture : public flutter::Texture {
 
   void NotifyPendingFrameReadyListeners();
 
+  void CollectSatisfiedSyncCallbacksLocked(
+      std::vector<fml::closure>& out_callbacks);
+
+  bool DisplayedStateSatisfiesLocked(uint64_t min_generation,
+                                     SkISize expected_size) const;
+
   fml::jni::ScopedJavaGlobalRef<jobject> image_texture_entry_;
   fml::jni::JavaObjectWeakGlobalRef cached_consumer_;
   bool cached_is_surface_producer_ = false;
@@ -169,6 +205,13 @@ class ImageExternalTexture : public flutter::Texture {
   fml::UniqueFD waiter_cancel_write_fd_;
   std::thread waiter_thread_;
   std::function<void()> on_pending_frame_ready_callback_;
+  uint64_t fallback_frame_generation_ = 0;
+  uint64_t displayed_frame_generation_ = 0;
+  SkISize displayed_frame_size_ = SkISize::MakeEmpty();
+  uint64_t pending_frame_generation_ = 0;
+  SkISize pending_frame_size_ = SkISize::MakeEmpty();
+  uint64_t next_sync_waiter_token_ = 1;
+  std::vector<TextureSyncWaiter> sync_waiters_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(ImageExternalTexture);
 };

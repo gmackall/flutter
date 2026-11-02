@@ -95,6 +95,10 @@ class LayerSceneBuilder implements ui.SceneBuilder {
     double height = 0.0,
     bool freeze = false,
     ui.FilterQuality filterQuality = ui.FilterQuality.low,
+    int minFrameGeneration = 0,
+    int expectedBufferWidth = 0,
+    int expectedBufferHeight = 0,
+    int maxSyncWaitMicros = 0,
   }) {
     // TODO(hterkelsen): implement addTexture, b/128315641
   }

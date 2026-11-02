@@ -20,14 +20,17 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 
+#include "flutter/fml/closure.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/memory/ref_ptr.h"
 #include "flutter/fml/memory/weak_ptr.h"
 #include "flutter/fml/platform/android/scoped_java_ref.h"
 #include "flutter/fml/task_runner.h"
 #include "flutter/fml/unique_fd.h"
+#include "third_party/skia/include/core/SkSize.h"
 
 namespace flutter {
 
@@ -65,6 +68,8 @@ class NdkSurfaceProducer
     // The caller must release it via AHardwareBuffer_release when done.
     AHardwareBuffer* ahardware_buffer = nullptr;
     fml::UniqueFD acquire_fence_fd;
+    uint64_t frame_generation = 0;
+    SkISize frame_size = SkISize::MakeEmpty();
   };
 
   struct Procs {
@@ -81,6 +86,7 @@ class NdkSurfaceProducer
     decltype(&ANativeWindow_toSurface) ANativeWindow_toSurface = nullptr;
     decltype(&AHardwareBuffer_acquire) AHardwareBuffer_acquire = nullptr;
     decltype(&AHardwareBuffer_release) AHardwareBuffer_release = nullptr;
+    decltype(&AHardwareBuffer_describe) AHardwareBuffer_describe = nullptr;
 
     bool IsValid() const {
       return AImageReader_newWithUsage != nullptr &&
@@ -190,6 +196,8 @@ class NdkSurfaceProducer
 
   void Release();
 
+  bool HasSignaledNewestQueuedFrame() const;
+
   AcquiredFrame AcquireLatestFrame();
 
   int32_t GetNumImageReadersForTest();
@@ -197,11 +205,34 @@ class NdkSurfaceProducer
   int32_t GetPendingDequeuedImagesForTest();
   int32_t GetDisplayedImagesCountForTest();
 
+  uint64_t GetProducedFrameGeneration() const {
+    return produced_frame_generation_.load(std::memory_order_acquire);
+  }
+  uint64_t GetReadyFrameGeneration() const;
+  SkISize GetLatestReadyFrameSize() const;
+  bool SatisfiesSyncRequirement(uint64_t min_generation, SkISize expected_size);
+  uint64_t RegisterSyncReadyCallback(uint64_t min_generation,
+                                     SkISize expected_size,
+                                     fml::closure on_ready);
+  void CancelSyncReadyCallback(uint64_t token);
+  size_t GetSyncWaiterCountForTest() const;
+  uint64_t GetSyncWatcherPollIterationsForTest() const;
+  size_t GetRetiredWatcherThreadCountForTest() const;
+
  private:
+  struct SyncWaiter {
+    uint64_t token = 0;
+    uint64_t min_generation = 0;
+    SkISize expected_size = SkISize::MakeEmpty();
+    fml::closure on_ready;
+  };
+
   struct QueuedImage {
     AImage* image = nullptr;
     AHardwareBuffer* ahb = nullptr;
     fml::UniqueFD acquire_fence_fd;
+    uint64_t frame_generation = 0;
+    SkISize frame_size = SkISize::MakeEmpty();
   };
 
   struct PerReader;
@@ -225,6 +256,8 @@ class NdkSurfaceProducer
     AHardwareBuffer* ahb = nullptr;
     PerReader* reader = nullptr;
     ConsumerImageState state = ConsumerImageState::kPending;
+    uint64_t frame_generation = 0;
+    SkISize frame_size = SkISize::MakeEmpty();
   };
 
   struct ListenerContext {
@@ -235,6 +268,8 @@ class NdkSurfaceProducer
   struct PerReader : public std::enable_shared_from_this<PerReader> {
     AImageReader* reader = nullptr;
     ANativeWindow* window = nullptr;
+    int32_t width = 1;
+    int32_t height = 1;
     fml::jni::ScopedJavaGlobalRef<jobject> java_surface;
     std::unique_ptr<ListenerContext> listener_ctx;
     AImageReader_ImageListener listener{};
@@ -275,6 +310,14 @@ class NdkSurfaceProducer
   void PostIdleAsyncCleanup();
   void TriggerEngineTextureFrameOnPlatformThread();
 
+  bool SatisfiesSyncRequirementLocked(uint64_t min_generation,
+                                      SkISize expected_size);
+  void CollectReadySyncCallbacksLocked(
+      std::vector<fml::closure>& out_callbacks);
+  int FindUnsignaledMatchingFenceFdLocked() const;
+  void StartSyncFenceWatcher(int raw_dup_fence_fd);
+  void CancelSyncFenceWatcher();
+
   const int64_t texture_id_;
   fml::WeakPtr<PlatformViewAndroid> platform_view_;
   fml::RefPtr<fml::TaskRunner> platform_task_runner_;
@@ -284,11 +327,20 @@ class NdkSurfaceProducer
   std::atomic<bool> is_displaying_ui_{false};
   std::atomic<bool> has_been_acquired_with_image_{false};
   std::atomic<bool> latest_frame_only_mode_{false};
+  std::atomic<uint64_t> produced_frame_generation_{0};
 
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable cv_;
   int32_t requested_width_ = 1;
   int32_t requested_height_ = 1;
+  uint64_t ready_frame_generation_ = 0;
+  SkISize latest_ready_size_ = SkISize::MakeEmpty();
+  uint64_t next_sync_waiter_token_ = 1;
+  std::vector<SyncWaiter> sync_waiters_;
+  uint64_t sync_watcher_generation_ = 0;
+  bool sync_watcher_active_ = false;
+  fml::UniqueFD sync_watcher_cancel_fd_;
+  std::thread sync_watcher_thread_;
   bool create_new_reader_ = true;
   bool released_ = false;
   int32_t waiting_dequeue_count_ = 0;
@@ -350,6 +402,8 @@ class NdkSurfaceProducer
   std::deque<DequeuedImage> dequeued_images_;
   std::deque<QueuedImage> async_images_to_delete_;
   std::deque<std::shared_ptr<PerReader>> async_readers_to_shutdown_;
+  std::vector<std::thread> retired_watcher_threads_;
+  std::atomic<uint64_t> sync_watcher_poll_iterations_for_test_{0};
 
   FML_DISALLOW_COPY_AND_ASSIGN(NdkSurfaceProducer);
 };

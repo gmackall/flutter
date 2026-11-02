@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "flutter/shell/platform/android/image_external_texture.h"
 #include "flutter/shell/platform/android/ndk_surface_producer.h"
 
 #include <android/native_window.h>
@@ -774,6 +775,402 @@ TEST(
 
   producer->SetFrameScheduledCallbackForTest({});
   producer.reset();
+}
+
+TEST(NdkSurfaceProducerTest,
+     SynchronizedFrameLatchAndResizeSyncOnRealHardwareBuffersWithZeroFdLeaks) {
+  if (!NdkSurfaceProducer::IsAvailable()) {
+    GTEST_SKIP() << "NdkSurfaceProducer requires API 29+ libmediandk symbols.";
+  }
+
+  auto producer = std::make_shared<NdkSurfaceProducer>(
+      /*texture_id=*/9001, fml::WeakPtr<PlatformViewAndroid>(),
+      /*platform_task_runner=*/nullptr, /*is_displaying_flutter_ui=*/true);
+  producer->SetSize(400, 300);
+  ANativeWindow* window = producer->GetNativeWindowForTest(false);
+  ASSERT_NE(window, nullptr);
+
+  // Warm up allocator/binder FDs before recording baseline.
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(PostCpuFrameToWindow(window, 400, 300));
+    for (int w = 0; w < 50 && producer->GetNumQueuedImagesForTest() == 0; ++w) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    auto warm = producer->AcquireLatestFrame();
+    if (warm.ahardware_buffer != nullptr) {
+      EXPECT_GT(warm.frame_generation, 0u);
+      EXPECT_EQ(warm.frame_size, SkISize::Make(400, 300));
+      NdkSurfaceProducer::GetProcs().AHardwareBuffer_release(
+          warm.ahardware_buffer);
+    }
+  }
+
+  const int fd_baseline = CountOpenFds();
+  ASSERT_GT(fd_baseline, 0);
+
+  // 1. Simulated 120 Hz PlatformView jank across 2ms, 6ms, and 12ms delays:
+  //    verify zero torn frames and immediate wakeup via
+  //    RegisterSyncReadyCallback.
+  const std::vector<int> delays_ms = {2, 6, 12, 2, 6, 12};
+  int torn_frames_observed = 0;
+
+  for (size_t idx = 0; idx < delays_ms.size(); ++idx) {
+    const uint64_t target_gen = producer->GetProducedFrameGeneration() + 1;
+    EXPECT_FALSE(producer->SatisfiesSyncRequirement(target_gen,
+                                                    SkISize::Make(400, 300)));
+
+    fml::AutoResetWaitableEvent sync_ready_event;
+    std::atomic<uint64_t> observed_gen_on_ready{0};
+    producer->RegisterSyncReadyCallback(
+        target_gen, SkISize::Make(400, 300), [&]() {
+          observed_gen_on_ready.store(producer->GetProducedFrameGeneration(),
+                                      std::memory_order_release);
+          sync_ready_event.Signal();
+        });
+
+    std::thread delayed_producer([window, delay_ms = delays_ms[idx]]() {
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+      EXPECT_TRUE(PostCpuFrameToWindow(window, 400, 300));
+    });
+
+    EXPECT_FALSE(sync_ready_event.WaitWithTimeout(
+        fml::TimeDelta::FromMilliseconds(500)));
+    delayed_producer.join();
+
+    const uint64_t actual_gen =
+        observed_gen_on_ready.load(std::memory_order_acquire);
+    if (actual_gen < target_gen) {
+      torn_frames_observed++;
+    }
+    EXPECT_GE(actual_gen, target_gen);
+    EXPECT_TRUE(producer->SatisfiesSyncRequirement(target_gen,
+                                                   SkISize::Make(400, 300)));
+
+    auto latched = producer->AcquireLatestFrame();
+    if (latched.ahardware_buffer != nullptr) {
+      EXPECT_GE(latched.frame_generation, target_gen);
+      EXPECT_EQ(latched.frame_size, SkISize::Make(400, 300));
+      NdkSurfaceProducer::GetProcs().AHardwareBuffer_release(
+          latched.ahardware_buffer);
+    }
+  }
+  EXPECT_EQ(torn_frames_observed, 0);
+
+  // 2. Dynamic resize synchronization from 400x300 -> 800x600:
+  //    verify 400x300 buffer does NOT satisfy 800x600 sync requirement, and
+  //    callback fires immediately once the 800x600 hardware buffer arrives.
+  producer->SetSize(800, 600);
+  ANativeWindow* resized_window = producer->GetNativeWindowForTest(false);
+  ASSERT_NE(resized_window, nullptr);
+  EXPECT_FALSE(producer->SatisfiesSyncRequirement(0, SkISize::Make(800, 600)));
+
+  fml::AutoResetWaitableEvent resize_ready_event;
+  std::atomic<int> resized_width{0};
+  std::atomic<int> resized_height{0};
+  producer->RegisterSyncReadyCallback(
+      /*min_generation=*/0, SkISize::Make(800, 600), [&]() {
+        const SkISize sz = producer->GetLatestReadyFrameSize();
+        resized_width.store(sz.width(), std::memory_order_release);
+        resized_height.store(sz.height(), std::memory_order_release);
+        resize_ready_event.Signal();
+      });
+
+  ASSERT_TRUE(PostCpuFrameToWindow(resized_window, 800, 600));
+  EXPECT_FALSE(resize_ready_event.WaitWithTimeout(
+      fml::TimeDelta::FromMilliseconds(500)));
+  EXPECT_EQ(resized_width.load(std::memory_order_acquire), 800);
+  EXPECT_EQ(resized_height.load(std::memory_order_acquire), 600);
+  EXPECT_TRUE(producer->SatisfiesSyncRequirement(0, SkISize::Make(800, 600)));
+
+  auto resized_frame = producer->AcquireLatestFrame();
+  ASSERT_NE(resized_frame.ahardware_buffer, nullptr);
+  EXPECT_EQ(resized_frame.frame_size, SkISize::Make(800, 600));
+  producer->NotifyFrameDisplayed(resized_frame.ahardware_buffer);
+  NdkSurfaceProducer::GetProcs().AHardwareBuffer_release(
+      resized_frame.ahardware_buffer);
+
+  // 3. A -> B -> A resize cycle & explicit waiter cancellation:
+  //    resizing back from 800x600 -> 400x300 must NOT falsely match any older
+  //    `kPreviousDisplayed` 400x300 frame, and CancelSyncReadyCallback must
+  //    drop `GetSyncWaiterCountForTest()` to 0 immediately.
+  producer->SetSize(400, 300);
+  ANativeWindow* shrink_window = producer->GetNativeWindowForTest(false);
+  ASSERT_NE(shrink_window, nullptr);
+  EXPECT_FALSE(producer->SatisfiesSyncRequirement(0, SkISize::Make(400, 300)));
+
+  const uint64_t cancel_token = producer->RegisterSyncReadyCallback(
+      /*min_generation=*/0, SkISize::Make(400, 300), []() {});
+  EXPECT_NE(cancel_token, 0u);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 1u);
+  producer->CancelSyncReadyCallback(cancel_token);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 0u);
+
+  ASSERT_TRUE(PostCpuFrameToWindow(shrink_window, 400, 300));
+  for (int w = 0; w < 50 && producer->GetNumQueuedImagesForTest() == 0; ++w) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(producer->SatisfiesSyncRequirement(0, SkISize::Make(400, 300)));
+  auto shrink_frame = producer->AcquireLatestFrame();
+  if (shrink_frame.ahardware_buffer != nullptr) {
+    EXPECT_EQ(shrink_frame.frame_size, SkISize::Make(400, 300));
+    NdkSurfaceProducer::GetProcs().AHardwareBuffer_release(
+        shrink_frame.ahardware_buffer);
+  }
+
+  producer->Release();
+  EXPECT_EQ(producer->GetNumQueuedImagesForTest(), 0);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 0u);
+  producer.reset();
+
+  // Verify zero open FD leaks (sync fences, eventfd, AImageReader,
+  // AHardwareBuffer).
+  EXPECT_LE(CountOpenFds(), fd_baseline);
+}
+
+TEST(NdkSurfaceProducerTest,
+     SyncFenceWatcherRearmsAcrossQueuedUnsignaledFencesAndWakesPromptly) {
+  static AImageReader_ImageListener s_listener{};
+  static AImage* s_next_image = nullptr;
+  static int s_next_fence = -1;
+
+  NdkSurfaceProducer::Procs mock_procs = NdkSurfaceProducer::GetProcs();
+  mock_procs.AImageReader_newWithUsage =
+      [](int32_t, int32_t, int32_t, uint64_t, int32_t,
+         AImageReader** reader) -> media_status_t {
+    *reader = reinterpret_cast<AImageReader*>(0xA001);
+    return AMEDIA_OK;
+  };
+  mock_procs.AImageReader_getWindow =
+      [](AImageReader*, ANativeWindow** window) -> media_status_t {
+    *window = reinterpret_cast<ANativeWindow*>(0xA002);
+    return AMEDIA_OK;
+  };
+  mock_procs.AImageReader_setImageListener =
+      [](AImageReader*,
+         AImageReader_ImageListener* listener) -> media_status_t {
+    s_listener = listener != nullptr ? *listener : AImageReader_ImageListener{};
+    return AMEDIA_OK;
+  };
+  mock_procs.AImageReader_delete = [](AImageReader*) {};
+  mock_procs.AImageReader_acquireNextImageAsync =
+      [](AImageReader*, AImage** image, int* acquireFenceFd) -> media_status_t {
+    if (s_next_image != nullptr) {
+      *image = s_next_image;
+      *acquireFenceFd = s_next_fence;
+      s_next_image = nullptr;
+      s_next_fence = -1;
+      return AMEDIA_OK;
+    }
+    *image = nullptr;
+    *acquireFenceFd = -1;
+    return AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE;
+  };
+  mock_procs.AImage_getHardwareBuffer =
+      [](const AImage* image, AHardwareBuffer** buffer) -> media_status_t {
+    *buffer = reinterpret_cast<AHardwareBuffer*>(const_cast<AImage*>(image));
+    return AMEDIA_OK;
+  };
+  mock_procs.AImage_deleteAsync = [](AImage*, int releaseFenceFd) {
+    if (releaseFenceFd >= 0) {
+      ::close(releaseFenceFd);
+    }
+  };
+  mock_procs.AImage_delete = [](AImage*) {};
+  mock_procs.AHardwareBuffer_acquire = [](AHardwareBuffer*) {};
+  mock_procs.AHardwareBuffer_release = [](AHardwareBuffer*) {};
+
+  NdkSurfaceProducer::SetProcsForTest(mock_procs);
+
+  const int fd_baseline = CountOpenFds();
+  ASSERT_GT(fd_baseline, 0);
+
+  auto producer = std::make_shared<NdkSurfaceProducer>(
+      /*texture_id=*/99, fml::WeakPtr<PlatformViewAndroid>(),
+      /*platform_task_runner=*/nullptr, /*is_displaying_flutter_ui=*/true);
+  ASSERT_NE(producer->GetNativeWindowForTest(false), nullptr);
+
+  // Queue 2 frames backed by real kernel unsignaled eventfd acquire fences.
+  const int fence_1 = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  const int fence_2 = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  ASSERT_GE(fence_1, 0);
+  ASSERT_GE(fence_2, 0);
+
+  s_next_image = reinterpret_cast<AImage*>(0xA101);
+  s_next_fence = ::dup(fence_1);
+  s_listener.onImageAvailable(s_listener.context,
+                              reinterpret_cast<AImageReader*>(0xA001));
+
+  s_next_image = reinterpret_cast<AImage*>(0xA102);
+  s_next_fence = ::dup(fence_2);
+  s_listener.onImageAvailable(s_listener.context,
+                              reinterpret_cast<AImageReader*>(0xA001));
+
+  EXPECT_FALSE(producer->SatisfiesSyncRequirement(1, SkISize::MakeEmpty()));
+  EXPECT_FALSE(producer->SatisfiesSyncRequirement(2, SkISize::MakeEmpty()));
+
+  fml::AutoResetWaitableEvent cb1_fired;
+  fml::AutoResetWaitableEvent cb2_fired;
+  const uint64_t tok1 = producer->RegisterSyncReadyCallback(
+      /*min_generation=*/1, SkISize::MakeEmpty(),
+      [&]() { cb1_fired.Signal(); });
+  const uint64_t tok2 = producer->RegisterSyncReadyCallback(
+      /*min_generation=*/2, SkISize::MakeEmpty(),
+      [&]() { cb2_fired.Signal(); });
+  EXPECT_NE(tok1, 0u);
+  EXPECT_NE(tok2, 0u);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 2u);
+
+  // Step 1: Signal ONLY fence_1 while fence_2 remains unsignaled. Verify the
+  // watcher thread wakes on fence_1 (`GetSyncWatcherPollIterationsForTest >=
+  // 1`), sees the newest queued frame (`fence_2`) is still unsignaled so
+  // neither callback fires prematurely (`GetSyncWaiterCountForTest == 2`), and
+  // re-arms its internal `while (dup_fence.is_valid())` loop onto `fence_2`
+  // without self-joining.
+  const uint64_t one = 1;
+  ASSERT_EQ(::write(fence_1, &one, sizeof(one)),
+            static_cast<ssize_t>(sizeof(one)));
+  ::close(fence_1);
+  for (int w = 0;
+       w < 100 && producer->GetSyncWatcherPollIterationsForTest() < 1u; ++w) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_GE(producer->GetSyncWatcherPollIterationsForTest(), 1u);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 2u);
+
+  // Step 2: Now signal `fence_2` and verify the re-armed watcher wakes for a
+  // second iteration (`>= 2`), fires both callbacks cleanly, and leaves 0
+  // active waiters.
+  ASSERT_EQ(::write(fence_2, &one, sizeof(one)),
+            static_cast<ssize_t>(sizeof(one)));
+  ::close(fence_2);
+
+  EXPECT_FALSE(
+      cb1_fired.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(250)));
+  EXPECT_FALSE(
+      cb2_fired.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(250)));
+  EXPECT_GE(producer->GetSyncWatcherPollIterationsForTest(), 2u);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 0u);
+
+  // Step 3: Run 50 sequential register -> signal -> latch cycles with real
+  // unsignaled eventfd fences and assert retired watcher handles are
+  // continuously reaped off-raster (`GetRetiredWatcherThreadCountForTest() <=
+  // 1`) so long-lived sessions never accumulate zombie threads or stacks.
+  for (int i = 0; i < 50; ++i) {
+    const int cycle_fence = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    ASSERT_GE(cycle_fence, 0);
+    s_next_image =
+        reinterpret_cast<AImage*>(static_cast<uintptr_t>(0xB000 + i));
+    s_next_fence = ::dup(cycle_fence);
+    s_listener.onImageAvailable(s_listener.context,
+                                reinterpret_cast<AImageReader*>(0xA001));
+
+    const uint64_t target_gen = producer->GetProducedFrameGeneration();
+    fml::AutoResetWaitableEvent latched;
+    const uint64_t tok = producer->RegisterSyncReadyCallback(
+        target_gen, SkISize::MakeEmpty(), [&]() { latched.Signal(); });
+    EXPECT_NE(tok, 0u);
+    ASSERT_EQ(::write(cycle_fence, &one, sizeof(one)),
+              static_cast<ssize_t>(sizeof(one)));
+    ::close(cycle_fence);
+    EXPECT_FALSE(
+        latched.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(250)));
+    EXPECT_EQ(producer->GetRetiredWatcherThreadCountForTest(), 0u);
+  }
+  EXPECT_EQ(producer->GetRetiredWatcherThreadCountForTest(), 0u);
+
+  // Now queue a final unsignaled fence, verify non-blocking
+  // CancelSyncReadyCallback returns immediately, and verify Release() while
+  // parked in poll() wakes in < 50 ms with zero leaked file descriptors.
+  const int fence_3 = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  ASSERT_GE(fence_3, 0);
+  s_next_image = reinterpret_cast<AImage*>(0xA103);
+  s_next_fence = fence_3;
+  s_listener.onImageAvailable(s_listener.context,
+                              reinterpret_cast<AImageReader*>(0xA001));
+
+  const uint64_t final_gen = producer->GetProducedFrameGeneration();
+  const uint64_t tok3 = producer->RegisterSyncReadyCallback(
+      /*min_generation=*/final_gen, SkISize::MakeEmpty(), []() {});
+  EXPECT_NE(tok3, 0u);
+  producer->CancelSyncReadyCallback(tok3);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 0u);
+
+  const uint64_t tok4 = producer->RegisterSyncReadyCallback(
+      /*min_generation=*/final_gen, SkISize::MakeEmpty(), []() {});
+  EXPECT_NE(tok4, 0u);
+  const auto release_start = std::chrono::steady_clock::now();
+  producer->Release();
+  const auto release_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - release_start)
+                              .count();
+  EXPECT_LT(release_ms, 50);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 0u);
+
+  producer.reset();
+  NdkSurfaceProducer::SetProcsForTest(std::nullopt);
+  EXPECT_EQ(CountOpenFds(), fd_baseline);
+}
+
+TEST(NdkSurfaceProducerTest,
+     ImageExternalTextureSyncWaiterTokenCancelAndFallbackPassThrough) {
+  class TestImageExternalTexture final : public ImageExternalTexture {
+   public:
+    explicit TestImageExternalTexture(int64_t id)
+        : ImageExternalTexture(id,
+                               fml::jni::ScopedJavaGlobalRef<jobject>(),
+                               /*jni_facade=*/nullptr,
+                               ImageLifecycle::kReset) {}
+    void ProcessFrame(PaintContext&, const SkRect&) override {}
+    void Attach(PaintContext&) override {}
+    void Detach() override {}
+  };
+
+  if (!NdkSurfaceProducer::IsAvailable()) {
+    GTEST_SKIP() << "NdkSurfaceProducer requires API 29+ libmediandk symbols.";
+  }
+
+  const int fd_baseline = CountOpenFds();
+  ASSERT_GT(fd_baseline, 0);
+
+  auto texture = std::make_shared<TestImageExternalTexture>(/*id=*/777);
+
+  // 1. Without an attached NdkSurfaceProducer (Java fallback path), sync
+  //    requirements pass through immediately so fallback devices never stall.
+  EXPECT_TRUE(texture->SatisfiesSyncRequirement(5, SkISize::Make(400, 300)));
+  bool fallback_fired = false;
+  EXPECT_EQ(texture->RegisterSyncReadyCallback(
+                5, SkISize::Make(400, 300),
+                [&fallback_fired]() { fallback_fired = true; }),
+            0u);
+  EXPECT_TRUE(fallback_fired);
+  EXPECT_EQ(texture->GetSyncWaiterCountForTest(), 0u);
+
+  // 2. With an attached NdkSurfaceProducer, RegisterSyncReadyCallback returns
+  //    a non-zero token and CancelSyncReadyCallback(token) removes the waiter
+  //    from BOTH the texture AND the producer immediately.
+  auto producer = std::make_shared<NdkSurfaceProducer>(
+      /*texture_id=*/777, fml::WeakPtr<PlatformViewAndroid>(),
+      /*platform_task_runner=*/nullptr, /*is_displaying_flutter_ui=*/true);
+  texture->SetNdkSurfaceProducer(producer);
+
+  EXPECT_FALSE(texture->SatisfiesSyncRequirement(5, SkISize::Make(400, 300)));
+  const uint64_t token =
+      texture->RegisterSyncReadyCallback(5, SkISize::Make(400, 300), []() {});
+  EXPECT_NE(token, 0u);
+  EXPECT_EQ(texture->GetSyncWaiterCountForTest(), 1u);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 1u);
+
+  texture->CancelSyncReadyCallback(token);
+  EXPECT_EQ(texture->GetSyncWaiterCountForTest(), 0u);
+  EXPECT_EQ(producer->GetSyncWaiterCountForTest(), 0u);
+
+  texture->SetNdkSurfaceProducer(nullptr);
+  producer->Release();
+  producer.reset();
+  texture.reset();
+
+  EXPECT_EQ(CountOpenFds(), fd_baseline);
 }
 
 }  // namespace testing

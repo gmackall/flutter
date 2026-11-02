@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'box.dart';
 import 'layer.dart';
 import 'object.dart';
+import 'view.dart';
 
 /// How an embedded platform view behave during hit tests.
 enum PlatformViewHitTestBehavior {
@@ -90,6 +91,7 @@ class RenderAndroidView extends PlatformViewRenderBox {
     _viewController.pointTransformer = (Offset offset) => globalToLocal(offset);
     updateGestureRecognizers(gestureRecognizers);
     _viewController.addOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.addOnSyncFrameRequestedListener(_onSyncFrameRequested);
     this.hitTestBehavior = hitTestBehavior;
     _setOffset();
   }
@@ -114,6 +116,7 @@ class RenderAndroidView extends PlatformViewRenderBox {
       return;
     }
     _viewController.removeOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.removeOnSyncFrameRequestedListener(_onSyncFrameRequested);
     super.controller = controller;
     _viewController = controller;
     _viewController.pointTransformer = (Offset offset) => globalToLocal(offset);
@@ -122,6 +125,7 @@ class RenderAndroidView extends PlatformViewRenderBox {
       markNeedsSemanticsUpdate();
     }
     _viewController.addOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.addOnSyncFrameRequestedListener(_onSyncFrameRequested);
   }
 
   /// {@macro flutter.material.Material.clipBehavior}
@@ -140,6 +144,24 @@ class RenderAndroidView extends PlatformViewRenderBox {
   void _onPlatformViewCreated(int id) {
     assert(!_isDisposed);
     markNeedsSemanticsUpdate();
+  }
+
+  void _onSyncFrameRequested() {
+    if (_isDisposed) {
+      return;
+    }
+    markNeedsPaint();
+  }
+
+  double _resolveDevicePixelRatio() {
+    RenderObject? node = parent;
+    while (node != null) {
+      if (node is RenderView) {
+        return node.configuration.devicePixelRatio;
+      }
+      node = node.parent;
+    }
+    return 1.0;
   }
 
   @override
@@ -177,6 +199,7 @@ class RenderAndroidView extends PlatformViewRenderBox {
       return;
     }
 
+    final Size? previousTextureSize = _currentTextureSize;
     _state = _PlatformViewState.resizing;
     markNeedsPaint();
 
@@ -193,6 +216,20 @@ class RenderAndroidView extends PlatformViewRenderBox {
     } while (size != targetSize);
 
     _state = _PlatformViewState.ready;
+    if (!_viewController.requiresViewComposition &&
+        _currentTextureSize != null &&
+        !_currentTextureSize!.isEmpty &&
+        _currentTextureSize != previousTextureSize) {
+      final double dpr = _resolveDevicePixelRatio();
+      final int expectedWidth = (_currentTextureSize!.width * dpr).round();
+      final int expectedHeight = (_currentTextureSize!.height * dpr).round();
+      if (expectedWidth > 0 && expectedHeight > 0) {
+        _viewController.requestSynchronizedFrame(
+          expectedBufferWidth: expectedWidth,
+          expectedBufferHeight: expectedHeight,
+        );
+      }
+    }
     markNeedsPaint();
   }
 
@@ -269,6 +306,7 @@ class RenderAndroidView extends PlatformViewRenderBox {
     _isDisposed = true;
     _clipRectLayer.layer = null;
     _viewController.removeOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.removeOnSyncFrameRequestedListener(_onSyncFrameRequested);
     super.dispose();
   }
 
@@ -284,8 +322,17 @@ class RenderAndroidView extends PlatformViewRenderBox {
       return;
     }
 
+    final TextureFrameSyncRequirement? syncRequirement = _viewController
+        .consumePendingSyncRequirement();
     context.addLayer(
-      TextureLayer(rect: offset & _currentTextureSize!, textureId: _viewController.textureId!),
+      TextureLayer(
+        rect: offset & _currentTextureSize!,
+        textureId: _viewController.textureId!,
+        minFrameGeneration: syncRequirement?.minFrameGeneration ?? 0,
+        expectedBufferWidth: syncRequirement?.expectedBufferWidth ?? 0,
+        expectedBufferHeight: syncRequirement?.expectedBufferHeight ?? 0,
+        maxSyncWaitMicros: syncRequirement?.maxSyncWaitMicros ?? 0,
+      ),
     );
   }
 

@@ -619,6 +619,35 @@ public class FlutterRenderer implements TextureRegistry {
     private long lastQueueTime = 0;
     private long lastScheduleTime = 0;
     private int numTrims = 0;
+    private long producedFrameGeneration = 0L;
+    private volatile int latestReadyWidth = 0;
+    private volatile int latestReadyHeight = 0;
+
+    @VisibleForTesting
+    public long getProducedFrameGeneration() {
+      if (ndkProducerPtr != 0L) {
+        return Integer.toUnsignedLong(flutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 3));
+      }
+      synchronized (lock) {
+        return producedFrameGeneration;
+      }
+    }
+
+    @VisibleForTesting
+    public int getLatestReadyWidth() {
+      if (ndkProducerPtr != 0L) {
+        return flutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 4);
+      }
+      return latestReadyWidth;
+    }
+
+    @VisibleForTesting
+    public int getLatestReadyHeight() {
+      if (ndkProducerPtr != 0L) {
+        return flutterJNI.ndkSurfaceProducerGetCount(ndkProducerPtr, 5);
+      }
+      return latestReadyHeight;
+    }
 
     private final Object lock = new Object();
     // REQUIRED: The following fields must only be accessed when lock is held.
@@ -940,6 +969,13 @@ public class FlutterRenderer implements TextureRegistry {
           return evictedOut;
         }
         highestCommittedSeq = acquireSeq;
+        producedFrameGeneration++;
+        try {
+          latestReadyWidth = image.getWidth();
+          latestReadyHeight = image.getHeight();
+        } catch (RuntimeException ignored) {
+          // Mock or closed image in unit tests.
+        }
         PerImage perImage = new PerImage(image, VERBOSE_LOGS ? System.nanoTime() : 0L, preloadedHb);
         imageQueue.add(perImage);
         final int maxQueued = latestFrameOnlyMode ? 1 : 2;

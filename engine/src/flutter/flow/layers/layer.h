@@ -73,6 +73,8 @@ struct PrerollContext {
   int renderable_state_flags = 0;
 
   std::vector<RasterCacheItem*>* raster_cached_entries;
+
+  std::vector<TextureSyncRequirement>* texture_sync_requirements = nullptr;
 };
 
 struct PaintContext {

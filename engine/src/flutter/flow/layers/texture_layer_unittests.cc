@@ -4,6 +4,7 @@
 
 #include "flutter/flow/layers/texture_layer.h"
 
+#include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/testing/diff_context_test.h"
 #include "flutter/flow/testing/layer_test.h"
 #include "flutter/flow/testing/mock_layer.h"
@@ -161,6 +162,62 @@ TEST_F(TextureLayerTest, OpacityInheritance) {
     expected_builder.Restore();
   }
   EXPECT_TRUE(DisplayListsEQ_Verbose(display_list(), expected_builder.Build()));
+}
+
+TEST_F(TextureLayerTest,
+       CollectsSyncRequirementsAndPreservesAcrossPrerollReuse) {
+  const int64_t synced_texture_id = 11;
+  const int64_t unsynced_texture_id = 12;
+  const auto texture_image = MockTexture::MakeTestTexture(32, 32, 4);
+  auto synced_texture =
+      std::make_shared<MockTexture>(synced_texture_id, texture_image);
+  auto unsynced_texture =
+      std::make_shared<MockTexture>(unsynced_texture_id, texture_image);
+
+  TextureSyncRequirement req;
+  req.texture_id = synced_texture_id;
+  req.min_frame_generation = 7;
+  req.expected_physical_size = SkISize::Make(1080, 720);
+  req.max_wait = fml::TimeDelta::FromMicroseconds(12500);
+  ASSERT_TRUE(req.IsActive());
+
+  auto synced_layer = std::make_shared<TextureLayer>(
+      DlPoint(0.0f, 0.0f), DlSize(100.0f, 100.0f), synced_texture_id, false,
+      DlImageSampling::kLinear, req);
+  auto unsynced_layer = std::make_shared<TextureLayer>(
+      DlPoint(10.0f, 10.0f), DlSize(50.0f, 50.0f), unsynced_texture_id, false,
+      DlImageSampling::kLinear);
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(unsynced_layer);
+  root->Add(synced_layer);
+
+  LayerTree tree(root, DlISize(200, 200));
+  CompositorContext compositor_context;
+  compositor_context.texture_registry()->RegisterTexture(synced_texture);
+  compositor_context.texture_registry()->RegisterTexture(unsynced_texture);
+
+  DisplayListBuilder canvas_builder(DlRect::MakeWH(200, 200));
+  auto frame = compositor_context.AcquireFrame(
+      /*gr_context=*/nullptr,
+      /*canvas=*/&canvas_builder,
+      /*view_embedder=*/nullptr,
+      /*root_surface_transformation=*/DlMatrix(),
+      /*instrumentation_enabled=*/false,
+      /*surface_supports_readback=*/true,
+      /*raster_thread_merger=*/nullptr,
+      /*aiks_context=*/nullptr);
+
+  EXPECT_FALSE(tree.Preroll(*frame, /*ignore_raster_cache=*/true));
+  ASSERT_EQ(tree.CollectTextureSyncRequirements().size(), 1u);
+  EXPECT_EQ(tree.CollectTextureSyncRequirements()[0], req);
+
+  // Verify PR #11 LayerTree::Preroll fast-path reuse retains the exact
+  // collected synchronization requirements without dropping them.
+  tree.MarkPrerollReusable();
+  EXPECT_TRUE(tree.IsPrerollReusable());
+  EXPECT_FALSE(tree.Preroll(*frame, /*ignore_raster_cache=*/true));
+  ASSERT_EQ(tree.CollectTextureSyncRequirements().size(), 1u);
+  EXPECT_EQ(tree.CollectTextureSyncRequirements()[0], req);
 }
 
 }  // namespace testing

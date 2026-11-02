@@ -761,6 +761,64 @@ class _CreationParams {
   final MessageCodec<dynamic> codec;
 }
 
+/// Describes a bounded synchronization requirement for the next `TextureLayer`
+/// frame composited for a texture-backed [AndroidViewController].
+///
+/// When attached to a `TextureLayer`, the Flutter engine's `Rasterizer` holds
+/// the Flutter `LayerTree` frame up to [maxSyncWaitMicros] microseconds until
+/// the backing texture producer has published a ready buffer satisfying
+/// [minFrameGeneration] and/or ([expectedBufferWidth], [expectedBufferHeight]).
+@immutable
+class TextureFrameSyncRequirement {
+  /// Creates a synchronization requirement for a texture-backed platform view.
+  const TextureFrameSyncRequirement({
+    this.minFrameGeneration = 0,
+    this.expectedBufferWidth = 0,
+    this.expectedBufferHeight = 0,
+    this.maxSyncWaitMicros = defaultMaxSyncWaitMicros,
+  }) : assert(minFrameGeneration >= 0),
+       assert(expectedBufferWidth >= 0),
+       assert(expectedBufferHeight >= 0),
+       assert(maxSyncWaitMicros >= 0);
+
+  /// Default bounded wait duration (one 60 Hz frame interval, 16,667 us).
+  static const int defaultMaxSyncWaitMicros = 16667;
+
+  /// Minimum monotonically increasing producer frame generation required, or
+  /// `0` when unconstrained.
+  final int minFrameGeneration;
+
+  /// Expected physical buffer width in pixels, or `0` when unconstrained.
+  final int expectedBufferWidth;
+
+  /// Expected physical buffer height in pixels, or `0` when unconstrained.
+  final int expectedBufferHeight;
+
+  /// Maximum duration in microseconds that the rasterizer may hold the frame
+  /// before drawing with the latest available texture buffer.
+  final int maxSyncWaitMicros;
+
+  /// Whether this requirement constrains frame generation or physical size.
+  bool get isActive =>
+      minFrameGeneration > 0 || (expectedBufferWidth > 0 && expectedBufferHeight > 0);
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is TextureFrameSyncRequirement &&
+        other.minFrameGeneration == minFrameGeneration &&
+        other.expectedBufferWidth == expectedBufferWidth &&
+        other.expectedBufferHeight == expectedBufferHeight &&
+        other.maxSyncWaitMicros == maxSyncWaitMicros;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(minFrameGeneration, expectedBufferWidth, expectedBufferHeight, maxSyncWaitMicros);
+}
+
 /// Controls an Android view that is composed using a GL texture.
 ///
 /// Typically created with [PlatformViewsService.initAndroidView].
@@ -987,6 +1045,87 @@ abstract class AndroidViewController extends PlatformViewController {
 
   final List<PlatformViewCreatedCallback> _platformViewCreatedCallbacks =
       <PlatformViewCreatedCallback>[];
+
+  final List<VoidCallback> _syncFrameRequestedCallbacks = <VoidCallback>[];
+
+  TextureFrameSyncRequirement? _pendingSyncRequirement;
+
+  /// The currently staged [TextureFrameSyncRequirement] to be consumed by the
+  /// next `TextureLayer` paint, or `null` if no synchronization constraint is
+  /// pending.
+  TextureFrameSyncRequirement? get pendingSyncRequirement => _pendingSyncRequirement;
+
+  /// Registers a [listener] invoked whenever [requestSynchronizedFrame] stages
+  /// a new synchronization requirement for this platform view.
+  void addOnSyncFrameRequestedListener(VoidCallback listener) {
+    assert(_state != _AndroidViewState.disposed);
+    _syncFrameRequestedCallbacks.add(listener);
+  }
+
+  /// Removes a [listener] previously registered with
+  /// [addOnSyncFrameRequestedListener].
+  void removeOnSyncFrameRequestedListener(VoidCallback listener) {
+    _syncFrameRequestedCallbacks.remove(listener);
+  }
+
+  /// Stages a bounded frame-synchronization requirement so the Flutter
+  /// `Rasterizer` holds the next `LayerTree` frame up to [maxSyncWaitMicros]
+  /// microseconds until this platform view's backing texture satisfies
+  /// [minFrameGeneration] and/or ([expectedBufferWidth], [expectedBufferHeight]).
+  ///
+  /// If an unconsumed requirement is already pending, the two requirements are
+  /// merged by retaining the higher [minFrameGeneration], latest non-zero
+  /// physical buffer dimensions, and larger [maxSyncWaitMicros].
+  void requestSynchronizedFrame({
+    int minFrameGeneration = 0,
+    int expectedBufferWidth = 0,
+    int expectedBufferHeight = 0,
+    int maxSyncWaitMicros = TextureFrameSyncRequirement.defaultMaxSyncWaitMicros,
+  }) {
+    assert(minFrameGeneration >= 0);
+    assert(expectedBufferWidth >= 0);
+    assert(expectedBufferHeight >= 0);
+    assert(maxSyncWaitMicros >= 0);
+    final candidate = TextureFrameSyncRequirement(
+      minFrameGeneration: minFrameGeneration,
+      expectedBufferWidth: expectedBufferWidth,
+      expectedBufferHeight: expectedBufferHeight,
+      maxSyncWaitMicros: maxSyncWaitMicros,
+    );
+    if (!candidate.isActive) {
+      return;
+    }
+    final TextureFrameSyncRequirement? existing = _pendingSyncRequirement;
+    if (existing == null) {
+      _pendingSyncRequirement = candidate;
+    } else {
+      _pendingSyncRequirement = TextureFrameSyncRequirement(
+        minFrameGeneration: minFrameGeneration > existing.minFrameGeneration
+            ? minFrameGeneration
+            : existing.minFrameGeneration,
+        expectedBufferWidth: expectedBufferWidth > 0
+            ? expectedBufferWidth
+            : existing.expectedBufferWidth,
+        expectedBufferHeight: expectedBufferHeight > 0
+            ? expectedBufferHeight
+            : existing.expectedBufferHeight,
+        maxSyncWaitMicros: maxSyncWaitMicros > existing.maxSyncWaitMicros
+            ? maxSyncWaitMicros
+            : existing.maxSyncWaitMicros,
+      );
+    }
+    for (final callback in List<VoidCallback>.of(_syncFrameRequestedCallbacks)) {
+      callback();
+    }
+  }
+
+  /// Returns and clears the currently staged [pendingSyncRequirement], or
+  /// returns `null` if none is pending.
+  TextureFrameSyncRequirement? consumePendingSyncRequirement() {
+    final TextureFrameSyncRequirement? requirement = _pendingSyncRequirement;
+    _pendingSyncRequirement = null;
+    return requirement;
+  }
 
   static int _getAndroidDirection(TextDirection direction) {
     return switch (direction) {

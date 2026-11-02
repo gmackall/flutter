@@ -1110,7 +1110,10 @@ void main() {
         child: renderBox,
       ),
     );
-    final padding = RenderPadding(padding: const EdgeInsets.only(top: 10, left: 5), child: positioned);
+    final padding = RenderPadding(
+      padding: const EdgeInsets.only(top: 10, left: 5),
+      child: positioned,
+    );
 
     layout(padding);
     binding.pumpCompleteFrame();
@@ -1124,13 +1127,82 @@ void main() {
 
     padding.padding = const EdgeInsets.only(top: 40, left: 30);
     binding.pumpCompleteFrame();
-    expect(
-      viewController.offsets,
-      <Offset>[const Offset(5, 10), const Offset(15, 25), const Offset(30, 40)],
-    );
+    expect(viewController.offsets, <Offset>[
+      const Offset(5, 10),
+      const Offset(15, 25),
+      const Offset(30, 40),
+    ]);
 
     renderBox.dispose();
   });
+
+  test(
+    'RenderAndroidView forwards resize and explicit sync requirements to TextureLayer',
+    () async {
+      final viewController = FakeAndroidViewController(91);
+      final renderBox = RenderAndroidView(
+        viewController: viewController,
+        hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+        gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{},
+      );
+
+      layout(renderBox, constraints: const BoxConstraints.tightFor(width: 200.0, height: 150.0));
+      await Future<void>.value();
+      pumpFrame(phase: EnginePhase.compositingBits);
+      pumpFrame(phase: EnginePhase.paint);
+
+      final double dpr = RendererBinding.instance.platformDispatcher.implicitView!.devicePixelRatio;
+      final int expectedPhysicalWidth = (200.0 * dpr).round();
+      final int expectedPhysicalHeight = (150.0 * dpr).round();
+
+      TextureLayer? findTextureLayer(Layer? root) {
+        if (root is TextureLayer) {
+          return root;
+        }
+        if (root is ContainerLayer) {
+          Layer? child = root.firstChild;
+          while (child != null) {
+            final TextureLayer? found = findTextureLayer(child);
+            if (found != null) {
+              return found;
+            }
+            child = child.nextSibling;
+          }
+        }
+        return null;
+      }
+
+      final TextureLayer? resizeLayer = findTextureLayer(renderBox.debugLayer);
+      expect(resizeLayer, isNotNull);
+      expect(resizeLayer!.expectedBufferWidth, expectedPhysicalWidth);
+      expect(resizeLayer.expectedBufferHeight, expectedPhysicalHeight);
+      expect(resizeLayer.maxSyncWaitMicros, TextureFrameSyncRequirement.defaultMaxSyncWaitMicros);
+
+      // Explicit synchronized frame request triggers repaint with exact generation requirement
+      // and resets back to zero on subsequent unsynchronized paints.
+      viewController.requestSynchronizedFrame(minFrameGeneration: 9, maxSyncWaitMicros: 8333);
+      expect(renderBox.debugNeedsPaint, isTrue);
+      pumpFrame(phase: EnginePhase.paint);
+
+      final TextureLayer? explicitLayer = findTextureLayer(renderBox.debugLayer);
+      expect(explicitLayer, isNotNull);
+      expect(explicitLayer!.minFrameGeneration, 9);
+      expect(explicitLayer.expectedBufferWidth, 0);
+      expect(explicitLayer.expectedBufferHeight, 0);
+      expect(explicitLayer.maxSyncWaitMicros, 8333);
+
+      renderBox.markNeedsPaint();
+      pumpFrame(phase: EnginePhase.paint);
+      final TextureLayer? steadyStateLayer = findTextureLayer(renderBox.debugLayer);
+      expect(steadyStateLayer, isNotNull);
+      expect(steadyStateLayer!.minFrameGeneration, 0);
+      expect(steadyStateLayer.expectedBufferWidth, 0);
+      expect(steadyStateLayer.expectedBufferHeight, 0);
+      expect(steadyStateLayer.maxSyncWaitMicros, 0);
+
+      renderBox.dispose();
+    },
+  );
 }
 
 class _NeverCompletingOffsetAndroidViewController extends FakeAndroidViewController {

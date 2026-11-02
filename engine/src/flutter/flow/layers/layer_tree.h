@@ -73,6 +73,12 @@ class LayerTree {
   void MarkPrerollReusable() { preroll_reusable_ = true; }
   bool IsPrerollReusable() const { return preroll_reusable_; }
 
+  const std::vector<TextureSyncRequirement>& CollectTextureSyncRequirements();
+
+  const std::vector<TextureSyncRequirement>& texture_sync_requirements() const {
+    return texture_sync_requirements_;
+  }
+
  private:
   std::shared_ptr<Layer> root_layer_;
   DlISize frame_size_;  // Physical pixels.
@@ -80,7 +86,9 @@ class LayerTree {
   PaintRegionMap paint_region_map_;
 
   std::vector<RasterCacheItem*> raster_cache_items_;
+  std::vector<TextureSyncRequirement> texture_sync_requirements_;
 
+  bool sync_requirements_collected_ = false;
   bool preroll_reusable_ = false;
   bool has_valid_preroll_ = false;
   bool last_surface_needs_readback_ = false;

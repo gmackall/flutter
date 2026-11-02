@@ -5,11 +5,15 @@
 #ifndef FLUTTER_COMMON_GRAPHICS_TEXTURE_H_
 #define FLUTTER_COMMON_GRAPHICS_TEXTURE_H_
 
+#include <cstdint>
 #include <map>
 
 #include "flutter/display_list/dl_canvas.h"
+#include "flutter/fml/closure.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/synchronization/waitable_event.h"
+#include "flutter/fml/time/time_delta.h"
+#include "third_party/skia/include/core/SkSize.h"
 
 class GrDirectContext;
 
@@ -18,6 +22,41 @@ class AiksContext;
 };
 
 namespace flutter {
+
+struct TextureSyncRequirement {
+  static constexpr fml::TimeDelta kDefaultMaxWait =
+      fml::TimeDelta::FromMicroseconds(16667);
+  static constexpr fml::TimeDelta kMaxAllowedWait =
+      fml::TimeDelta::FromMicroseconds(33334);
+
+  int64_t texture_id = -1;
+  uint64_t min_frame_generation = 0;
+  SkISize expected_physical_size = SkISize::MakeEmpty();
+  fml::TimeDelta max_wait = kDefaultMaxWait;
+
+  fml::TimeDelta ClampedMaxWait() const {
+    if (max_wait <= fml::TimeDelta::Zero()) {
+      return fml::TimeDelta::Zero();
+    }
+    return max_wait < kMaxAllowedWait ? max_wait : kMaxAllowedWait;
+  }
+
+  bool IsActive() const {
+    return texture_id >= 0 &&
+           (min_frame_generation > 0 || !expected_physical_size.isEmpty());
+  }
+
+  bool operator==(const TextureSyncRequirement& other) const {
+    return texture_id == other.texture_id &&
+           min_frame_generation == other.min_frame_generation &&
+           expected_physical_size == other.expected_physical_size &&
+           max_wait == other.max_wait;
+  }
+
+  bool operator!=(const TextureSyncRequirement& other) const {
+    return !(*this == other);
+  }
+};
 
 class ContextListener {
  public:
@@ -64,6 +103,23 @@ class Texture : public ContextListener {
 
   // Called on raster thread.
   virtual void OnTextureUnregistered() = 0;
+
+  virtual uint64_t GetCurrentFrameGeneration() const { return 0; }
+
+  virtual SkISize GetCurrentFrameSize() const { return SkISize::MakeEmpty(); }
+
+  virtual bool SatisfiesSyncRequirement(uint64_t min_generation,
+                                        SkISize expected_size) const {
+    return true;
+  }
+
+  virtual uint64_t RegisterSyncReadyCallback(uint64_t min_generation,
+                                             SkISize expected_size,
+                                             fml::closure on_ready) {
+    return 0;
+  }
+
+  virtual void CancelSyncReadyCallback(uint64_t token) {}
 
   int64_t Id() { return id_; }
 

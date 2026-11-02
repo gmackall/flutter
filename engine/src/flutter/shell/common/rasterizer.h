@@ -608,6 +608,21 @@ class Rasterizer final : public SnapshotDelegate,
   ///
   std::optional<DrawSurfaceStatus> GetLastDrawStatus(int64_t view_id);
 
+  //----------------------------------------------------------------------------
+  /// @brief      Synchronized PlatformView frame-latch telemetry counters.
+  ///
+  uint64_t GetSyncFramesHeldCount() const { return sync_frames_held_count_; }
+  uint64_t GetSyncFramesLatchedCount() const {
+    return sync_frames_latched_count_;
+  }
+  uint64_t GetSyncFramesTimedOutCount() const {
+    return sync_frames_timed_out_count_;
+  }
+  uint64_t GetSyncFramesSupersededCount() const {
+    return sync_frames_superseded_count_;
+  }
+  bool HasHeldSyncFrame() const { return held_sync_frame_.has_value(); }
+
  private:
   // The result status of DoDraw, DrawToSurfaces, and DrawToSurfacesUnsafe.
   enum class DoDrawStatus {
@@ -642,6 +657,25 @@ class Rasterizer final : public SnapshotDelegate,
   struct ViewRecord {
     std::unique_ptr<LayerTreeTask> last_successful_task;
     std::optional<DrawSurfaceStatus> last_draw_status;
+  };
+
+  struct RegisteredSyncWaiter {
+    std::weak_ptr<flutter::Texture> texture;
+    uint64_t token = 0;
+  };
+
+  struct HeldSyncFrame {
+    std::unique_ptr<FrameItem> frame_item;
+    std::weak_ptr<FramePipeline> pipeline;
+    uint64_t hold_generation = 0;
+    fml::TimePoint deadline = fml::TimePoint::Min();
+    std::vector<TextureSyncRequirement> active_requirements;
+    std::vector<RegisteredSyncWaiter> registered_waiters;
+  };
+
+  struct UnsatisfiedSyncEntry {
+    std::shared_ptr<flutter::Texture> texture;
+    TextureSyncRequirement requirement;
   };
 
   // |SnapshotDelegate|
@@ -786,6 +820,32 @@ class Rasterizer final : public SnapshotDelegate,
 
   void FireNextFrameCallbackIfPresent();
 
+  bool CollectUnsatisfiedSyncRequirements(
+      const std::vector<std::unique_ptr<LayerTreeTask>>& tasks,
+      const std::vector<TextureSyncRequirement>& carryover_requirements,
+      std::vector<UnsatisfiedSyncEntry>& out_unsatisfied) const;
+
+  bool AreSyncRequirementsSatisfied(
+      const std::vector<std::unique_ptr<LayerTreeTask>>& tasks,
+      const std::vector<TextureSyncRequirement>& carryover_requirements) const;
+
+  bool TryHoldFrameForSync(
+      std::unique_ptr<FrameItem>& item,
+      const std::shared_ptr<FramePipeline>& pipeline,
+      const std::vector<TextureSyncRequirement>& carryover_requirements = {},
+      std::optional<fml::TimePoint> inherited_deadline = std::nullopt);
+
+  static void CancelRegisteredWaiters(
+      std::vector<RegisteredSyncWaiter>& waiters);
+
+  void OnSyncRequirementReady(uint64_t hold_generation);
+
+  void OnSyncHoldTimeout(uint64_t hold_generation);
+
+  void FlushHeldSyncFrame();
+
+  void CancelHeldSyncFrame();
+
   static bool ShouldResubmitFrame(const DoDrawResult& result);
   static DrawStatus ToDrawStatus(DoDrawStatus status);
 
@@ -803,6 +863,24 @@ class Rasterizer final : public SnapshotDelegate,
   fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger_;
   std::shared_ptr<ExternalViewEmbedder> external_view_embedder_;
   std::unique_ptr<SnapshotController> snapshot_controller_;
+  struct TimedOutSyncRecord {
+    uint64_t min_generation = 0;
+    SkISize expected_size = SkISize::MakeEmpty();
+    uint64_t texture_generation_at_timeout = 0;
+    SkISize texture_size_at_timeout = SkISize::MakeEmpty();
+  };
+
+  void RecordTimedOutRequirements(
+      const std::vector<TextureSyncRequirement>& requirements);
+
+  std::optional<HeldSyncFrame> held_sync_frame_;
+  mutable std::unordered_map<int64_t, TimedOutSyncRecord>
+      timed_out_sync_records_;
+  uint64_t sync_hold_generation_ = 0;
+  uint64_t sync_frames_held_count_ = 0;
+  uint64_t sync_frames_latched_count_ = 0;
+  uint64_t sync_frames_timed_out_count_ = 0;
+  uint64_t sync_frames_superseded_count_ = 0;
 
   // WeakPtrFactory must be the last member.
   fml::TaskRunnerAffineWeakPtrFactory<Rasterizer> weak_factory_;

@@ -62,7 +62,9 @@ Rasterizer::Rasterizer(Delegate& delegate,
   FML_DCHECK(compositor_context_);
 }
 
-Rasterizer::~Rasterizer() = default;
+Rasterizer::~Rasterizer() {
+  CancelHeldSyncFrame();
+}
 
 fml::TaskRunnerAffineWeakPtr<Rasterizer> Rasterizer::GetWeakPtr() const {
   return weak_factory_.GetWeakPtr();
@@ -79,6 +81,7 @@ void Rasterizer::SetImpellerContext(
 }
 
 void Rasterizer::Setup(std::unique_ptr<Surface> surface) {
+  is_torn_down_ = false;
   surface_ = std::move(surface);
 
   if (max_cache_bytes_.has_value()) {
@@ -112,6 +115,7 @@ void Rasterizer::Setup(std::unique_ptr<Surface> surface) {
 }
 
 void Rasterizer::TeardownExternalViewEmbedder() {
+  CancelHeldSyncFrame();
   if (external_view_embedder_) {
     external_view_embedder_->Teardown();
   }
@@ -119,6 +123,7 @@ void Rasterizer::TeardownExternalViewEmbedder() {
 
 void Rasterizer::Teardown() {
   is_torn_down_ = true;
+  CancelHeldSyncFrame();
   if (surface_) {
     auto context_switch = surface_->MakeRenderContextCurrent();
     if (context_switch->GetResult()) {
@@ -206,6 +211,18 @@ void Rasterizer::ClearRenderTargetCache() const {
 }
 
 void Rasterizer::CollectView(int64_t view_id) {
+  if (held_sync_frame_.has_value() && held_sync_frame_->frame_item) {
+    auto& held_tasks = held_sync_frame_->frame_item->layer_tree_tasks;
+    held_tasks.erase(
+        std::remove_if(held_tasks.begin(), held_tasks.end(),
+                       [view_id](const std::unique_ptr<LayerTreeTask>& task) {
+                         return task && task->view_id == view_id;
+                       }),
+        held_tasks.end());
+    if (held_tasks.empty()) {
+      CancelHeldSyncFrame();
+    }
+  }
   if (external_view_embedder_) {
     external_view_embedder_->CollectView(view_id);
   }
@@ -235,6 +252,15 @@ flutter::LayerTree* Rasterizer::GetLastLayerTree(int64_t view_id) {
 void Rasterizer::DrawLastLayerTrees(
     std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) {
   if (!surface_) {
+    return;
+  }
+  if (held_sync_frame_.has_value()) {
+    if (AreSyncRequirementsSatisfied(
+            held_sync_frame_->frame_item->layer_tree_tasks,
+            held_sync_frame_->active_requirements)) {
+      ++sync_frames_latched_count_;
+      FlushHeldSyncFrame();
+    }
     return;
   }
   std::vector<std::unique_ptr<LayerTreeTask>> tasks;
@@ -272,8 +298,40 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
                  ->RunsTasksOnCurrentThread());
 
   DoDrawResult draw_result;
-  FramePipeline::Consumer consumer = [&draw_result,
+  FramePipeline::Consumer consumer = [&draw_result, &pipeline,
                                       this](std::unique_ptr<FrameItem> item) {
+    std::vector<flutter::TextureSyncRequirement> carryover_requirements;
+    std::optional<fml::TimePoint> inherited_deadline;
+    if (held_sync_frame_.has_value()) {
+      // Preserve any multi-view LayerTreeTask from the superseded held frame
+      // whose view_id is not present in the incoming `item` so views not
+      // updated in `item` still render their latest LayerTree.
+      if (held_sync_frame_->frame_item && item) {
+        for (auto& old_task : held_sync_frame_->frame_item->layer_tree_tasks) {
+          if (!old_task) {
+            continue;
+          }
+          const int64_t old_view_id = old_task->view_id;
+          const bool replaced = std::any_of(
+              item->layer_tree_tasks.begin(), item->layer_tree_tasks.end(),
+              [old_view_id](const std::unique_ptr<LayerTreeTask>& new_task) {
+                return new_task && new_task->view_id == old_view_id;
+              });
+          if (!replaced) {
+            item->layer_tree_tasks.push_back(std::move(old_task));
+          }
+        }
+      }
+      carryover_requirements = std::move(held_sync_frame_->active_requirements);
+      inherited_deadline = held_sync_frame_->deadline;
+      CancelHeldSyncFrame();
+      ++sync_frames_superseded_count_;
+    }
+    if (TryHoldFrameForSync(item, pipeline, carryover_requirements,
+                            inherited_deadline)) {
+      draw_result = DoDrawResult{.status = DoDrawStatus::kDone};
+      return;
+    }
     draw_result = DoDraw(std::move(item->frame_timings_recorder),
                          std::move(item->layer_tree_tasks));
   };
@@ -1237,5 +1295,380 @@ Rasterizer::Screenshot::Screenshot(sk_sp<SkData> p_data,
 Rasterizer::Screenshot::Screenshot(const Screenshot& other) = default;
 
 Rasterizer::Screenshot::~Screenshot() = default;
+
+bool Rasterizer::CollectUnsatisfiedSyncRequirements(
+    const std::vector<std::unique_ptr<LayerTreeTask>>& tasks,
+    const std::vector<flutter::TextureSyncRequirement>& carryover_requirements,
+    std::vector<UnsatisfiedSyncEntry>& out_unsatisfied) const {
+  out_unsatisfied.clear();
+  if (!compositor_context_) {
+    return false;
+  }
+  auto texture_registry = compositor_context_->texture_registry();
+  if (!texture_registry) {
+    return false;
+  }
+
+  std::vector<flutter::TextureSyncRequirement> merged;
+  auto merge_req = [&merged](const flutter::TextureSyncRequirement& req) {
+    if (!req.IsActive()) {
+      return;
+    }
+    for (auto& existing : merged) {
+      if (existing.texture_id == req.texture_id) {
+        existing.min_frame_generation =
+            std::max(existing.min_frame_generation, req.min_frame_generation);
+        if (!req.expected_physical_size.isEmpty()) {
+          existing.expected_physical_size = req.expected_physical_size;
+        }
+        existing.max_wait =
+            std::max(existing.ClampedMaxWait(), req.ClampedMaxWait());
+        return;
+      }
+    }
+    flutter::TextureSyncRequirement copy = req;
+    copy.max_wait = req.ClampedMaxWait();
+    merged.push_back(copy);
+  };
+
+  for (const auto& req : carryover_requirements) {
+    merge_req(req);
+  }
+
+  for (const auto& task : tasks) {
+    if (!task || !task->layer_tree) {
+      continue;
+    }
+    if (delegate_.ShouldDiscardLayerTree(task->view_id, *task->layer_tree)) {
+      continue;
+    }
+    const auto& reqs = task->layer_tree->CollectTextureSyncRequirements();
+    for (const auto& req : reqs) {
+      merge_req(req);
+    }
+  }
+
+  for (const auto& req : merged) {
+    std::shared_ptr<flutter::Texture> texture =
+        texture_registry->GetTexture(req.texture_id);
+    if (!texture) {
+      timed_out_sync_records_.erase(req.texture_id);
+      continue;
+    }
+    if (texture->SatisfiesSyncRequirement(req.min_frame_generation,
+                                          req.expected_physical_size)) {
+      timed_out_sync_records_.erase(req.texture_id);
+      continue;
+    }
+    auto prev_timeout = timed_out_sync_records_.find(req.texture_id);
+    if (prev_timeout != timed_out_sync_records_.end()) {
+      const TimedOutSyncRecord& rec = prev_timeout->second;
+      const uint64_t cur_gen = texture->GetCurrentFrameGeneration();
+      const SkISize cur_size = texture->GetCurrentFrameSize();
+      if (rec.min_generation == req.min_frame_generation &&
+          rec.expected_size == req.expected_physical_size &&
+          rec.texture_generation_at_timeout == cur_gen &&
+          rec.texture_size_at_timeout == cur_size) {
+        // Identical requirement already timed out and the producer has not
+        // published any new frame yet; fast-path so a stuck or DPR-mismatched
+        // producer does not re-stall every subsequent frame.
+        continue;
+      }
+      timed_out_sync_records_.erase(prev_timeout);
+    }
+    out_unsatisfied.push_back(UnsatisfiedSyncEntry{
+        .texture = std::move(texture),
+        .requirement = req,
+    });
+  }
+  return !out_unsatisfied.empty();
+}
+
+void Rasterizer::RecordTimedOutRequirements(
+    const std::vector<flutter::TextureSyncRequirement>& requirements) {
+  if (!compositor_context_) {
+    return;
+  }
+  auto texture_registry = compositor_context_->texture_registry();
+  if (!texture_registry) {
+    return;
+  }
+  for (const auto& req : requirements) {
+    std::shared_ptr<flutter::Texture> texture =
+        texture_registry->GetTexture(req.texture_id);
+    if (!texture) {
+      continue;
+    }
+    timed_out_sync_records_[req.texture_id] = TimedOutSyncRecord{
+        .min_generation = req.min_frame_generation,
+        .expected_size = req.expected_physical_size,
+        .texture_generation_at_timeout = texture->GetCurrentFrameGeneration(),
+        .texture_size_at_timeout = texture->GetCurrentFrameSize(),
+    };
+  }
+}
+
+bool Rasterizer::AreSyncRequirementsSatisfied(
+    const std::vector<std::unique_ptr<LayerTreeTask>>& tasks,
+    const std::vector<flutter::TextureSyncRequirement>& carryover_requirements)
+    const {
+  std::vector<UnsatisfiedSyncEntry> unsatisfied;
+  return !CollectUnsatisfiedSyncRequirements(tasks, carryover_requirements,
+                                             unsatisfied);
+}
+
+void Rasterizer::CancelRegisteredWaiters(
+    std::vector<RegisteredSyncWaiter>& waiters) {
+  for (auto& entry : waiters) {
+    if (entry.token == 0) {
+      continue;
+    }
+    if (auto texture = entry.texture.lock()) {
+      texture->CancelSyncReadyCallback(entry.token);
+    }
+  }
+  waiters.clear();
+}
+
+bool Rasterizer::TryHoldFrameForSync(
+    std::unique_ptr<FrameItem>& item,
+    const std::shared_ptr<FramePipeline>& pipeline,
+    const std::vector<flutter::TextureSyncRequirement>& carryover_requirements,
+    std::optional<fml::TimePoint> inherited_deadline) {
+  if (is_torn_down_ || !surface_ || !item || item->layer_tree_tasks.empty() ||
+      !item->frame_timings_recorder) {
+    return false;
+  }
+
+  std::vector<UnsatisfiedSyncEntry> unsatisfied;
+  if (!CollectUnsatisfiedSyncRequirements(
+          item->layer_tree_tasks, carryover_requirements, unsatisfied)) {
+    return false;
+  }
+
+  const fml::TimePoint now = fml::TimePoint::Now();
+  const fml::TimePoint vsync_target =
+      item->frame_timings_recorder->GetVsyncTargetTime();
+
+  fml::TimePoint latest_deadline = fml::TimePoint::Min();
+  bool has_candidate_deadline = false;
+  for (const auto& entry : unsatisfied) {
+    const fml::TimeDelta max_wait = entry.requirement.ClampedMaxWait();
+    if (max_wait <= fml::TimeDelta::Zero()) {
+      continue;
+    }
+    // Anchor the bounded hold window to `vsync_target` when it is either in
+    // the future or within the current frame window (`now - vsync_target <
+    // max_wait`). If a synthetic or stale timestamp is far in the past, bound
+    // relative to `now` so `max_wait` is strictly enforced in both production
+    // VSync scheduling and synthetic unit tests.
+    const fml::TimePoint anchor =
+        (vsync_target > now || (now - vsync_target) < max_wait) ? vsync_target
+                                                                : now;
+    const fml::TimePoint candidate_deadline = anchor + max_wait;
+    if (!has_candidate_deadline || candidate_deadline > latest_deadline) {
+      latest_deadline = candidate_deadline;
+      has_candidate_deadline = true;
+    }
+  }
+
+  if (!has_candidate_deadline) {
+    return false;
+  }
+
+  // Never extend an inherited hold deadline when superseding an earlier held
+  // frame; once the original bounded window expires, present immediately so a
+  // continuous 120 Hz stream of unsatisfied frames can never starve rendering.
+  if (inherited_deadline.has_value() && *inherited_deadline < latest_deadline) {
+    latest_deadline = *inherited_deadline;
+  }
+
+  if (latest_deadline <= now) {
+    if (inherited_deadline.has_value()) {
+      std::vector<flutter::TextureSyncRequirement> expired_reqs;
+      expired_reqs.reserve(unsatisfied.size());
+      for (const auto& entry : unsatisfied) {
+        expired_reqs.push_back(entry.requirement);
+      }
+      RecordTimedOutRequirements(expired_reqs);
+      ++sync_frames_timed_out_count_;
+      FML_TRACE_COUNTER("flutter", "RasterizerSyncHold",
+                        reinterpret_cast<int64_t>(this), "held",
+                        sync_frames_held_count_, "latched",
+                        sync_frames_latched_count_, "timed_out",
+                        sync_frames_timed_out_count_);
+    }
+    return false;
+  }
+
+  const uint64_t hold_gen = ++sync_hold_generation_;
+  ++sync_frames_held_count_;
+  FML_TRACE_COUNTER(
+      "flutter", "RasterizerSyncHold", reinterpret_cast<int64_t>(this), "held",
+      sync_frames_held_count_, "latched", sync_frames_latched_count_,
+      "timed_out", sync_frames_timed_out_count_);
+
+  std::vector<flutter::TextureSyncRequirement> active_reqs;
+  active_reqs.reserve(unsatisfied.size());
+  for (const auto& entry : unsatisfied) {
+    active_reqs.push_back(entry.requirement);
+  }
+
+  auto raster_task_runner = delegate_.GetTaskRunners().GetRasterTaskRunner();
+  auto weak_self = weak_factory_.GetWeakPtr();
+
+  std::vector<RegisteredSyncWaiter> registered_waiters;
+  registered_waiters.reserve(unsatisfied.size());
+  for (const auto& entry : unsatisfied) {
+    const uint64_t waiter_token = entry.texture->RegisterSyncReadyCallback(
+        entry.requirement.min_frame_generation,
+        entry.requirement.expected_physical_size,
+        [raster_task_runner, weak_self, hold_gen]() {
+          raster_task_runner->PostTask([weak_self, hold_gen]() {
+            if (weak_self) {
+              weak_self->OnSyncRequirementReady(hold_gen);
+            }
+          });
+        });
+    if (waiter_token != 0) {
+      registered_waiters.push_back(RegisteredSyncWaiter{
+          .texture = entry.texture,
+          .token = waiter_token,
+      });
+    }
+  }
+
+  held_sync_frame_ = HeldSyncFrame{
+      .frame_item = std::move(item),
+      .pipeline = pipeline,
+      .hold_generation = hold_gen,
+      .deadline = latest_deadline,
+      .active_requirements = std::move(active_reqs),
+      .registered_waiters = std::move(registered_waiters),
+  };
+
+  // Re-check immediately after registering waiters in case the producer became
+  // ready concurrently and fired synchronously before `held_sync_frame_` was
+  // populated. Restore `item` and return `false` so the caller draws via the
+  // normal post-`Consume` path (preserving `kResubmit` handling).
+  if (AreSyncRequirementsSatisfied(
+          held_sync_frame_->frame_item->layer_tree_tasks,
+          held_sync_frame_->active_requirements)) {
+    item = std::move(held_sync_frame_->frame_item);
+    CancelHeldSyncFrame();
+    --sync_frames_held_count_;
+    return false;
+  }
+
+  const fml::TimeDelta wait_duration = (latest_deadline > now)
+                                           ? (latest_deadline - now)
+                                           : fml::TimeDelta::Zero();
+  raster_task_runner->PostDelayedTask(
+      [weak_self, hold_gen]() {
+        if (weak_self) {
+          weak_self->OnSyncHoldTimeout(hold_gen);
+        }
+      },
+      wait_duration);
+
+  return true;
+}
+
+void Rasterizer::OnSyncRequirementReady(uint64_t hold_generation) {
+  FML_DCHECK(delegate_.GetTaskRunners()
+                 .GetRasterTaskRunner()
+                 ->RunsTasksOnCurrentThread());
+  if (is_torn_down_ || !surface_ || !held_sync_frame_.has_value() ||
+      held_sync_frame_->hold_generation != hold_generation) {
+    return;
+  }
+  if (!AreSyncRequirementsSatisfied(
+          held_sync_frame_->frame_item->layer_tree_tasks,
+          held_sync_frame_->active_requirements)) {
+    return;
+  }
+  ++sync_frames_latched_count_;
+  FML_TRACE_COUNTER(
+      "flutter", "RasterizerSyncHold", reinterpret_cast<int64_t>(this), "held",
+      sync_frames_held_count_, "latched", sync_frames_latched_count_,
+      "timed_out", sync_frames_timed_out_count_);
+  FlushHeldSyncFrame();
+}
+
+void Rasterizer::OnSyncHoldTimeout(uint64_t hold_generation) {
+  FML_DCHECK(delegate_.GetTaskRunners()
+                 .GetRasterTaskRunner()
+                 ->RunsTasksOnCurrentThread());
+  if (is_torn_down_ || !surface_ || !held_sync_frame_.has_value() ||
+      held_sync_frame_->hold_generation != hold_generation) {
+    return;
+  }
+  RecordTimedOutRequirements(held_sync_frame_->active_requirements);
+  ++sync_frames_timed_out_count_;
+  FML_TRACE_COUNTER(
+      "flutter", "RasterizerSyncHold", reinterpret_cast<int64_t>(this), "held",
+      sync_frames_held_count_, "latched", sync_frames_latched_count_,
+      "timed_out", sync_frames_timed_out_count_);
+  FlushHeldSyncFrame();
+}
+
+void Rasterizer::FlushHeldSyncFrame() {
+  FML_DCHECK(delegate_.GetTaskRunners()
+                 .GetRasterTaskRunner()
+                 ->RunsTasksOnCurrentThread());
+  if (!held_sync_frame_.has_value()) {
+    return;
+  }
+  HeldSyncFrame held = std::move(*held_sync_frame_);
+  held_sync_frame_.reset();
+  ++sync_hold_generation_;
+  CancelRegisteredWaiters(held.registered_waiters);
+
+  if (is_torn_down_ || !surface_ || !held.frame_item) {
+    return;
+  }
+
+  std::shared_ptr<FramePipeline> pipeline = held.pipeline.lock();
+  DoDrawResult draw_result =
+      DoDraw(std::move(held.frame_item->frame_timings_recorder),
+             std::move(held.frame_item->layer_tree_tasks));
+
+  bool should_resubmit_frame = ShouldResubmitFrame(draw_result);
+  bool enqueue_pipeline = false;
+  if (should_resubmit_frame && pipeline) {
+    FML_CHECK(draw_result.resubmitted_item);
+    auto front_continuation = pipeline->ProduceIfEmpty();
+    PipelineProduceResult pipeline_result =
+        front_continuation.Complete(std::move(draw_result.resubmitted_item));
+    if (pipeline_result.success) {
+      enqueue_pipeline = true;
+    }
+  } else if (draw_result.status == DoDrawStatus::kEnqueuePipeline) {
+    enqueue_pipeline = true;
+  }
+
+  if (external_view_embedder_ && external_view_embedder_->GetUsedThisFrame()) {
+    external_view_embedder_->SetUsedThisFrame(false);
+    external_view_embedder_->EndFrame(should_resubmit_frame,
+                                      raster_thread_merger_);
+  }
+
+  if (enqueue_pipeline && pipeline) {
+    delegate_.GetTaskRunners().GetRasterTaskRunner()->PostTask(
+        [weak_this = weak_factory_.GetWeakPtr(), pipeline]() {
+          if (weak_this) {
+            weak_this->Draw(pipeline);
+          }
+        });
+  }
+}
+
+void Rasterizer::CancelHeldSyncFrame() {
+  if (held_sync_frame_.has_value()) {
+    CancelRegisteredWaiters(held_sync_frame_->registered_waiters);
+  }
+  held_sync_frame_.reset();
+  ++sync_hold_generation_;
+}
 
 }  // namespace flutter

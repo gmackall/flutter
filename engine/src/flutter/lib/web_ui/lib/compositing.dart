@@ -97,6 +97,10 @@ abstract class SceneBuilder {
     double height = 0.0,
     bool freeze = false,
     FilterQuality filterQuality = FilterQuality.low,
+    int minFrameGeneration = 0,
+    int expectedBufferWidth = 0,
+    int expectedBufferHeight = 0,
+    int maxSyncWaitMicros = 0,
   });
   void addPlatformView(
     int viewId, {
