@@ -255,6 +255,21 @@ public class FlutterImageView extends View implements RenderSurface {
     }
   }
 
+  /**
+   * Returns a software-readable copy of the current frame bitmap, or {@code null} if no image has
+   * been acquired.
+   */
+  @Nullable
+  public Bitmap getBitmap() {
+    if (currentImage != null) {
+      updateCurrentBitmap();
+    }
+    if (currentBitmap == null) {
+      return null;
+    }
+    return currentBitmap.copy(Bitmap.Config.ARGB_8888, false);
+  }
+
   private void closeCurrentImage() {
     // Close and clear the current image if any.
     if (currentImage != null) {

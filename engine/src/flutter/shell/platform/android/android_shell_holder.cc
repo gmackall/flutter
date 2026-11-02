@@ -359,4 +359,12 @@ bool AndroidShellHolder::IsSurfaceControlEnabled() {
   return GetPlatformView()->IsSurfaceControlEnabled();
 }
 
+jobject AndroidShellHolder::GetLatestHardwareBuffer(JNIEnv* env) {
+  return GetPlatformView()->GetLatestHardwareBuffer(env);
+}
+
+jobject AndroidShellHolder::GetLatestOverlayHardwareBuffer(JNIEnv* env) {
+  return GetPlatformView()->GetLatestOverlayHardwareBuffer(env);
+}
+
 }  // namespace flutter

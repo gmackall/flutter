@@ -228,6 +228,10 @@ bool AHBSwapchainImplVK::Present(
     return false;
   }
   const uint64_t present_id = next_present_id_++;
+  {
+    Lock lock(currently_displayed_texture_mutex_);
+    last_presented_texture_ = texture;
+  }
   return transaction.Apply([texture, present_id, weak = weak_from_this()](
                                ASurfaceTransactionStats* stats) {
     auto thiz = weak.lock();
@@ -236,6 +240,17 @@ bool AHBSwapchainImplVK::Present(
     }
     thiz->OnTextureUpdatedOnSurfaceControl(texture, stats, present_id);
   });
+}
+
+AHardwareBuffer* AHBSwapchainImplVK::GetLatestHardwareBuffer() {
+  WaitIdle();
+  Lock lock(currently_displayed_texture_mutex_);
+  auto texture = last_presented_texture_ ? last_presented_texture_
+                                         : currently_displayed_texture_;
+  if (!texture || !texture->GetBackingStore()) {
+    return nullptr;
+  }
+  return texture->GetBackingStore()->GetHandle();
 }
 
 void AHBSwapchainImplVK::AddFinalCommandBuffer(

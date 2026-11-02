@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -31,6 +32,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
+import android.hardware.HardwareBuffer;
 import android.hardware.SyncFence;
 import android.media.Image;
 import android.media.ImageReader;
@@ -1261,5 +1263,35 @@ public class FlutterRendererTest {
             any(Handler.class));
 
     assertNull(flutterRenderer.getBitmap());
+  }
+
+  @Test
+  public void getBitmap_usesHardwareBufferWhenSurfaceControlEnabled() {
+    final int testSurfaceWidth = 100;
+    final int testSurfaceHeight = 50;
+
+    FlutterRenderer flutterRenderer = spy(engineRule.getFlutterEngine().getRenderer());
+    Surface fakeSurface = mock(Surface.class);
+    when(fakeSurface.isValid()).thenReturn(true);
+    when(fakeFlutterJNI.IsSurfaceControlEnabled()).thenReturn(true);
+
+    flutterRenderer.startRenderingToSurface(fakeSurface, false);
+    flutterRenderer.surfaceChanged(testSurfaceWidth, testSurfaceHeight);
+
+    // Returns null when no HardwareBuffer has been presented yet.
+    when(fakeFlutterJNI.getLatestHardwareBuffer()).thenReturn(null);
+    assertNull(flutterRenderer.getBitmap());
+
+    // Wraps and closes the HardwareBuffer and composites platform views/overlays when available.
+    HardwareBuffer fakeBuffer = mock(HardwareBuffer.class);
+    Bitmap expectedBitmap =
+        Bitmap.createBitmap(testSurfaceWidth, testSurfaceHeight, Bitmap.Config.ARGB_8888);
+    when(fakeFlutterJNI.getLatestHardwareBuffer()).thenReturn(fakeBuffer);
+    doReturn(expectedBitmap).when(flutterRenderer).createBitmapFromHardwareBuffer(fakeBuffer);
+
+    Bitmap bitmap = flutterRenderer.getBitmap();
+    assertEquals(expectedBitmap, bitmap);
+    verify(fakeBuffer, times(1)).close();
+    verify(fakeFlutterJNI, times(1)).compositePlatformViewsAndOverlays(expectedBitmap);
   }
 }

@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.SurfaceTexture;
+import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Looper;
 import android.util.DisplayMetrics;
@@ -1773,4 +1774,46 @@ public class FlutterJNI {
   }
 
   private native boolean nativeIsSurfaceControlEnabled(long nativeShellHolderId);
+
+  /**
+   * Returns the most recently presented {@link HardwareBuffer} from the SurfaceControl swapchain,
+   * or {@code null} if unavailable. The caller is responsible for closing the returned buffer.
+   */
+  @Nullable
+  public HardwareBuffer getLatestHardwareBuffer() {
+    ensureRunningOnMainThread();
+    ensureAttachedToNative();
+    return nativeGetLatestHardwareBuffer(nativeShellHolderId);
+  }
+
+  private native HardwareBuffer nativeGetLatestHardwareBuffer(long nativeShellHolderId);
+
+  /**
+   * Returns the most recently presented overlay {@link HardwareBuffer} from the HCPP external view
+   * embedder, or {@code null} if no overlay is active. The caller is responsible for closing the
+   * returned buffer.
+   */
+  @Nullable
+  public HardwareBuffer getLatestOverlayHardwareBuffer() {
+    ensureRunningOnMainThread();
+    ensureAttachedToNative();
+    return nativeGetLatestOverlayHardwareBuffer(nativeShellHolderId);
+  }
+
+  private native HardwareBuffer nativeGetLatestOverlayHardwareBuffer(long nativeShellHolderId);
+
+  /**
+   * Composites any visible Hybrid Composition or HCPP platform views and overlay surfaces onto
+   * {@code bitmap}.
+   */
+  @UiThread
+  public void compositePlatformViewsAndOverlays(@NonNull Bitmap bitmap) {
+    ensureRunningOnMainThread();
+    if (platformViewsController != null) {
+      platformViewsController.compositeIntoBitmap(bitmap);
+    }
+    if (platformViewsController2 != null) {
+      platformViewsController2.compositeIntoBitmap(bitmap);
+    }
+  }
 }

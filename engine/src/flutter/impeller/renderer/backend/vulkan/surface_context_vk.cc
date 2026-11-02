@@ -151,4 +151,10 @@ RuntimeStageBackend SurfaceContextVK::GetRuntimeStageBackend() const {
   return parent_->GetRuntimeStageBackend();
 }
 
+#if FML_OS_ANDROID
+AHardwareBuffer* SurfaceContextVK::GetLatestHardwareBuffer() const {
+  return swapchain_ ? swapchain_->GetLatestHardwareBuffer() : nullptr;
+}
+#endif  // FML_OS_ANDROID
+
 }  // namespace impeller

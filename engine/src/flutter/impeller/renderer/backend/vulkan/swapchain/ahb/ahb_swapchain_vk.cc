@@ -61,6 +61,11 @@ void AHBSwapchainVK::AddFinalCommandBuffer(
 }
 
 // |SwapchainVK|
+AHardwareBuffer* AHBSwapchainVK::GetLatestHardwareBuffer() const {
+  return IsValid() ? impl_->GetLatestHardwareBuffer() : nullptr;
+}
+
+// |SwapchainVK|
 void AHBSwapchainVK::UpdateSurfaceSize(const ISize& size) {
   if (impl_ && impl_->GetSize() == size) {
     return;

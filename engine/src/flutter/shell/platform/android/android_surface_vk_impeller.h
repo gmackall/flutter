@@ -50,6 +50,9 @@ class AndroidSurfaceVKImpeller : public AndroidSurface {
       fml::RefPtr<AndroidNativeWindow> window,
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) override;
 
+  // |AndroidSurface|
+  AHardwareBuffer* GetLatestHardwareBuffer() const override;
+
  private:
   std::shared_ptr<impeller::SurfaceContextVK> surface_context_vk_;
   fml::RefPtr<AndroidNativeWindow> native_window_;

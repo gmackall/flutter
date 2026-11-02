@@ -118,4 +118,12 @@ AndroidSurfaceDynamicImpeller::GetImpellerContext() {
   return android_context_->GetImpellerContext();
 }
 
+AHardwareBuffer* AndroidSurfaceDynamicImpeller::GetLatestHardwareBuffer()
+    const {
+  if (vulkan_surface_) {
+    return vulkan_surface_->GetLatestHardwareBuffer();
+  }
+  return nullptr;
+}
+
 }  // namespace flutter

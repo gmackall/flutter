@@ -114,4 +114,9 @@ AndroidSurfaceVKImpeller::GetImpellerContext() {
   return surface_context_vk_;
 }
 
+AHardwareBuffer* AndroidSurfaceVKImpeller::GetLatestHardwareBuffer() const {
+  return surface_context_vk_ ? surface_context_vk_->GetLatestHardwareBuffer()
+                             : nullptr;
+}
+
 }  // namespace flutter

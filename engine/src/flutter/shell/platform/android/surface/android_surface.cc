@@ -21,4 +21,8 @@ std::shared_ptr<impeller::Context> AndroidSurface::GetImpellerContext() {
 
 void AndroidSurface::SetupImpellerSurface() {}
 
+AHardwareBuffer* AndroidSurface::GetLatestHardwareBuffer() const {
+  return nullptr;
+}
+
 }  // namespace flutter

@@ -94,6 +94,10 @@ class AndroidShellHolder {
 
   bool IsSurfaceControlEnabled();
 
+  jobject GetLatestHardwareBuffer(JNIEnv* env);
+
+  jobject GetLatestOverlayHardwareBuffer(JNIEnv* env);
+
   void NotifyLowMemoryWarning();
 
   const std::shared_ptr<PlatformMessageHandler>& GetPlatformMessageHandler()

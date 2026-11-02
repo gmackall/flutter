@@ -76,6 +76,8 @@ class AndroidExternalViewEmbedderWrapper final : public ExternalViewEmbedder {
   // |ExternalViewEmbedder|
   void Teardown() override;
 
+  AHardwareBuffer* GetLatestOverlayHardwareBuffer() const;
+
  private:
   void EnsureInitialized();
 

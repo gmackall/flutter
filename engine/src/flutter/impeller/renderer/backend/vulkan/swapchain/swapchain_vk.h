@@ -66,6 +66,10 @@ class SwapchainVK {
   ///        recreated on the next frame.
   virtual void UpdateSurfaceSize(const ISize& size) = 0;
 
+#if FML_OS_ANDROID
+  virtual AHardwareBuffer* GetLatestHardwareBuffer() const { return nullptr; }
+#endif  // FML_OS_ANDROID
+
  protected:
   SwapchainVK();
 };

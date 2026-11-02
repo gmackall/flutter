@@ -5,6 +5,7 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_SURFACE_ANDROID_SURFACE_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_SURFACE_ANDROID_SURFACE_H_
 
+#include <android/hardware_buffer.h>
 #include <memory>
 #include "flutter/flow/embedded_views.h"
 #include "flutter/flow/surface.h"
@@ -47,6 +48,8 @@ class AndroidSurface {
   virtual std::shared_ptr<impeller::Context> GetImpellerContext();
 
   virtual void SetupImpellerSurface();
+
+  virtual AHardwareBuffer* GetLatestHardwareBuffer() const;
 
  protected:
   AndroidSurface();

@@ -85,6 +85,8 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   // |ExternalViewEmbedder|
   void Teardown() override;
 
+  AHardwareBuffer* GetLatestOverlayHardwareBuffer() const;
+
   // Gets the rect based on the device pixel ratio of a platform view displayed
   // on the screen.
   static DlRect GetViewRect(
@@ -116,6 +118,9 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
 
   // If the overlay layer is currently shown.
   std::atomic_bool overlay_layer_is_shown_{false};
+
+  // Whether the overlay layer had content in the most recently submitted frame.
+  bool overlay_has_active_content_ = false;
 
   // The size of the root canvas.
   DlISize frame_size_;

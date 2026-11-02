@@ -34,6 +34,7 @@
 
 #include "fml/logging.h"
 #include "impeller/display_list/aiks_context.h"
+#include "impeller/toolkit/android/proc_table.h"
 #if IMPELLER_ENABLE_VULKAN  // b/258506856 for why this is behind an if
 #include "flutter/shell/platform/android/android_surface_vk_impeller.h"
 #include "flutter/shell/platform/android/image_external_texture_vk_impeller.h"
@@ -434,9 +435,11 @@ std::unique_ptr<Surface> PlatformViewAndroid::CreateRenderingSurface() {
 // |PlatformView|
 std::shared_ptr<ExternalViewEmbedder>
 PlatformViewAndroid::CreateExternalViewEmbedder() {
-  return std::make_shared<AndroidExternalViewEmbedderWrapper>(
-      android_meets_hcpp_criteria_, *android_context_, jni_facade_,
-      surface_factory_, task_runners_);
+  external_view_embedder_ =
+      std::make_shared<AndroidExternalViewEmbedderWrapper>(
+          android_meets_hcpp_criteria_, *android_context_, jni_facade_,
+          surface_factory_, task_runners_);
+  return external_view_embedder_;
 }
 
 // |PlatformView|
@@ -562,6 +565,68 @@ bool PlatformViewAndroid::IsSurfaceControlEnabled() const {
              AndroidRenderingAPI::kImpellerVulkan &&
          impeller::ContextVK::Cast(*android_context_->GetImpellerContext())
              .GetShouldEnableSurfaceControlSwapchain();
+}
+
+jobject PlatformViewAndroid::GetLatestHardwareBuffer(JNIEnv* env) const {
+  if (!android_surface_) {
+    return nullptr;
+  }
+  const auto& proc_table = impeller::android::GetProcTable();
+  if (!proc_table.AHardwareBuffer_toHardwareBuffer.IsAvailable()) {
+    return nullptr;
+  }
+  AHardwareBuffer* ahb = nullptr;
+  fml::AutoResetWaitableEvent latch;
+  fml::TaskRunner::RunNowOrPostTask(
+      task_runners_.GetRasterTaskRunner(),
+      [&latch, &ahb, surface = android_surface_.get(), &proc_table]() {
+        ahb = surface->GetLatestHardwareBuffer();
+        if (ahb != nullptr &&
+            proc_table.AHardwareBuffer_acquire.IsAvailable()) {
+          proc_table.AHardwareBuffer_acquire(ahb);
+        }
+        latch.Signal();
+      });
+  latch.Wait();
+  if (ahb == nullptr) {
+    return nullptr;
+  }
+  jobject result = proc_table.AHardwareBuffer_toHardwareBuffer(env, ahb);
+  if (proc_table.AHardwareBuffer_release.IsAvailable()) {
+    proc_table.AHardwareBuffer_release(ahb);
+  }
+  return result;
+}
+
+jobject PlatformViewAndroid::GetLatestOverlayHardwareBuffer(JNIEnv* env) const {
+  if (!external_view_embedder_) {
+    return nullptr;
+  }
+  const auto& proc_table = impeller::android::GetProcTable();
+  if (!proc_table.AHardwareBuffer_toHardwareBuffer.IsAvailable()) {
+    return nullptr;
+  }
+  AHardwareBuffer* ahb = nullptr;
+  fml::AutoResetWaitableEvent latch;
+  fml::TaskRunner::RunNowOrPostTask(
+      task_runners_.GetRasterTaskRunner(),
+      [&latch, &ahb, embedder = external_view_embedder_.get(), &proc_table]() {
+        ahb = embedder->GetLatestOverlayHardwareBuffer();
+        if (ahb != nullptr &&
+            proc_table.AHardwareBuffer_acquire.IsAvailable()) {
+          proc_table.AHardwareBuffer_acquire(ahb);
+        }
+        latch.Signal();
+      });
+  latch.Wait();
+  if (ahb == nullptr) {
+    return nullptr;
+  }
+  jobject result = proc_table.AHardwareBuffer_toHardwareBuffer(env, ahb);
+  if (proc_table.AHardwareBuffer_release.IsAvailable()) {
+    proc_table.AHardwareBuffer_release(ahb);
+  }
+  return result;
 }
 
 void PlatformViewAndroid::SetupImpellerContext() {

@@ -10,6 +10,8 @@ import android.annotation.SuppressLint;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.MutableContextWrapper;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.os.Build;
 import android.util.SparseArray;
 import android.view.Gravity;
@@ -1454,5 +1456,94 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
   @VisibleForTesting
   public SparseArray<PlatformOverlayView> getOverlayLayerViews() {
     return overlayLayerViews;
+  }
+
+  /**
+   * Composites visible Hybrid Composition platform views and overlay surfaces onto {@code bitmap}
+   * in z-order.
+   */
+  public void compositeIntoBitmap(@NonNull Bitmap bitmap) {
+    if (flutterView == null || currentFrameUsedPlatformViewIds.isEmpty()) {
+      return;
+    }
+    Canvas canvas = null;
+    for (int i = 0; i < flutterView.getChildCount(); i++) {
+      final View child = flutterView.getChildAt(i);
+      if (child.getVisibility() != View.VISIBLE) {
+        continue;
+      }
+      if (child instanceof PlatformOverlayView) {
+        final Bitmap overlayBitmap = ((PlatformOverlayView) child).getBitmap();
+        if (overlayBitmap != null) {
+          if (canvas == null) {
+            canvas = new Canvas(bitmap);
+          }
+          compositeOverlayView(canvas, (PlatformOverlayView) child, overlayBitmap);
+          overlayBitmap.recycle();
+        }
+      } else if (child instanceof FlutterMutatorView) {
+        if (canvas == null) {
+          canvas = new Canvas(bitmap);
+        }
+        compositeMutatorView(canvas, (FlutterMutatorView) child);
+      }
+    }
+  }
+
+  private static void compositeOverlayView(
+      @NonNull Canvas canvas,
+      @NonNull PlatformOverlayView overlayView,
+      @NonNull Bitmap overlayBitmap) {
+    int left = overlayView.getLeft();
+    int top = overlayView.getTop();
+    int width = overlayView.getWidth();
+    int height = overlayView.getHeight();
+    final ViewGroup.LayoutParams params = overlayView.getLayoutParams();
+    if (params instanceof FrameLayout.LayoutParams) {
+      final FrameLayout.LayoutParams frameParams = (FrameLayout.LayoutParams) params;
+      if (width == 0 && frameParams.width > 0 && height == 0 && frameParams.height > 0) {
+        left = frameParams.leftMargin;
+        top = frameParams.topMargin;
+        width = frameParams.width;
+        height = frameParams.height;
+      }
+    }
+    final int saveCount = canvas.save();
+    canvas.translate(left, top);
+    if (width > 0 && height > 0) {
+      canvas.clipRect(0, 0, width, height);
+    }
+    canvas.drawBitmap(overlayBitmap, 0, 0, null);
+    canvas.restoreToCount(saveCount);
+  }
+
+  private static void compositeMutatorView(
+      @NonNull Canvas canvas, @NonNull FlutterMutatorView mutatorView) {
+    int left = mutatorView.getLeft();
+    int top = mutatorView.getTop();
+    int width = mutatorView.getWidth();
+    int height = mutatorView.getHeight();
+    final ViewGroup.LayoutParams params = mutatorView.getLayoutParams();
+    if (params instanceof FrameLayout.LayoutParams) {
+      final FrameLayout.LayoutParams frameParams = (FrameLayout.LayoutParams) params;
+      if (width == 0 && frameParams.width > 0 && height == 0 && frameParams.height > 0) {
+        left = frameParams.leftMargin;
+        top = frameParams.topMargin;
+        width = frameParams.width;
+        height = frameParams.height;
+        mutatorView.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+        mutatorView.layout(left, top, left + width, top + height);
+      }
+    }
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    final int saveCount = canvas.save();
+    canvas.translate(left, top);
+    canvas.clipRect(0, 0, width, height);
+    mutatorView.draw(canvas);
+    canvas.restoreToCount(saveCount);
   }
 }

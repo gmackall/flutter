@@ -114,6 +114,8 @@ class AHBSwapchainImplVK final
 
   void AddFinalCommandBuffer(std::shared_ptr<CommandBuffer> cmd_buffer);
 
+  AHardwareBuffer* GetLatestHardwareBuffer();
+
  private:
   using AutoSemaSignaler = std::shared_ptr<fml::ScopedCleanupClosure>;
 
@@ -126,6 +128,8 @@ class AHBSwapchainImplVK final
   // of std::atomic.
   Mutex currently_displayed_texture_mutex_;
   std::shared_ptr<AHBTextureSourceVK> currently_displayed_texture_
+      IPLR_GUARDED_BY(currently_displayed_texture_mutex_);
+  std::shared_ptr<AHBTextureSourceVK> last_presented_texture_
       IPLR_GUARDED_BY(currently_displayed_texture_mutex_);
   uint64_t last_completed_present_id_
       IPLR_GUARDED_BY(currently_displayed_texture_mutex_) = 0;

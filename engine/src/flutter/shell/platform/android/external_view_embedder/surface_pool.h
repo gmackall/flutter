@@ -76,6 +76,9 @@ class SurfacePool {
   // Returns true if the current pool has layers in use.
   bool HasLayers();
 
+  // Returns a copy of the layers in the pool.
+  std::vector<std::shared_ptr<OverlayLayer>> GetLayers();
+
   // Reset the layer index but do not release any layers.
   void ResetLayers();
 

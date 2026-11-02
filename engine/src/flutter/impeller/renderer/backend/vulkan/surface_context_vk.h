@@ -7,11 +7,16 @@
 
 #include <memory>
 
+#include "flutter/fml/build_config.h"
 #include "impeller/base/backend_cast.h"
 #include "impeller/core/runtime_types.h"
 #include "impeller/renderer/backend/vulkan/vk.h"
 #include "impeller/renderer/command_queue.h"
 #include "impeller/renderer/context.h"
+
+#if FML_OS_ANDROID
+#include <android/hardware_buffer.h>
+#endif  // FML_OS_ANDROID
 
 namespace impeller {
 
@@ -118,6 +123,10 @@ class SurfaceContextVK : public Context,
 
   // |Context|
   bool FinishQueue() override;
+
+#if FML_OS_ANDROID
+  AHardwareBuffer* GetLatestHardwareBuffer() const;
+#endif  // FML_OS_ANDROID
 
  private:
   std::shared_ptr<ContextVK> parent_;

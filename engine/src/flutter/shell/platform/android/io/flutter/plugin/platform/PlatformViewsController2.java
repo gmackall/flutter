@@ -7,10 +7,14 @@ package io.flutter.plugin.platform;
 import static io.flutter.Build.API_LEVELS;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.ColorSpace;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -1075,6 +1079,86 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       return false;
     }
     return flutterJNI.IsSurfaceControlEnabled();
+  }
+
+  /**
+   * Composites visible HCPP platform views and the active HCPP overlay surface onto {@code bitmap}.
+   */
+  public void compositeIntoBitmap(@NonNull Bitmap bitmap) {
+    if (flutterView == null) {
+      return;
+    }
+    Canvas canvas = null;
+    for (int i = 0; i < flutterView.getChildCount(); i++) {
+      final View child = flutterView.getChildAt(i);
+      if (child.getVisibility() != View.VISIBLE || !(child instanceof FlutterMutatorView)) {
+        continue;
+      }
+      if (canvas == null) {
+        canvas = new Canvas(bitmap);
+      }
+      compositeMutatorView(canvas, (FlutterMutatorView) child);
+    }
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_29 && flutterJNI != null) {
+      final HardwareBuffer overlayBuffer = flutterJNI.getLatestOverlayHardwareBuffer();
+      if (overlayBuffer != null) {
+        try {
+          final Bitmap overlayBitmap = wrapHardwareBufferForComposite(overlayBuffer);
+          if (overlayBitmap != null) {
+            if (canvas == null) {
+              canvas = new Canvas(bitmap);
+            }
+            canvas.drawBitmap(overlayBitmap, 0, 0, null);
+            overlayBitmap.recycle();
+          }
+        } finally {
+          overlayBuffer.close();
+        }
+      }
+    }
+  }
+
+  @VisibleForTesting
+  @RequiresApi(API_LEVELS.API_29)
+  @Nullable
+  Bitmap wrapHardwareBufferForComposite(@NonNull HardwareBuffer buffer) {
+    final Bitmap wrapped = Bitmap.wrapHardwareBuffer(buffer, ColorSpace.get(ColorSpace.Named.SRGB));
+    if (wrapped == null) {
+      return null;
+    }
+    final Bitmap softwareBitmap = wrapped.copy(Bitmap.Config.ARGB_8888, false);
+    wrapped.recycle();
+    return softwareBitmap;
+  }
+
+  private static void compositeMutatorView(
+      @NonNull Canvas canvas, @NonNull FlutterMutatorView mutatorView) {
+    int left = mutatorView.getLeft();
+    int top = mutatorView.getTop();
+    int width = mutatorView.getWidth();
+    int height = mutatorView.getHeight();
+    final ViewGroup.LayoutParams params = mutatorView.getLayoutParams();
+    if (params instanceof FrameLayout.LayoutParams) {
+      final FrameLayout.LayoutParams frameParams = (FrameLayout.LayoutParams) params;
+      if (width == 0 && frameParams.width > 0 && height == 0 && frameParams.height > 0) {
+        left = frameParams.leftMargin;
+        top = frameParams.topMargin;
+        width = frameParams.width;
+        height = frameParams.height;
+        mutatorView.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+        mutatorView.layout(left, top, left + width, top + height);
+      }
+    }
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    final int saveCount = canvas.save();
+    canvas.translate(left, top);
+    canvas.clipRect(0, 0, width, height);
+    mutatorView.draw(canvas);
+    canvas.restoreToCount(saveCount);
   }
 
   //// Message Handler ///////

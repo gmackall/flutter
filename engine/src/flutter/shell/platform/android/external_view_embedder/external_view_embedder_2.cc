@@ -94,6 +94,7 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   TRACE_EVENT0("flutter", "AndroidExternalViewEmbedder2::SubmitFlutterView");
 
   if (!FrameHasPlatformLayers()) {
+    overlay_has_active_content_ = false;
     frame->Submit();
     jni_facade_->sealFrameTransactions();
     task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
@@ -187,6 +188,7 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   } else {
     overlay_layer_has_content_this_frame_ = false;
   }
+  overlay_has_active_content_ = overlay_layer_has_content_this_frame_;
 
   frame->Submit();
   // Every path that posts a platform task calling swapTransaction() must call
@@ -303,7 +305,20 @@ bool AndroidExternalViewEmbedder2::SupportsDynamicThreadMerging() {
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder2::Teardown() {
+  overlay_has_active_content_ = false;
   DestroySurfaces();
+}
+
+AHardwareBuffer* AndroidExternalViewEmbedder2::GetLatestOverlayHardwareBuffer()
+    const {
+  if (!overlay_has_active_content_) {
+    return nullptr;
+  }
+  auto layers = surface_pool_->GetLayers();
+  if (layers.empty() || !layers[0]->android_surface) {
+    return nullptr;
+  }
+  return layers[0]->android_surface->GetLatestHardwareBuffer();
 }
 
 // |ExternalViewEmbedder|

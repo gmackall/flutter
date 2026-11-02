@@ -8,6 +8,7 @@ import static io.flutter.Build.API_LEVELS;
 
 import android.content.ComponentCallbacks2;
 import android.graphics.Bitmap;
+import android.graphics.ColorSpace;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
@@ -1219,6 +1220,8 @@ public class FlutterRenderer implements TextureRegistry {
 
       isDisplayingFlutterUi = false;
       surface = null;
+      surfaceWidth = 0;
+      surfaceHeight = 0;
     }
   }
 
@@ -1368,6 +1371,49 @@ public class FlutterRenderer implements TextureRegistry {
       return null;
     }
 
+    Bitmap bitmap;
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_29 && flutterJNI.IsSurfaceControlEnabled()) {
+      bitmap = getBitmapFromHardwareBuffer();
+    } else {
+      bitmap = getBitmapFromPixelCopy(currentSurface, width, height);
+    }
+    if (bitmap == null) {
+      return null;
+    }
+    flutterJNI.compositePlatformViewsAndOverlays(bitmap);
+    return bitmap;
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  @Nullable
+  private Bitmap getBitmapFromHardwareBuffer() {
+    final HardwareBuffer hardwareBuffer = flutterJNI.getLatestHardwareBuffer();
+    if (hardwareBuffer == null) {
+      return null;
+    }
+    try {
+      return createBitmapFromHardwareBuffer(hardwareBuffer);
+    } finally {
+      hardwareBuffer.close();
+    }
+  }
+
+  @VisibleForTesting
+  @RequiresApi(API_LEVELS.API_29)
+  @Nullable
+  /* package */ Bitmap createBitmapFromHardwareBuffer(@NonNull HardwareBuffer hardwareBuffer) {
+    final Bitmap wrapped =
+        Bitmap.wrapHardwareBuffer(hardwareBuffer, ColorSpace.get(ColorSpace.Named.SRGB));
+    if (wrapped == null) {
+      return null;
+    }
+    final Bitmap softwareBitmap = wrapped.copy(Bitmap.Config.ARGB_8888, true);
+    wrapped.recycle();
+    return softwareBitmap;
+  }
+
+  @Nullable
+  private Bitmap getBitmapFromPixelCopy(@NonNull Surface currentSurface, int width, int height) {
     final Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
     final CountDownLatch latch = new CountDownLatch(PIXEL_COPY_LATCH_COUNT);
     final AtomicInteger copyResult = new AtomicInteger(PixelCopy.ERROR_UNKNOWN);

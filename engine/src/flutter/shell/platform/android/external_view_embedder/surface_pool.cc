@@ -98,6 +98,11 @@ bool SurfacePool::HasLayers() {
   return !layers_.empty();
 }
 
+std::vector<std::shared_ptr<OverlayLayer>> SurfacePool::GetLayers() {
+  std::lock_guard lock(mutex_);
+  return layers_;
+}
+
 void SurfacePool::DestroyLayers(
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
   std::lock_guard lock(mutex_);

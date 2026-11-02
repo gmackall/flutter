@@ -436,6 +436,18 @@ static bool IsSurfaceControlEnabled(JNIEnv* env,
   return ANDROID_SHELL_HOLDER->IsSurfaceControlEnabled();
 }
 
+static jobject GetLatestHardwareBuffer(JNIEnv* env,
+                                       jobject jcaller,
+                                       jlong shell_holder) {
+  return ANDROID_SHELL_HOLDER->GetLatestHardwareBuffer(env);
+}
+
+static jobject GetLatestOverlayHardwareBuffer(JNIEnv* env,
+                                              jobject jcaller,
+                                              jlong shell_holder) {
+  return ANDROID_SHELL_HOLDER->GetLatestOverlayHardwareBuffer(env);
+}
+
 static void DispatchPlatformMessage(JNIEnv* env,
                                     jobject jcaller,
                                     jlong shell_holder,
@@ -908,6 +920,16 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeIsSurfaceControlEnabled",
           .signature = "(J)Z",
           .fnPtr = reinterpret_cast<void*>(&IsSurfaceControlEnabled),
+      },
+      {
+          .name = "nativeGetLatestHardwareBuffer",
+          .signature = "(J)Landroid/hardware/HardwareBuffer;",
+          .fnPtr = reinterpret_cast<void*>(&GetLatestHardwareBuffer),
+      },
+      {
+          .name = "nativeGetLatestOverlayHardwareBuffer",
+          .signature = "(J)Landroid/hardware/HardwareBuffer;",
+          .fnPtr = reinterpret_cast<void*>(&GetLatestOverlayHardwareBuffer),
       }};
 
   if (env->RegisterNatives(g_flutter_jni_class->obj(), flutter_jni_methods,

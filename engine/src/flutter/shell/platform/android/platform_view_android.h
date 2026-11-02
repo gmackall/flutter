@@ -24,6 +24,8 @@
 
 namespace flutter {
 
+class AndroidExternalViewEmbedderWrapper;
+
 class AndroidSurfaceFactoryImpl : public AndroidSurfaceFactory {
  public:
   AndroidSurfaceFactoryImpl(const std::shared_ptr<AndroidContext>& context,
@@ -124,6 +126,10 @@ class PlatformViewAndroid final : public PlatformView {
   /// @brief Whether the SurfaceControl based swapchain is enabled and active.
   bool IsSurfaceControlEnabled() const;
 
+  jobject GetLatestHardwareBuffer(JNIEnv* env) const;
+
+  jobject GetLatestOverlayHardwareBuffer(JNIEnv* env) const;
+
   // |PlatformView|
   void SetupImpellerContext() override;
 
@@ -131,6 +137,7 @@ class PlatformViewAndroid final : public PlatformView {
   const std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   std::shared_ptr<AndroidContext> android_context_;
   std::shared_ptr<AndroidSurfaceFactoryImpl> surface_factory_;
+  std::shared_ptr<AndroidExternalViewEmbedderWrapper> external_view_embedder_;
 
   PlatformViewAndroidDelegate platform_view_android_delegate_;
 

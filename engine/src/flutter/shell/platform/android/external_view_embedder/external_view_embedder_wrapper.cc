@@ -166,4 +166,12 @@ void AndroidExternalViewEmbedderWrapper::Teardown() {
   }
 }
 
+AHardwareBuffer*
+AndroidExternalViewEmbedderWrapper::GetLatestOverlayHardwareBuffer() const {
+  if (hcpp_view_embedder_) {
+    return hcpp_view_embedder_->GetLatestOverlayHardwareBuffer();
+  }
+  return nullptr;
+}
+
 }  // namespace flutter
