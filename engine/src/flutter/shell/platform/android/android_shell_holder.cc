@@ -228,9 +228,9 @@ AndroidShellHolder::AndroidShellHolder(
         prev_built_callback(build_start, build_end);
       }
       // When RasterThreadMerger has merged the raster queue onto the
-      // current UI/platform thread, the thread's work for this frame
-      // continues through Rasterizer::Draw + EndFrame and will be reported
-      // as a combined duration in frame_rasterized_callback.
+      // current UI/platform thread (legacy Hybrid Composition), skip ADPF
+      // reporting rather than reporting only the UI portion of the merged
+      // thread's work.
       if (raster_queue_id.is_valid() &&
           fml::MessageLoop::IsInitializedForCurrentThread() &&
           fml::TaskRunnerChecker::RunsOnTheSameThread(
@@ -248,62 +248,28 @@ AndroidShellHolder::AndroidShellHolder(
       }
     };
   }
-  if (ui_performance_hint_manager_ || raster_performance_hint_manager_) {
+  if (raster_performance_hint_manager_) {
     FrameRasterizedCallback prev_callback =
         shell_settings.frame_rasterized_callback;
-    std::weak_ptr<AndroidPerformanceHintManager> weak_ui_hint =
-        ui_performance_hint_manager_;
     std::weak_ptr<AndroidPerformanceHintManager> weak_raster_hint =
         raster_performance_hint_manager_;
-    shell_settings.frame_rasterized_callback = [weak_ui_hint, weak_raster_hint,
+    shell_settings.frame_rasterized_callback = [weak_raster_hint,
                                                 captured_raster_tid,
-                                                platform_ui_merged,
                                                 prev_callback](
                                                    const FrameTiming& timing) {
       if (prev_callback) {
         prev_callback(timing);
       }
-      const int64_t raster_start_ns =
-          timing.Get(FrameTiming::kRasterStart).ToEpochDelta().ToNanoseconds();
-      // OnFrameRasterized is invoked in Rasterizer::Draw after
-      // external_view_embedder_->EndFrame(), so fml::TimePoint::Now()
-      // captures the full raster work period on the thread including
-      // EndFrame.
-      const fml::TimePoint raster_finish = std::max(
-          timing.Get(FrameTiming::kRasterFinish), fml::TimePoint::Now());
-      const int64_t raster_ns =
-          (raster_finish - timing.Get(FrameTiming::kRasterStart))
-              .ToNanoseconds();
-
-      // When RasterThreadMerger merges the rasterizer onto the platform
-      // thread (e.g. legacy Hybrid Composition PlatformViews), the
-      // dedicated raster thread sits idle. When the platform and UI threads
-      // are merged, that thread executes both build and raster sequentially
-      // and reports the combined duration to the UI session after EndFrame
-      // finishes.
-      const bool raster_merged =
-          (captured_raster_tid > 0 && gettid() != captured_raster_tid);
-      if (raster_merged) {
-        if (platform_ui_merged) {
-          if (auto ui_hint = weak_ui_hint.lock()) {
-            const int64_t build_start_ns = timing.Get(FrameTiming::kBuildStart)
-                                               .ToEpochDelta()
-                                               .ToNanoseconds();
-            const int64_t build_ns = (timing.Get(FrameTiming::kBuildFinish) -
-                                      timing.Get(FrameTiming::kBuildStart))
-                                         .ToNanoseconds();
-            const int64_t start_ns =
-                build_start_ns > 0 ? build_start_ns : raster_start_ns;
-            const int64_t merged_ns =
-                (build_ns > 0 ? build_ns : 0) + (raster_ns > 0 ? raster_ns : 0);
-            if (start_ns > 0 && merged_ns > 0) {
-              ui_hint->ReportActualWorkDuration(start_ns, merged_ns, merged_ns);
-            }
-          }
-        }
+      // Skip reporting when RasterThreadMerger merges the rasterizer onto the
+      // platform thread during legacy Hybrid Composition.
+      if (captured_raster_tid > 0 && gettid() != captured_raster_tid) {
         return;
       }
-
+      const int64_t raster_start_ns =
+          timing.Get(FrameTiming::kRasterStart).ToEpochDelta().ToNanoseconds();
+      const int64_t raster_ns = (timing.Get(FrameTiming::kRasterFinish) -
+                                 timing.Get(FrameTiming::kRasterStart))
+                                    .ToNanoseconds();
       if (raster_start_ns > 0 && raster_ns > 0) {
         if (auto raster_hint = weak_raster_hint.lock()) {
           raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,

@@ -443,10 +443,7 @@ TEST(
   ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
   EXPECT_CALL(delegate, GetTaskRunners())
       .WillRepeatedly(ReturnRef(task_runners));
-  bool end_frame_called = false;
-  EXPECT_CALL(delegate, OnFrameRasterized(_)).WillOnce([&](const FrameTiming&) {
-    EXPECT_TRUE(end_frame_called);
-  });
+  EXPECT_CALL(delegate, OnFrameRasterized(_));
 
   auto rasterizer = std::make_unique<Rasterizer>(delegate);
   auto surface = std::make_unique<NiceMock<MockSurface>>();
@@ -484,9 +481,7 @@ TEST(
       .Times(1);
   EXPECT_CALL(*external_view_embedder, EndFrame(/*should_resubmit_frame=*/false,
                                                 /*raster_thread_merger=*/_))
-      .WillOnce([&](bool, const fml::RefPtr<fml::RasterThreadMerger>&) {
-        end_frame_called = true;
-      });
+      .Times(1);
 
   rasterizer->Setup(std::move(surface));
 
