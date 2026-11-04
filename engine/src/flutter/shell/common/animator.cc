@@ -148,6 +148,10 @@ void Animator::EndFrame() {
   if (!layer_trees_tasks_.empty()) {
     // The build is completed in OnAnimatorBeginFrame.
     frame_timings_recorder_->RecordBuildEnd(fml::TimePoint::Now());
+    const fml::TimePoint build_start_time =
+        frame_timings_recorder_->GetBuildStartTime();
+    const fml::TimePoint build_end_time =
+        frame_timings_recorder_->GetBuildEndTime();
 
     delegate_.OnAnimatorUpdateLatestFrameTargetTime(
         frame_timings_recorder_->GetVsyncTargetTime());
@@ -172,6 +176,8 @@ void Animator::EndFrame() {
     } else {
       delegate_.OnAnimatorDraw(layer_tree_pipeline_);
     }
+
+    delegate_.OnAnimatorFrameBuilt(build_start_time, build_end_time);
   }
   frame_timings_recorder_ = nullptr;
 
