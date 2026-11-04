@@ -35,6 +35,7 @@ class AndroidPerformanceHintManager {
 
   int64_t GetTargetWorkDuration() const;
 
+  void SendLoadResetHint();
 
  private:
   struct Impl;

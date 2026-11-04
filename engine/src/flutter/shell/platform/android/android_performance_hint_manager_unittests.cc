@@ -36,6 +36,11 @@ TEST(AndroidPerformanceHintManagerTest, LifecycleOnSupportedDevice) {
   if (manager) {
     EXPECT_EQ(manager->GetTargetWorkDuration(), target_ns);
 
+    // First pre-frame reset hint (> 100 ms since initial 0 timestamp) and an
+    // immediate follow-up within 100 ms should execute cleanly.
+    manager->SendLoadResetHint();
+    manager->SendLoadResetHint();
+
     // Test reporting actual duration with AWorkDuration parameters.
     manager->ReportActualWorkDuration(1000000000, 8000000, 6000000, 0);
 

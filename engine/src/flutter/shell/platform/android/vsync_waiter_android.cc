@@ -43,12 +43,14 @@ void VsyncWaiterAndroid::AwaitVSync() {
       ui_performance_hint_manager_->UpdateTargetWorkDuration(
           target_duration_ns);
     }
+    ui_performance_hint_manager_->SendLoadResetHint();
   }
   if (raster_performance_hint_manager_) {
     if (target_duration_ns > 0) {
       raster_performance_hint_manager_->UpdateTargetWorkDuration(
           target_duration_ns);
     }
+    raster_performance_hint_manager_->SendLoadResetHint();
   }
   const static bool use_choreographer =
       impeller::android::Choreographer::IsAvailableOnPlatform();

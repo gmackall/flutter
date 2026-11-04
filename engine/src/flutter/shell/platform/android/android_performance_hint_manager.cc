@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "flutter/fml/native_library.h"
+#include "flutter/fml/time/time_point.h"
 
 namespace flutter {
 
@@ -31,6 +32,8 @@ using APerformanceHint_reportActualWorkDuration2_fn =
     int (*)(APerformanceHintSession*, AWorkDuration*);
 using APerformanceHint_updateTargetWorkDuration_fn =
     int (*)(APerformanceHintSession*, int64_t);
+using APerformanceHint_notifyWorkloadReset_fn =
+    int (*)(APerformanceHintSession*, bool, bool, const char*);
 using APerformanceHint_closeSession_fn = void (*)(APerformanceHintSession*);
 
 using AWorkDuration_create_fn = AWorkDuration* (*)();
@@ -64,11 +67,14 @@ struct AndroidPerformanceHintManager::Impl {
   APerformanceHintSession* session = nullptr;
   AWorkDuration* work_duration = nullptr;
   int64_t applied_target_duration_ns = 0;
+  int64_t last_frame_notification_ns = 0;
+  int resets_since_last_report = 0;
 
   APerformanceHint_reportActualWorkDuration2_fn report_actual_work_duration2 =
       nullptr;
   APerformanceHint_updateTargetWorkDuration_fn update_target_work_duration =
       nullptr;
+  APerformanceHint_notifyWorkloadReset_fn notify_workload_reset = nullptr;
   APerformanceHint_closeSession_fn close_session = nullptr;
 
   AWorkDuration_release_fn release_work_duration = nullptr;
@@ -146,6 +152,11 @@ AndroidPerformanceHintManager::Create(const std::vector<int32_t>& tids,
     return nullptr;
   }
 
+  if (api_level >= 36) {
+    ResolveSymbol(lib_android, "APerformanceHint_notifyWorkloadReset",
+                  impl->notify_workload_reset);
+  }
+
   APerformanceHintManager* manager = get_manager();
   if (!manager) {
     return nullptr;
@@ -193,6 +204,8 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
     return;
   }
 
+  impl_->resets_since_last_report = 0;
+
   impl_->set_work_period_start(impl_->work_duration, work_period_start_ns);
   impl_->set_actual_total_duration(impl_->work_duration,
                                    actual_total_duration_ns);
@@ -204,6 +217,8 @@ void AndroidPerformanceHintManager::ReportActualWorkDuration(
     impl_->CloseSessionLocked();
     return;
   }
+  impl_->last_frame_notification_ns =
+      fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
 }
 
 void AndroidPerformanceHintManager::UpdateTargetWorkDuration(
@@ -241,6 +256,32 @@ int64_t AndroidPerformanceHintManager::GetTargetWorkDuration() const {
   }
   std::lock_guard<std::mutex> lock(impl_->mutex);
   return impl_->applied_target_duration_ns;
+}
+
+void AndroidPerformanceHintManager::SendLoadResetHint() {
+  if (!impl_) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (!impl_->session || !impl_->notify_workload_reset) {
+    return;
+  }
+  // Matches AOSP HWUI HintSessionWrapper::sendLoadResetHint(): when a frame is
+  // requested after > 100 ms since the last notification, send a workload reset
+  // (capped at kMaxResetsSinceLastReport between actual frame reports).
+  constexpr int64_t kResetHintTimeoutNs = 100'000'000;  // 100 ms
+  constexpr int kMaxResetsSinceLastReport = 2;
+  const int64_t now_ns = fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
+  if (now_ns - impl_->last_frame_notification_ns > kResetHintTimeoutNs &&
+      impl_->resets_since_last_report <= kMaxResetsSinceLastReport) {
+    ++impl_->resets_since_last_report;
+    if (impl_->notify_workload_reset(impl_->session, /*cpu=*/true,
+                                     /*gpu=*/false, "load_reset") == EPIPE) {
+      impl_->CloseSessionLocked();
+      return;
+    }
+  }
+  impl_->last_frame_notification_ns = now_ns;
 }
 
 }  // namespace flutter
