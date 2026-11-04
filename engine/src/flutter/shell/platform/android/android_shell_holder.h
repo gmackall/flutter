@@ -18,6 +18,8 @@
 
 namespace flutter {
 
+class AndroidPerformanceHintManager;
+
 //----------------------------------------------------------------------------
 /// @brief      This is the Android owner of the core engine Shell.
 ///
@@ -119,6 +121,9 @@ class AndroidShellHolder {
   uint64_t next_pointer_flow_id_ = 0;
   std::unique_ptr<APKAssetProvider> apk_asset_provider_;
   const AndroidRenderingAPI android_rendering_api_;
+  std::shared_ptr<AndroidPerformanceHintManager> ui_performance_hint_manager_;
+  std::shared_ptr<AndroidPerformanceHintManager>
+      raster_performance_hint_manager_;
 
   //----------------------------------------------------------------------------
   /// @brief      Constructor with its components injected.
@@ -137,7 +142,11 @@ class AndroidShellHolder {
                      std::unique_ptr<Shell> shell,
                      std::unique_ptr<APKAssetProvider> apk_asset_provider,
                      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+                     AndroidRenderingAPI rendering_api,
+                     const std::shared_ptr<AndroidPerformanceHintManager>&
+                         ui_performance_hint_manager,
+                     const std::shared_ptr<AndroidPerformanceHintManager>&
+                         raster_performance_hint_manager);
   static void ThreadDestructCallback(void* value);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,
