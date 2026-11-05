@@ -283,6 +283,12 @@ public class FlutterViewTest {
     SettingsChannel fakeSettingsChannel = mock(SettingsChannel.class);
     SettingsChannel.MessageBuilder fakeMessageBuilder = mock(SettingsChannel.MessageBuilder.class);
     when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setDisplayMetrics(any(DisplayMetrics.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1091,6 +1097,8 @@ public class FlutterViewTest {
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1283,6 +1291,8 @@ public class FlutterViewTest {
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1328,6 +1338,8 @@ public class FlutterViewTest {
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1352,6 +1364,101 @@ public class FlutterViewTest {
 
     // Verify results.
     assertEquals(SettingsChannel.PlatformBrightness.light, reportedBrightness.get());
+  }
+
+  @Test
+  public void itSendsSupportsShowingSystemContextMenuToFrameworkOnAttach() {
+    AtomicReference<Boolean> reportedSupportsSystemContextMenu = new AtomicReference<>();
+
+    FlutterView flutterView = new FlutterView(ctx);
+    FlutterEngine flutterEngine = spy(new FlutterEngine(ctx, mockFlutterLoader, mockFlutterJni));
+
+    SettingsChannel fakeSettingsChannel = mock(SettingsChannel.class);
+    SettingsChannel.MessageBuilder fakeMessageBuilder = mock(SettingsChannel.MessageBuilder.class);
+    when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setDisplayMetrics(any(DisplayMetrics.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenAnswer(
+            invocation -> {
+              reportedSupportsSystemContextMenu.set((Boolean) invocation.getArguments()[0]);
+              return fakeMessageBuilder;
+            });
+    when(fakeSettingsChannel.startMessage()).thenReturn(fakeMessageBuilder);
+    when(flutterEngine.getSettingsChannel()).thenReturn(fakeSettingsChannel);
+
+    flutterView.attachToFlutterEngine(flutterEngine);
+
+    assertEquals(Boolean.TRUE, reportedSupportsSystemContextMenu.get());
+  }
+
+  @Test
+  public void itRespectsEnableSystemContextMenuManifestMetaDataOptOut() throws Exception {
+    AtomicReference<Boolean> reportedSupportsSystemContextMenu = new AtomicReference<>();
+
+    Context spyCtx = spy(ctx);
+    android.content.pm.PackageManager mockPm = mock(android.content.pm.PackageManager.class);
+    android.content.pm.ApplicationInfo appInfo = new android.content.pm.ApplicationInfo();
+    appInfo.metaData = new android.os.Bundle();
+    appInfo.metaData.putBoolean(FlutterView.ENABLE_SYSTEM_CONTEXT_MENU_META_DATA_KEY, false);
+    when(spyCtx.getPackageManager()).thenReturn(mockPm);
+    when(mockPm.getApplicationInfo(
+            spyCtx.getPackageName(), android.content.pm.PackageManager.GET_META_DATA))
+        .thenReturn(appInfo);
+
+    FlutterView flutterView = new FlutterView(spyCtx);
+    FlutterEngine flutterEngine = spy(new FlutterEngine(spyCtx, mockFlutterLoader, mockFlutterJni));
+
+    SettingsChannel fakeSettingsChannel = mock(SettingsChannel.class);
+    SettingsChannel.MessageBuilder fakeMessageBuilder = mock(SettingsChannel.MessageBuilder.class);
+    when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setDisplayMetrics(any(DisplayMetrics.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenAnswer(
+            invocation -> {
+              reportedSupportsSystemContextMenu.set((Boolean) invocation.getArguments()[0]);
+              return fakeMessageBuilder;
+            });
+    when(fakeSettingsChannel.startMessage()).thenReturn(fakeMessageBuilder);
+    when(flutterEngine.getSettingsChannel()).thenReturn(fakeSettingsChannel);
+
+    flutterView.attachToFlutterEngine(flutterEngine);
+    flutterView.sendUserSettingsToFlutter();
+    flutterView.sendUserSettingsToFlutter();
+
+    assertEquals(Boolean.FALSE, reportedSupportsSystemContextMenu.get());
+    // PackageManager meta-data should be queried once and cached on the FlutterView instance.
+    verify(mockPm, times(1))
+        .getApplicationInfo(
+            spyCtx.getPackageName(), android.content.pm.PackageManager.GET_META_DATA);
+
+    // Also verify numeric 0 meta-data (e.g. android:value="0") disables system context menu.
+    android.content.pm.ApplicationInfo numericAppInfo = new android.content.pm.ApplicationInfo();
+    numericAppInfo.metaData = new android.os.Bundle();
+    numericAppInfo.metaData.putInt(FlutterView.ENABLE_SYSTEM_CONTEXT_MENU_META_DATA_KEY, 0);
+    when(mockPm.getApplicationInfo(
+            spyCtx.getPackageName(), android.content.pm.PackageManager.GET_META_DATA))
+        .thenReturn(numericAppInfo);
+
+    FlutterView secondFlutterView = new FlutterView(spyCtx);
+    reportedSupportsSystemContextMenu.set(Boolean.TRUE);
+    secondFlutterView.attachToFlutterEngine(flutterEngine);
+    assertEquals(Boolean.FALSE, reportedSupportsSystemContextMenu.get());
   }
 
   @Test

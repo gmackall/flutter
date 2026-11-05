@@ -435,11 +435,9 @@ public class InputConnectionAdaptor extends BaseInputConnection
       }
       return true;
     } else if (id == android.R.id.paste) {
-      ClipboardManager clipboard =
-          (ClipboardManager) mFlutterView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-      ClipData clip = clipboard.getPrimaryClip();
-      if (clip != null) {
-        CharSequence textToPaste = clip.getItemAt(0).coerceToText(mFlutterView.getContext());
+      String textToPaste =
+          TextInputPlugin.readPlainTextFromClipboardForIme(mFlutterView.getContext());
+      if (textToPaste != null) {
         int selStart = Math.max(0, Selection.getSelectionStart(mEditable));
         int selEnd = Math.max(0, Selection.getSelectionEnd(mEditable));
         int selMin = Math.min(selStart, selEnd);

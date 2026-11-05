@@ -58,6 +58,7 @@ import io.flutter.embedding.engine.systemchannels.LifecycleChannel;
 import io.flutter.embedding.engine.systemchannels.LocalizationChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
 import io.flutter.embedding.engine.systemchannels.NavigationChannel;
+import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.SettingsChannel;
 import io.flutter.embedding.engine.systemchannels.SystemChannel;
@@ -1788,6 +1789,8 @@ public class FlutterActivityAndFragmentDelegateTest {
     when(fakeMessageBuilder.setDisplayMetrics(any())).thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1804,6 +1807,7 @@ public class FlutterActivityAndFragmentDelegateTest {
     when(engine.getMouseCursorChannel()).thenReturn(mock(MouseCursorChannel.class));
     when(engine.getNavigationChannel()).thenReturn(mock(NavigationChannel.class));
     when(engine.getBackGestureChannel()).thenReturn(mock(BackGestureChannel.class));
+    when(engine.getPlatformChannel()).thenReturn(mock(PlatformChannel.class));
     when(engine.getPlatformViewsController()).thenReturn(mock(PlatformViewsController.class));
     when(engine.getPlatformViewsController2()).thenReturn(mock(PlatformViewsController2.class));
     when(engine.getPlatformViewsControllerDelegator())

@@ -414,27 +414,63 @@ mixin ServicesBinding on BindingBase, SchedulerBinding {
       // the user taps outside the menu. Not called when Flutter shows a new
       // system context menu while an old one is still visible.
       case 'ContextMenu.onDismissSystemContextMenu':
-        if (_systemContextMenuClient == null) {
-          assert(
-            false,
-            'Platform sent onDismissSystemContextMenu when no SystemContextMenuClient was registered.',
-          );
+        final Object? arguments = methodCall.arguments;
+        final int? rawClientId =
+            arguments is List<dynamic> && arguments.isNotEmpty && arguments[0] is int
+            ? arguments[0] as int
+            : null;
+        // Real TextInputConnection IDs start at 1; <= 0 (or omitted) is unscoped.
+        final int? targetClientId = rawClientId != null && rawClientId > 0 ? rawClientId : null;
+        final int? sessionId =
+            arguments is List<dynamic> && arguments.length > 1 && arguments[1] is int
+            ? arguments[1] as int
+            : null;
+        final SystemContextMenuClient? client = _systemContextMenuClient;
+        final ({bool handled, SystemContextMenuController? controller}) resolved =
+            SystemContextMenuController.resolveForPlatformCallback(
+              client,
+              targetClientId: targetClientId,
+              sessionId: sessionId,
+            );
+        if (resolved.handled) {
+          final SystemContextMenuController? active = resolved.controller;
+          if (active != null) {
+            active.handleSystemHide();
+            if (_systemContextMenuClient == active) {
+              _systemContextMenuClient = null;
+            }
+          }
           return;
         }
-        _systemContextMenuClient!.handleSystemHide();
-        _systemContextMenuClient = null;
+        if (client == null) {
+          return;
+        }
+        client.handleSystemHide();
+        if (_systemContextMenuClient == client) {
+          _systemContextMenuClient = null;
+        }
       case 'ContextMenu.onPerformCustomAction':
-        if (_systemContextMenuClient == null) {
-          assert(
-            false,
-            'Platform sent onPerformCustomAction when no SystemContextMenuClient was registered. '
-            "ServicesBinding.systemContextMenuClient shouldn't be cleared unless the menu is hidden.",
-          );
+        final args = methodCall.arguments as List<dynamic>;
+        final int? rawClientId = args.isNotEmpty && args[0] is int ? args[0] as int : null;
+        final int? targetClientId = rawClientId != null && rawClientId > 0 ? rawClientId : null;
+        final callbackId = args[1] as String;
+        final int? sessionId = args.length > 2 && args[2] is int ? args[2] as int : null;
+        final SystemContextMenuClient? client = _systemContextMenuClient;
+        final ({bool handled, SystemContextMenuController? controller}) resolved =
+            SystemContextMenuController.resolveForPlatformCallback(
+              client,
+              targetClientId: targetClientId,
+              sessionId: sessionId,
+              customActionCallbackId: callbackId,
+            );
+        if (resolved.handled) {
+          resolved.controller?.handleCustomContextMenuAction(callbackId);
           return;
         }
-        final args = methodCall.arguments as List<dynamic>;
-        final callbackId = args[1] as String;
-        _systemContextMenuClient!.handleCustomContextMenuAction(callbackId);
+        if (client == null) {
+          return;
+        }
+        client.handleCustomContextMenuAction(callbackId);
       case 'SystemChrome.systemUIChange':
         final args = methodCall.arguments as List<dynamic>;
         await _systemUiChangeCallback?.call(args[0] as bool);
@@ -683,7 +719,7 @@ class _DefaultBinaryMessenger extends BinaryMessenger {
 /// An interface to receive calls related to the system context menu from the
 /// engine.
 ///
-/// Currently this is only supported on iOS 16+.
+/// Currently this is supported on iOS 16+ and Android.
 ///
 /// See also:
 ///  * [SystemContextMenuController], which uses this to provide a fully

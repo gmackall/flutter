@@ -1552,6 +1552,57 @@ void hooksTests() async {
     expectEquals(platformBrightness, Brightness.dark);
   });
 
+  await test('supportsShowingSystemContextMenu triggers onPlatformConfigurationChanged', () {
+    late Zone innerZone;
+    Zone? runZone;
+    int configChangedCount = 0;
+
+    runZoned(() {
+      innerZone = Zone.current;
+      PlatformDispatcher.instance.onPlatformConfigurationChanged = () {
+        runZone = Zone.current;
+        configChangedCount += 1;
+      };
+    });
+
+    // Establish baseline with supportsShowingSystemContextMenu = false.
+    _callHook(
+      '_updateUserSettingsData',
+      1,
+      '{"textScaleFactor": 0.5, "platformBrightness": "dark", "alwaysUse24HourFormat": true, "supportsShowingSystemContextMenu": false}',
+    );
+    configChangedCount = 0;
+    runZone = null;
+    expectEquals(PlatformDispatcher.instance.supportsShowingSystemContextMenu, false);
+
+    // Toggling supportsShowingSystemContextMenu alone must invoke onPlatformConfigurationChanged.
+    _callHook(
+      '_updateUserSettingsData',
+      1,
+      '{"textScaleFactor": 0.5, "platformBrightness": "dark", "alwaysUse24HourFormat": true, "supportsShowingSystemContextMenu": true}',
+    );
+    expectEquals(PlatformDispatcher.instance.supportsShowingSystemContextMenu, true);
+    expectEquals(configChangedCount, 1);
+    expectIdentical(runZone!, innerZone);
+
+    // Sending identical settings must not re-invoke onPlatformConfigurationChanged.
+    _callHook(
+      '_updateUserSettingsData',
+      1,
+      '{"textScaleFactor": 0.5, "platformBrightness": "dark", "alwaysUse24HourFormat": true, "supportsShowingSystemContextMenu": true}',
+    );
+    expectEquals(configChangedCount, 1);
+
+    // Omitting supportsShowingSystemContextMenu resets it to false and notifies.
+    _callHook(
+      '_updateUserSettingsData',
+      1,
+      '{"textScaleFactor": 0.5, "platformBrightness": "dark", "alwaysUse24HourFormat": true}',
+    );
+    expectEquals(PlatformDispatcher.instance.supportsShowingSystemContextMenu, false);
+    expectEquals(configChangedCount, 2);
+  });
+
   await test('onFrameDataChanged preserves callback zone', () {
     late Zone innerZone;
     late Zone runZone;

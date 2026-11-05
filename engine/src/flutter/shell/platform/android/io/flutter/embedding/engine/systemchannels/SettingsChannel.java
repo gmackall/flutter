@@ -30,6 +30,8 @@ public class SettingsChannel {
   private static final String BRIEFLY_SHOW_PASSWORD = "brieflyShowPassword";
   private static final String ALWAYS_USE_24_HOUR_FORMAT = "alwaysUse24HourFormat";
   private static final String PLATFORM_BRIGHTNESS = "platformBrightness";
+  private static final String SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU =
+      "supportsShowingSystemContextMenu";
   private static final String CONFIGURATION_ID = "configurationId";
 
   // When hasNonlinearTextScalingSupport() returns false, this will not be initialized.
@@ -102,6 +104,13 @@ public class SettingsChannel {
       return this;
     }
 
+    @NonNull
+    public MessageBuilder setSupportsShowingSystemContextMenu(
+        boolean supportsShowingSystemContextMenu) {
+      message.put(SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU, supportsShowingSystemContextMenu);
+      return this;
+    }
+
     public void send() {
       Log.v(
           TAG,
@@ -113,7 +122,10 @@ public class SettingsChannel {
               + message.get(ALWAYS_USE_24_HOUR_FORMAT)
               + "\n"
               + "platformBrightness: "
-              + message.get(PLATFORM_BRIGHTNESS));
+              + message.get(PLATFORM_BRIGHTNESS)
+              + "\n"
+              + "supportsShowingSystemContextMenu: "
+              + message.get(SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU));
       final DisplayMetrics metrics = this.displayMetrics;
       if (!hasNonlinearTextScalingSupport() || metrics == null) {
         channel.send(message);

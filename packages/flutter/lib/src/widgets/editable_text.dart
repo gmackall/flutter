@@ -2645,6 +2645,10 @@ class EditableTextState extends State<EditableText>
   /// The list of native text processing actions provided by the engine.
   final List<ProcessTextAction> _processTextActions = <ProcessTextAction>[];
 
+  /// Cached callbacks per [ProcessTextAction.id] so repeated calls to
+  /// [contextMenuButtonItems] preserve closure identity for [SystemContextMenu].
+  final Map<String, VoidCallback> _processTextActionCallbacks = <String, VoidCallback>{};
+
   /// Whether to create an input connection with the platform for text editing
   /// or not.
   ///
@@ -3324,28 +3328,33 @@ class EditableTextState extends State<EditableText>
     }
 
     for (final ProcessTextAction action in _processTextActions) {
-      buttonItems.add(
-        ContextMenuButtonItem(
-          label: action.label,
-          onPressed: () async {
-            final String selectedText = selection.textInside(textEditingValue.text);
-            if (selectedText.isNotEmpty) {
-              final String? processedText = await _processTextService.processTextAction(
-                action.id,
-                selectedText,
-                widget.readOnly,
-              );
-              // If an activity does not return a modified version, just hide the toolbar.
-              // Otherwise use the result to replace the selected text.
-              if (processedText != null && _allowPaste) {
-                _pasteText(SelectionChangedCause.toolbar, processedText);
-              } else {
-                hideToolbar();
-              }
+      final VoidCallback callback = _processTextActionCallbacks.putIfAbsent(action.id, () {
+        return () async {
+          final TextSelection currentSelection = textEditingValue.selection;
+          if (widget.obscureText || !currentSelection.isValid || currentSelection.isCollapsed) {
+            return;
+          }
+          final String selectedText = currentSelection.textInside(textEditingValue.text);
+          if (selectedText.isNotEmpty) {
+            final String? processedText = await _processTextService.processTextAction(
+              action.id,
+              selectedText,
+              widget.readOnly,
+            );
+            if (!mounted) {
+              return;
             }
-          },
-        ),
-      );
+            // If an activity does not return a modified version, just hide the toolbar.
+            // Otherwise use the result to replace the selected text.
+            if (processedText != null && _allowPaste) {
+              _pasteText(SelectionChangedCause.toolbar, processedText);
+            } else {
+              hideToolbar();
+            }
+          }
+        };
+      });
+      buttonItems.add(ContextMenuButtonItem(label: action.label, onPressed: callback));
     }
     return buttonItems;
   }
@@ -3388,6 +3397,7 @@ class EditableTextState extends State<EditableText>
   /// in the text selection toolbar.
   Future<void> _initProcessTextActions() async {
     _processTextActions.clear();
+    _processTextActionCallbacks.clear();
     _processTextActions.addAll(await _processTextService.queryTextActions());
   }
 
@@ -3678,6 +3688,7 @@ class EditableTextState extends State<EditableText>
     _appLifecycleListener.dispose();
     FocusManager.instance.removeListener(_unflagInternalFocus);
     FocusManager.instance.removeListener(_resetJustResumed);
+    _processTextActionCallbacks.clear();
     _disposeScrollNotificationObserver();
     super.dispose();
     assert(_batchEditDepth <= 0, 'unfinished batch edits: $_batchEditDepth');

@@ -820,4 +820,388 @@ void main() {
     expect(newActionCalled, isTrue);
     expect(oldActionCalled, isFalse);
   });
+
+  test('ignores stale onDismiss and onPerformCustomAction for mismatched clientId', () async {
+    final attachedClientIds = <int>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.textInput,
+      (MethodCall call) async {
+        if (call.method == 'TextInput.setClient') {
+          attachedClientIds.add((call.arguments as List<dynamic>)[0] as int);
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.textInput,
+        null,
+      );
+    });
+
+    final client1 = FakeTextInputClient(const TextEditingValue(text: 'field1'));
+    final TextInputConnection connection1 = TextInput.attach(client1, client1.configuration);
+    final int clientId1 = attachedClientIds.last;
+
+    var hide1Count = 0;
+    final controller1 = SystemContextMenuController(onSystemHide: () => hide1Count += 1);
+    const rect1 = Rect.fromLTWH(0.0, 0.0, 50.0, 20.0);
+    await controller1.showWithItems(rect1, const <IOSSystemContextMenuItemData>[
+      IOSSystemContextMenuItemDataCopy(),
+    ]);
+    expect(controller1.isVisible, isTrue);
+
+    // Construct controller2 before controller1 is dismissed; late dismiss for clientId1
+    // must dismiss controller1 without tripping assert(isVisible) on controller2.
+    var hide2Count = 0;
+    var action2Count = 0;
+    final controller2 = SystemContextMenuController(onSystemHide: () => hide2Count += 1);
+    addTearDown(() {
+      controller1.dispose();
+      controller2.dispose();
+    });
+
+    final ByteData dismiss1Message = const JSONMethodCodec().encodeMethodCall(
+      MethodCall('ContextMenu.onDismissSystemContextMenu', <dynamic>[clientId1]),
+    );
+    await binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/platform',
+      dismiss1Message,
+      (_) {},
+    );
+    expect(controller1.isVisible, isFalse);
+    expect(hide1Count, 1);
+    expect(hide2Count, 0);
+
+    // Attach client2 and show controller2.
+    connection1.close();
+    final client2 = FakeTextInputClient(const TextEditingValue(text: 'field2'));
+    final TextInputConnection connection2 = TextInput.attach(client2, client2.configuration);
+    addTearDown(connection2.close);
+    final int clientId2 = attachedClientIds.last;
+    expect(clientId2, isNot(clientId1));
+
+    final customItem2 = IOSSystemContextMenuItemDataCustom(
+      title: 'Action 2',
+      onPressed: () => action2Count += 1,
+    );
+    await controller2.showWithItems(
+      const Rect.fromLTWH(10.0, 10.0, 60.0, 20.0),
+      <IOSSystemContextMenuItemData>[customItem2],
+    );
+    expect(controller2.isVisible, isTrue);
+
+    // Stale dismiss and custom action carrying clientId1 must NOT affect controller2.
+    await binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/platform',
+      dismiss1Message,
+      (_) {},
+    );
+    final ByteData staleActionMessage = const JSONMethodCodec().encodeMethodCall(
+      MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[clientId1, customItem2.callbackId]),
+    );
+    await binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/platform',
+      staleActionMessage,
+      (_) {},
+    );
+    expect(controller2.isVisible, isTrue);
+    expect(hide2Count, 0);
+    expect(action2Count, 0);
+
+    // Matching clientId2 executes action and dismisses controller2.
+    final ByteData validActionMessage = const JSONMethodCodec().encodeMethodCall(
+      MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[clientId2, customItem2.callbackId]),
+    );
+    await binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/platform',
+      validActionMessage,
+      (_) {},
+    );
+    expect(action2Count, 1);
+
+    final ByteData dismiss2Message = const JSONMethodCodec().encodeMethodCall(
+      MethodCall('ContextMenu.onDismissSystemContextMenu', <dynamic>[clientId2]),
+    );
+    await binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/platform',
+      dismiss2Message,
+      (_) {},
+    );
+    expect(controller2.isVisible, isFalse);
+    expect(hide2Count, 1);
+  });
+
+  test(
+    'synchronous re-show inside custom action callback ignores trailing dismiss for prior sessionId',
+    () async {
+      late int attachedClientId;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.textInput,
+        (MethodCall call) async {
+          if (call.method == 'TextInput.setClient') {
+            attachedClientId = (call.arguments as List<dynamic>)[0] as int;
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.textInput,
+          null,
+        );
+      });
+
+      final client = FakeTextInputClient(const TextEditingValue(text: 'hello'));
+      final TextInputConnection connection = TextInput.attach(client, client.configuration);
+      addTearDown(connection.close);
+
+      final sentSessionIds = <int>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'ContextMenu.showSystemContextMenu') {
+            final args = methodCall.arguments as Map<String, dynamic>;
+            sentSessionIds.add(args['sessionId'] as int);
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        );
+      });
+
+      var hideCount = 0;
+      late SystemContextMenuController controller;
+      controller = SystemContextMenuController(onSystemHide: () => hideCount += 1);
+      addTearDown(controller.dispose);
+
+      var secondActionCount = 0;
+      final secondItem = IOSSystemContextMenuItemDataCustom(
+        title: 'Second Menu Action',
+        onPressed: () => secondActionCount += 1,
+      );
+      final firstItem = IOSSystemContextMenuItemDataCustom(
+        title: 'Re-show Menu',
+        onPressed: () {
+          // Synchronously show a new menu before Android's trailing onDestroyActionMode arrives.
+          controller.showWithItems(
+            const Rect.fromLTWH(20.0, 20.0, 80.0, 20.0),
+            <IOSSystemContextMenuItemData>[secondItem],
+          );
+        },
+      );
+
+      await controller.showWithItems(
+        const Rect.fromLTWH(0.0, 0.0, 80.0, 20.0),
+        <IOSSystemContextMenuItemData>[firstItem],
+      );
+      expect(sentSessionIds, hasLength(1));
+      final int firstSessionId = sentSessionIds.first;
+
+      // Platform dispatches onPerformCustomAction for session 1, triggering synchronous re-show
+      // (session 2), followed by onDismissSystemContextMenu for session 1.
+      final ByteData customActionMsg = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[
+          attachedClientId,
+          firstItem.callbackId,
+          firstSessionId,
+        ]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        customActionMsg,
+        (_) {},
+      );
+      expect(sentSessionIds, hasLength(2));
+      final int secondSessionId = sentSessionIds.last;
+      expect(secondSessionId, greaterThan(firstSessionId));
+      expect(controller.isVisible, isTrue);
+
+      // Trailing dismiss for firstSessionId must NOT hide the newly shown secondSessionId!
+      final ByteData trailingDismissMsg = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onDismissSystemContextMenu', <dynamic>[
+          attachedClientId,
+          firstSessionId,
+        ]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        trailingDismissMsg,
+        (_) {},
+      );
+      expect(controller.isVisible, isTrue);
+      expect(hideCount, 0);
+
+      // Second menu's custom action and dismiss with secondSessionId work normally.
+      final ByteData secondActionMsg = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[
+          attachedClientId,
+          secondItem.callbackId,
+          secondSessionId,
+        ]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        secondActionMsg,
+        (_) {},
+      );
+      expect(secondActionCount, 1);
+
+      final ByteData secondDismissMsg = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onDismissSystemContextMenu', <dynamic>[
+          attachedClientId,
+          secondSessionId,
+        ]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        secondDismissMsg,
+        (_) {},
+      );
+      expect(controller.isVisible, isFalse);
+      expect(hideCount, 1);
+    },
+  );
+
+  test(
+    'in-flight custom action tap during in-place showWithItems update still executes if callbackId remains registered',
+    () async {
+      late int attachedClientId;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.textInput,
+        (MethodCall call) async {
+          if (call.method == 'TextInput.setClient') {
+            attachedClientId = (call.arguments as List<dynamic>)[0] as int;
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.textInput,
+          null,
+        );
+      });
+
+      final client = FakeTextInputClient(const TextEditingValue(text: 'hello'));
+      final TextInputConnection connection = TextInput.attach(client, client.configuration);
+      addTearDown(connection.close);
+
+      final sentSessionIds = <int>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'ContextMenu.showSystemContextMenu') {
+            final args = methodCall.arguments as Map<String, dynamic>;
+            sentSessionIds.add(args['sessionId'] as int);
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        );
+      });
+
+      final controller = SystemContextMenuController();
+      addTearDown(controller.dispose);
+
+      var actionCount = 0;
+      final stableItem = IOSSystemContextMenuItemDataCustom(
+        title: 'Translate',
+        onPressed: () => actionCount += 1,
+      );
+
+      await controller.showWithItems(
+        const Rect.fromLTWH(0.0, 0.0, 80.0, 20.0),
+        <IOSSystemContextMenuItemData>[stableItem],
+      );
+      final int firstSession = sentSessionIds.first;
+
+      // Dart updates targetRect (advancing sessionId) while user taps stableItem on firstSession.
+      await controller.showWithItems(
+        const Rect.fromLTWH(5.0, 5.0, 80.0, 20.0),
+        <IOSSystemContextMenuItemData>[stableItem],
+      );
+      expect(sentSessionIds, hasLength(2));
+
+      final ByteData inFlightAction = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[
+          attachedClientId,
+          stableItem.callbackId,
+          firstSession,
+        ]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        inFlightAction,
+        (_) {},
+      );
+      expect(actionCount, 1);
+    },
+  );
+
+  test(
+    'non-controller custom SystemContextMenuClient receives callbacks after controller usage',
+    () async {
+      final client = FakeTextInputClient(const TextEditingValue(text: 'hello'));
+      final TextInputConnection connection = TextInput.attach(client, client.configuration);
+      addTearDown(connection.close);
+
+      final controller = SystemContextMenuController();
+      addTearDown(controller.dispose);
+      await controller.showWithItems(
+        const Rect.fromLTWH(0.0, 0.0, 50.0, 20.0),
+        const <IOSSystemContextMenuItemData>[IOSSystemContextMenuItemDataCopy()],
+      );
+      await controller.hide();
+
+      final customClient = _FakeCustomSystemContextMenuClient();
+      ServicesBinding.systemContextMenuClient = customClient;
+      addTearDown(() {
+        ServicesBinding.systemContextMenuClient = null;
+      });
+
+      final ByteData actionMsg = const JSONMethodCodec().encodeMethodCall(
+        const MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[0, 'custom-cb']),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        actionMsg,
+        (_) {},
+      );
+      expect(customClient.receivedCallbacks, <String>['custom-cb']);
+
+      final ByteData dismissMsg = const JSONMethodCodec().encodeMethodCall(
+        const MethodCall('ContextMenu.onDismissSystemContextMenu'),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        dismissMsg,
+        (_) {},
+      );
+      expect(customClient.hideCount, 1);
+    },
+  );
+}
+
+class _FakeCustomSystemContextMenuClient with SystemContextMenuClient {
+  final List<String> receivedCallbacks = <String>[];
+  int hideCount = 0;
+
+  @override
+  void handleCustomContextMenuAction(String callbackId) {
+    receivedCallbacks.add(callbackId);
+  }
+
+  @override
+  void handleSystemHide() {
+    hideCount += 1;
+  }
 }

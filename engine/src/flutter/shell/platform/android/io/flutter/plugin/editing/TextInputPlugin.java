@@ -7,20 +7,35 @@ package io.flutter.plugin.editing;
 import static io.flutter.Build.API_LEVELS;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.app.SearchManager;
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
 import android.graphics.Rect;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.LocaleList;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.Selection;
 import android.util.SparseArray;
+import android.view.ActionMode;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewStructure;
+import android.view.ViewTreeObserver;
 import android.view.autofill.AutofillId;
 import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -32,23 +47,32 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.inputmethod.EditorInfoCompat;
 import io.flutter.Log;
 import io.flutter.embedding.android.KeyboardManager;
+import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel.TextEditState;
 import io.flutter.plugin.platform.PlatformViewsController;
 import io.flutter.plugin.platform.PlatformViewsController2;
+import io.flutter.util.ViewUtils;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Map;
 
 /** Android implementation of the text input plugin. */
 public class TextInputPlugin implements ListenableEditingState.EditingStateWatcher {
   private static final String TAG = "TextInputPlugin";
+  private static final int MENU_ITEM_ID_SEARCH_WEB = 0x10000002;
+  private static final int MENU_ITEM_ID_CUSTOM_BASE = 0x10000100;
 
   @NonNull private final View mView;
   @NonNull private final InputMethodManager mImm;
   @NonNull private final AutofillManager afm;
   @NonNull private final ScribeChannel scribeChannel;
   @NonNull private final TextInputChannel textInputChannel;
+  @Nullable private final PlatformChannel platformChannel;
+  @Nullable private final PlatformChannel.SystemContextMenuHandler systemContextMenuHandler;
   @NonNull private InputTarget inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
   @Nullable private TextInputChannel.Configuration configuration;
   @Nullable private SparseArray<TextInputChannel.Configuration> autofillConfiguration;
@@ -59,6 +83,19 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   @NonNull private PlatformViewsController2 platformViewsController2;
   @Nullable private Rect lastClientRect;
   private ImeSyncDeferringInsetsCallback imeSyncCallback;
+  @Nullable private ActionMode systemContextMenuActionMode;
+  @Nullable private PlatformChannel.SystemContextMenuRequest activeSystemContextMenuRequest;
+  private int systemContextMenuClientId = -1;
+  @Nullable private Integer systemContextMenuSessionId;
+
+  @Nullable
+  private ViewTreeObserver.OnGlobalFocusChangeListener systemContextMenuFocusChangeListener;
+
+  @Nullable private ViewTreeObserver systemContextMenuViewTreeObserver;
+
+  private final Map<String, Integer> customCallbackToMenuItemId = new HashMap<>();
+  private final SparseArray<String> customMenuItemCallbackIds = new SparseArray<>();
+  private int nextCustomMenuItemId = MENU_ITEM_ID_CUSTOM_BASE;
 
   // Initialize the "last seen" text editing values to a non-null value.
   private TextEditState mLastKnownFrameworkTextEditingState;
@@ -69,13 +106,29 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   // details.
   private boolean isInputConnectionLocked;
 
-  @SuppressLint("NewApi")
   public TextInputPlugin(
       @NonNull View view,
       @NonNull TextInputChannel textInputChannel,
       @NonNull ScribeChannel scribeChannel,
       @NonNull PlatformViewsController platformViewsController,
       @NonNull PlatformViewsController2 platformViewsController2) {
+    this(
+        view,
+        textInputChannel,
+        scribeChannel,
+        platformViewsController,
+        platformViewsController2,
+        null);
+  }
+
+  @SuppressLint("NewApi")
+  public TextInputPlugin(
+      @NonNull View view,
+      @NonNull TextInputChannel textInputChannel,
+      @NonNull ScribeChannel scribeChannel,
+      @NonNull PlatformViewsController platformViewsController,
+      @NonNull PlatformViewsController2 platformViewsController2,
+      @Nullable PlatformChannel platformChannel) {
     mView = view;
     // Create a default object.
     mEditable = new ListenableEditingState(null, mView);
@@ -175,6 +228,25 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     textInputChannel.requestExistingInputState();
 
     this.scribeChannel = scribeChannel;
+    this.platformChannel = platformChannel;
+    if (this.platformChannel != null) {
+      this.systemContextMenuHandler =
+          new PlatformChannel.SystemContextMenuHandler() {
+            @Override
+            public void showSystemContextMenu(
+                @NonNull PlatformChannel.SystemContextMenuRequest request) {
+              TextInputPlugin.this.showSystemContextMenu(request);
+            }
+
+            @Override
+            public void hideSystemContextMenu() {
+              TextInputPlugin.this.hideSystemContextMenu();
+            }
+          };
+      this.platformChannel.setSystemContextMenuHandler(this.systemContextMenuHandler);
+    } else {
+      this.systemContextMenuHandler = null;
+    }
 
     this.platformViewsController = platformViewsController;
     this.platformViewsController.attachTextInputPlugin(this);
@@ -195,6 +267,12 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   @VisibleForTesting
   ImeSyncDeferringInsetsCallback getImeSyncCallback() {
     return imeSyncCallback;
+  }
+
+  @Nullable
+  @VisibleForTesting
+  ActionMode getSystemContextMenuActionMode() {
+    return systemContextMenuActionMode;
   }
 
   /**
@@ -234,6 +312,10 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
    */
   @SuppressLint("NewApi")
   public void destroy() {
+    dismissSystemContextMenu(true);
+    if (platformChannel != null && systemContextMenuHandler != null) {
+      platformChannel.clearSystemContextMenuHandler(systemContextMenuHandler);
+    }
     platformViewsController.detachTextInputPlugin();
     platformViewsController2.detachTextInputPlugin();
     textInputChannel.setTextInputMethodHandler(null);
@@ -452,6 +534,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @VisibleForTesting
   void setTextInputClient(int client, TextInputChannel.Configuration configuration) {
+    dismissSystemContextMenu(true);
     // Call notifyViewExited on the previous field.
     notifyViewExited();
     this.configuration = configuration;
@@ -471,7 +554,9 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     mEditable.addEditingStateListener(this);
   }
 
-  private void setPlatformViewTextInputClient(int platformViewId, boolean usesVirtualDisplay) {
+  @VisibleForTesting
+  void setPlatformViewTextInputClient(int platformViewId, boolean usesVirtualDisplay) {
+    dismissSystemContextMenu(true);
     if (usesVirtualDisplay) {
       // We need to make sure that the Flutter view is focused so that no imm operations get short
       // circuited.
@@ -576,6 +661,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @VisibleForTesting
   void clearTextInputClient() {
+    dismissSystemContextMenu(true);
     if (inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW) {
       // This only applies to platform views that use a virtual display.
       // Focus changes in the framework tree have no guarantees on the order focus nodes are
@@ -877,4 +963,574 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     textInputChannel.updateEditingStateWithTag(inputTarget.id, editingValues);
   }
   // -------- End: Autofill -------
+
+  // -------- Start: System Context Menu -------
+  private static final class SelectionBounds {
+    final int length;
+    final boolean hasValidSelection;
+    final int selMin;
+    final int selMax;
+
+    private SelectionBounds(int length, boolean hasValidSelection, int selMin, int selMax) {
+      this.length = length;
+      this.hasValidSelection = hasValidSelection;
+      this.selMin = selMin;
+      this.selMax = selMax;
+    }
+
+    @NonNull
+    static SelectionBounds from(@NonNull Editable editable) {
+      final int length = editable.length();
+      final int rawSelStart = Selection.getSelectionStart(editable);
+      final int rawSelEnd = Selection.getSelectionEnd(editable);
+      final boolean hasValidSelection = rawSelStart >= 0 && rawSelEnd >= 0;
+      final int selStart = Math.min(length, Math.max(0, rawSelStart));
+      final int selEnd = Math.min(length, Math.max(0, rawSelEnd));
+      return new SelectionBounds(
+          length, hasValidSelection, Math.min(selStart, selEnd), Math.max(selStart, selEnd));
+    }
+
+    boolean hasNonEmptySelection(boolean obscure) {
+      return hasValidSelection && selMin != selMax && !obscure;
+    }
+  }
+
+  @VisibleForTesting
+  void showSystemContextMenu(@NonNull PlatformChannel.SystemContextMenuRequest request) {
+    if (inputTarget.type != InputTarget.Type.FRAMEWORK_CLIENT) {
+      Log.e(
+          TAG,
+          "Currently, the system context menu can only be shown for an active framework text input"
+              + " connection.");
+      if (systemContextMenuActionMode != null) {
+        dismissSystemContextMenu(false);
+      }
+      notifySystemContextMenuDismissed(-1, request.sessionId);
+      return;
+    }
+
+    if (!hasSupportedSystemContextMenuItems(request)) {
+      if (systemContextMenuActionMode != null) {
+        dismissSystemContextMenu(false);
+      }
+      notifySystemContextMenuDismissed(inputTarget.id, request.sessionId);
+      return;
+    }
+
+    activeSystemContextMenuRequest = request;
+    systemContextMenuSessionId = request.sessionId;
+    if (systemContextMenuActionMode != null) {
+      systemContextMenuActionMode.invalidate();
+      return;
+    }
+
+    systemContextMenuClientId = inputTarget.id;
+    ActionMode mode =
+        mView.startActionMode(new SystemContextMenuCallback(), ActionMode.TYPE_FLOATING);
+    if (mode == null) {
+      final int failedClientId = systemContextMenuClientId;
+      final Integer failedSessionId = systemContextMenuSessionId;
+      clearSystemContextMenuState();
+      notifySystemContextMenuDismissed(failedClientId, failedSessionId);
+      return;
+    }
+    systemContextMenuActionMode = mode;
+    registerSystemContextMenuFocusListener();
+  }
+
+  @VisibleForTesting
+  void hideSystemContextMenu() {
+    dismissSystemContextMenu(false);
+  }
+
+  private void registerSystemContextMenuFocusListener() {
+    if (systemContextMenuFocusChangeListener != null) {
+      return;
+    }
+    ViewTreeObserver observer = mView.getViewTreeObserver();
+    if (observer == null || !observer.isAlive()) {
+      return;
+    }
+    systemContextMenuViewTreeObserver = observer;
+    systemContextMenuFocusChangeListener =
+        (oldFocus, newFocus) -> {
+          if (systemContextMenuActionMode != null && newFocus != null && newFocus != mView) {
+            dismissSystemContextMenu(true);
+          }
+        };
+    observer.addOnGlobalFocusChangeListener(systemContextMenuFocusChangeListener);
+  }
+
+  private void unregisterSystemContextMenuFocusListener() {
+    if (systemContextMenuFocusChangeListener == null) {
+      return;
+    }
+    ViewTreeObserver observer =
+        systemContextMenuViewTreeObserver != null && systemContextMenuViewTreeObserver.isAlive()
+            ? systemContextMenuViewTreeObserver
+            : mView.getViewTreeObserver();
+    if (observer != null && observer.isAlive()) {
+      observer.removeOnGlobalFocusChangeListener(systemContextMenuFocusChangeListener);
+    }
+    systemContextMenuViewTreeObserver = null;
+    systemContextMenuFocusChangeListener = null;
+  }
+
+  private void clearSystemContextMenuState() {
+    unregisterSystemContextMenuFocusListener();
+    systemContextMenuActionMode = null;
+    activeSystemContextMenuRequest = null;
+    systemContextMenuClientId = -1;
+    systemContextMenuSessionId = null;
+    customCallbackToMenuItemId.clear();
+    customMenuItemCallbackIds.clear();
+    nextCustomMenuItemId = MENU_ITEM_ID_CUSTOM_BASE;
+  }
+
+  private void notifySystemContextMenuDismissed(int clientId, @Nullable Integer sessionId) {
+    if (platformChannel != null) {
+      platformChannel.onDismissSystemContextMenu(clientId, sessionId);
+    }
+  }
+
+  private void dismissSystemContextMenu(boolean notifyFramework) {
+    final ActionMode mode = systemContextMenuActionMode;
+    if (mode == null) {
+      return;
+    }
+    final int dismissedClientId = systemContextMenuClientId;
+    final Integer dismissedSessionId = systemContextMenuSessionId;
+    clearSystemContextMenuState();
+    mode.finish();
+    if (notifyFramework) {
+      notifySystemContextMenuDismissed(dismissedClientId, dismissedSessionId);
+    }
+  }
+
+  private boolean hasSupportedSystemContextMenuItems(
+      @NonNull PlatformChannel.SystemContextMenuRequest request) {
+    if (request.items == null) {
+      final SelectionBounds bounds = SelectionBounds.from(mEditable);
+      final boolean obscure = configuration != null && configuration.obscureText;
+      final boolean hasSelection = bounds.hasNonEmptySelection(obscure);
+      final boolean canPaste = bounds.hasValidSelection && clipboardHasStrings();
+      final boolean canSelectAll =
+          bounds.length > 0
+              && !(bounds.hasValidSelection
+                  && bounds.selMin == 0
+                  && bounds.selMax == bounds.length);
+      return hasSelection || canPaste || canSelectAll;
+    }
+
+    for (PlatformChannel.SystemContextMenuItem item : request.items) {
+      switch (item.type) {
+        case "cut":
+        case "copy":
+        case "paste":
+        case "selectAll":
+        case "share":
+        case "searchWeb":
+          return true;
+        case "custom":
+          if (item.title != null && !item.title.isEmpty() && item.id != null) {
+            return true;
+          }
+          break;
+        default:
+          break;
+      }
+    }
+    return false;
+  }
+
+  private void populateSystemContextMenu(@NonNull Menu menu) {
+    customMenuItemCallbackIds.clear();
+    final PlatformChannel.SystemContextMenuRequest request = activeSystemContextMenuRequest;
+    if (request == null) {
+      return;
+    }
+
+    int order = 0;
+
+    if (request.items == null) {
+      final SelectionBounds bounds = SelectionBounds.from(mEditable);
+      final boolean obscure = configuration != null && configuration.obscureText;
+      if (bounds.hasNonEmptySelection(obscure)) {
+        menu.add(Menu.NONE, android.R.id.cut, order++, android.R.string.cut)
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        menu.add(Menu.NONE, android.R.id.copy, order++, android.R.string.copy)
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+      }
+      if (bounds.hasValidSelection && clipboardHasStrings()) {
+        menu.add(Menu.NONE, android.R.id.paste, order++, android.R.string.paste)
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+      }
+      if (bounds.length > 0
+          && !(bounds.hasValidSelection && bounds.selMin == 0 && bounds.selMax == bounds.length)) {
+        menu.add(Menu.NONE, android.R.id.selectAll, order++, android.R.string.selectAll)
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+      }
+      return;
+    }
+
+    // Note: Items are added in the order requested by the framework (matching
+    // EditableTextState.contextMenuButtonItems) rather than Editor's MENU_ITEM_ORDER_* constants.
+    for (PlatformChannel.SystemContextMenuItem item : request.items) {
+      switch (item.type) {
+        case "cut":
+          menu.add(Menu.NONE, android.R.id.cut, order++, android.R.string.cut)
+              .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+          break;
+        case "copy":
+          menu.add(Menu.NONE, android.R.id.copy, order++, android.R.string.copy)
+              .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+          break;
+        case "paste":
+          menu.add(Menu.NONE, android.R.id.paste, order++, android.R.string.paste)
+              .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+          break;
+        case "selectAll":
+          menu.add(Menu.NONE, android.R.id.selectAll, order++, android.R.string.selectAll)
+              .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+          break;
+        case "share":
+          {
+            // Dart's IOSSystemContextMenuItemShare always supplies a localized title.
+            CharSequence title = item.title != null && !item.title.isEmpty() ? item.title : "Share";
+            menu.add(Menu.NONE, android.R.id.shareText, order++, title)
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+            break;
+          }
+        case "searchWeb":
+          {
+            CharSequence title =
+                item.title != null && !item.title.isEmpty()
+                    ? item.title
+                    : mView.getContext().getString(android.R.string.search_go);
+            menu.add(Menu.NONE, MENU_ITEM_ID_SEARCH_WEB, order++, title)
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+            break;
+          }
+        case "custom":
+          if (item.title != null && !item.title.isEmpty() && item.id != null) {
+            Integer existingId = customCallbackToMenuItemId.get(item.id);
+            final int customItemId;
+            if (existingId != null) {
+              customItemId = existingId;
+            } else {
+              customItemId = nextCustomMenuItemId++;
+              customCallbackToMenuItemId.put(item.id, customItemId);
+            }
+            customMenuItemCallbackIds.put(customItemId, item.id);
+            menu.add(Menu.NONE, customItemId, order++, item.title)
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+          }
+          break;
+        default:
+          // Platform-specific items not supported on Android (e.g. lookUp, captureTextFromCamera)
+          // are intentionally ignored.
+          break;
+      }
+    }
+  }
+
+  private static boolean hasComposingRegion(@NonNull Editable editable) {
+    final int composingStart = BaseInputConnection.getComposingSpanStart(editable);
+    final int composingEnd = BaseInputConnection.getComposingSpanEnd(editable);
+    return composingStart != -1 && composingEnd != -1 && composingStart != composingEnd;
+  }
+
+  private boolean handleSystemContextMenuAction(@NonNull ActionMode mode, @NonNull MenuItem item) {
+    final int itemId = item.getItemId();
+    final SelectionBounds bounds = SelectionBounds.from(mEditable);
+    final boolean obscure = configuration != null && configuration.obscureText;
+
+    if (itemId == android.R.id.paste) {
+      // Read clipboard synchronously while the ActionMode click callback is active.
+      final String textToPaste = readPlainTextFromClipboard(mView.getContext());
+      mode.finish();
+      if (bounds.hasValidSelection && textToPaste != null && !textToPaste.isEmpty()) {
+        final boolean hadComposing = hasComposingRegion(mEditable);
+        mEditable.beginBatchEdit();
+        BaseInputConnection.removeComposingSpans(mEditable);
+        mEditable.replace(bounds.selMin, bounds.selMax, textToPaste);
+        final int newCursor = bounds.selMin + textToPaste.length();
+        Selection.setSelection(mEditable, newCursor, newCursor);
+        mEditable.endBatchEdit();
+        if (hadComposing) {
+          mImm.restartInput(mView);
+        }
+      }
+      return true;
+    } else if (itemId == android.R.id.cut) {
+      if (bounds.hasNonEmptySelection(obscure)) {
+        writeClipboardText(mEditable.subSequence(bounds.selMin, bounds.selMax).toString());
+        mode.finish();
+        final boolean hadComposing = hasComposingRegion(mEditable);
+        mEditable.beginBatchEdit();
+        BaseInputConnection.removeComposingSpans(mEditable);
+        mEditable.delete(bounds.selMin, bounds.selMax);
+        Selection.setSelection(mEditable, bounds.selMin, bounds.selMin);
+        mEditable.endBatchEdit();
+        if (hadComposing) {
+          mImm.restartInput(mView);
+        }
+      } else {
+        mode.finish();
+      }
+      return true;
+    } else if (itemId == android.R.id.copy) {
+      if (bounds.hasNonEmptySelection(obscure)) {
+        writeClipboardText(mEditable.subSequence(bounds.selMin, bounds.selMax).toString());
+        mode.finish();
+        mEditable.beginBatchEdit();
+        Selection.setSelection(mEditable, bounds.selMax, bounds.selMax);
+        mEditable.endBatchEdit();
+      } else {
+        mode.finish();
+      }
+      return true;
+    } else if (itemId == android.R.id.selectAll) {
+      final PlatformChannel.SystemContextMenuRequest request = activeSystemContextMenuRequest;
+      if (bounds.length > 0) {
+        mEditable.beginBatchEdit();
+        Selection.setSelection(mEditable, 0, bounds.length);
+        mEditable.endBatchEdit();
+        if (request != null && request.items == null) {
+          mode.invalidate();
+        }
+      } else {
+        mode.finish();
+      }
+      return true;
+    } else if (itemId == android.R.id.shareText) {
+      final String selectedText = !obscure ? getSelectedText(bounds) : null;
+      mode.finish();
+      if (selectedText != null && !selectedText.isEmpty()) {
+        performShareAction(selectedText);
+      }
+      return true;
+    } else if (itemId == MENU_ITEM_ID_SEARCH_WEB) {
+      final String selectedText = !obscure ? getSelectedText(bounds) : null;
+      mode.finish();
+      if (selectedText != null && !selectedText.isEmpty()) {
+        performSearchWebAction(selectedText);
+      }
+      return true;
+    } else {
+      final String callbackId = customMenuItemCallbackIds.get(itemId);
+      if (callbackId != null) {
+        if (platformChannel != null
+            && inputTarget.type == InputTarget.Type.FRAMEWORK_CLIENT
+            && systemContextMenuClientId >= 0) {
+          platformChannel.onPerformCustomAction(
+              systemContextMenuClientId, callbackId, systemContextMenuSessionId);
+        }
+        mode.finish();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  @Nullable
+  private String getSelectedText(@NonNull SelectionBounds bounds) {
+    if (!bounds.hasValidSelection || bounds.selMin == bounds.selMax) {
+      return null;
+    }
+    return mEditable.subSequence(bounds.selMin, bounds.selMax).toString();
+  }
+
+  private boolean clipboardHasStrings() {
+    ClipboardManager clipboard =
+        (ClipboardManager) mView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+    if (clipboard == null || !clipboard.hasPrimaryClip()) {
+      return false;
+    }
+    ClipDescription description = clipboard.getPrimaryClipDescription();
+    if (description == null || !description.hasMimeType("text/*")) {
+      return false;
+    }
+    // Pure raw URI clips (ClipData.newRawUri) report only MIMETYPE_TEXT_URILIST and have no
+    // ContentResolver text stream for readPlainTextFromClipboard to read.
+    if (description.getMimeTypeCount() == 1
+        && ClipDescription.MIMETYPE_TEXT_URILIST.equals(description.getMimeType(0))) {
+      return false;
+    }
+    return true;
+  }
+
+  private void writeClipboardText(@NonNull String text) {
+    ClipboardManager clipboard =
+        (ClipboardManager) mView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+    if (clipboard != null) {
+      clipboard.setPrimaryClip(ClipData.newPlainText("text label?", text));
+    }
+  }
+
+  /**
+   * Reads plain text from the first item of the primary clip, matching {@code PlatformPlugin}'s
+   * {@code Clipboard.getData(kTextPlain)} semantics: only {@code item.getText()} or {@code
+   * content://} URIs offering a {@code text/*} stream are coerced, and any styled {@link
+   * CharSequence} spans (including {@code SPAN_COMPOSING}) are stripped via {@link
+   * CharSequence#toString()}.
+   *
+   * <p>Note: For {@code content://} URIs, {@code ContentResolver} is queried synchronously on the
+   * UI thread while the {@link ActionMode} click authorization window is active.
+   */
+  @Nullable
+  static String readPlainTextFromClipboard(@NonNull Context context) {
+    return readPlainTextFromClipboard(context, /* fallbackToCoerceToText= */ false);
+  }
+
+  /**
+   * Reads plain text from the clipboard for IME-initiated {@link
+   * InputConnection#performContextMenuAction(int)} pastes using a single {@link
+   * ClipboardManager#getPrimaryClip()} call.
+   *
+   * <p>Prefers {@code PlatformPlugin}'s strict {@code content://} text-stream check and falls back
+   * to {@link ClipData.Item#coerceToText(Context)} for non-{@code content://} URI or {@link Intent}
+   * clips so existing IME paste behavior is preserved.
+   */
+  @Nullable
+  static String readPlainTextFromClipboardForIme(@NonNull Context context) {
+    return readPlainTextFromClipboard(context, /* fallbackToCoerceToText= */ true);
+  }
+
+  @Nullable
+  private static String readPlainTextFromClipboard(
+      @NonNull Context context, boolean fallbackToCoerceToText) {
+    ClipboardManager clipboard =
+        (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+    if (clipboard == null || !clipboard.hasPrimaryClip()) {
+      return null;
+    }
+    CharSequence itemText = null;
+    try {
+      ClipData clip = clipboard.getPrimaryClip();
+      if (clip == null || clip.getItemCount() == 0) {
+        return null;
+      }
+      // Match Flutter's Clipboard.getData semantics by reading item 0.
+      ClipData.Item item = clip.getItemAt(0);
+      itemText = item.getText();
+      if (itemText == null) {
+        if (fallbackToCoerceToText) {
+          itemText = item.coerceToText(context);
+        } else {
+          Uri itemUri = item.getUri();
+          if (itemUri == null || !"content".equals(itemUri.getScheme())) {
+            return null;
+          }
+          AssetFileDescriptor assetFileDescriptor =
+              context.getContentResolver().openTypedAssetFileDescriptor(itemUri, "text/*", null);
+          itemText = item.coerceToText(context);
+          if (assetFileDescriptor != null) {
+            assetFileDescriptor.close();
+          }
+        }
+      }
+      return itemText != null ? itemText.toString() : null;
+    } catch (SecurityException e) {
+      Log.w(TAG, "Attempted to get clipboard data that requires additional permission(s).", e);
+      return null;
+    } catch (FileNotFoundException e) {
+      Log.w(TAG, "Clipboard text was unable to be received from content URI.");
+      return null;
+    } catch (IOException e) {
+      Log.w(TAG, "Failed to close AssetFileDescriptor while trying to read text from URI.", e);
+      return itemText != null ? itemText.toString() : null;
+    }
+  }
+
+  private void performShareAction(@NonNull String text) {
+    Context context = mView.getContext();
+    Activity activity = ViewUtils.getActivity(context);
+    Intent intent = new Intent(Intent.ACTION_SEND);
+    intent.setType("text/plain");
+    intent.putExtra(Intent.EXTRA_TEXT, text);
+    Intent chooser = Intent.createChooser(intent, null);
+    Context launchContext = activity != null ? activity : context;
+    if (activity == null) {
+      chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+    try {
+      launchContext.startActivity(chooser);
+    } catch (ActivityNotFoundException | SecurityException e) {
+      Log.w(TAG, "Unable to launch share activity.", e);
+    }
+  }
+
+  private void performSearchWebAction(@NonNull String query) {
+    Context context = mView.getContext();
+    Activity activity = ViewUtils.getActivity(context);
+    Intent intent = new Intent(Intent.ACTION_WEB_SEARCH);
+    intent.putExtra(SearchManager.QUERY, query);
+    Context launchContext = activity != null ? activity : context;
+    if (activity == null) {
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+    try {
+      launchContext.startActivity(intent);
+    } catch (ActivityNotFoundException | SecurityException e) {
+      Log.w(TAG, "Unable to launch web search activity.", e);
+    }
+  }
+
+  private class SystemContextMenuCallback extends ActionMode.Callback2 {
+    @Override
+    public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+      populateSystemContextMenu(menu);
+      if (menu.size() == 0) {
+        return false;
+      }
+      systemContextMenuActionMode = mode;
+      return true;
+    }
+
+    @Override
+    public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+      menu.clear();
+      populateSystemContextMenu(menu);
+      return menu.size() > 0;
+    }
+
+    @Override
+    public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+      return handleSystemContextMenuAction(mode, item);
+    }
+
+    @Override
+    public void onDestroyActionMode(ActionMode mode) {
+      if (systemContextMenuActionMode == mode) {
+        final int dismissedClientId = systemContextMenuClientId;
+        final Integer dismissedSessionId = systemContextMenuSessionId;
+        clearSystemContextMenuState();
+        notifySystemContextMenuDismissed(dismissedClientId, dismissedSessionId);
+      }
+    }
+
+    @Override
+    public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+      final PlatformChannel.SystemContextMenuRequest request = activeSystemContextMenuRequest;
+      if (request == null) {
+        super.onGetContentRect(mode, view, outRect);
+        return;
+      }
+      final float density = view.getResources().getDisplayMetrics().density;
+      final int left = (int) Math.floor(request.targetRect.x * density);
+      final int top = (int) Math.floor(request.targetRect.y * density);
+      final int right =
+          Math.max(
+              left + 1,
+              (int) Math.ceil((request.targetRect.x + request.targetRect.width) * density));
+      final int bottom =
+          Math.max(
+              top + 1,
+              (int) Math.ceil((request.targetRect.y + request.targetRect.height) * density));
+      outRect.set(left, top, right, bottom);
+    }
+  }
+  // -------- End: System Context Menu -------
 }

@@ -9,6 +9,9 @@ import static io.flutter.Build.API_LEVELS;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.ContentObserver;
 import android.graphics.Insets;
@@ -113,6 +116,20 @@ public class FlutterView extends FrameLayout
     implements MouseCursorPlugin.MouseCursorViewDelegate, KeyboardManager.ViewDelegate {
   private static final String TAG = "FlutterView";
   private static final String GBOARD_PACKAGE_NAME = "com.google.android.inputmethod.latin";
+  /**
+   * Manifest {@code <meta-data>} key allowing an activity or application to opt out of Android's
+   * native floating text selection toolbar ({@link android.view.ActionMode#TYPE_FLOATING}) and
+   * revert to Flutter-rendered context menus.
+   *
+   * <p>Enabled ({@code true}) by default so Flutter apps automatically use the OS-rendered floating
+   * toolbar and avoid system clipboard access notifications on paste (matching iOS 16+'s {@code
+   * UIEditMenuInteraction} rollout).
+   */
+  @VisibleForTesting
+  static final String ENABLE_SYSTEM_CONTEXT_MENU_META_DATA_KEY =
+      "io.flutter.embedding.android.EnableSystemContextMenu";
+
+  @Nullable private Boolean systemContextMenuEnabled;
 
   // Maximum size allowed for a content sized view.
   @VisibleForTesting static final int CONTENT_SIZING_MAX = 2 << 12;
@@ -1194,7 +1211,8 @@ public class FlutterView extends FrameLayout
             this.flutterEngine
                 .getPlatformViewsController(), // TODO(gmackall): this can be changed to take a pvc
             // delegator.
-            this.flutterEngine.getPlatformViewsController2());
+            this.flutterEngine.getPlatformViewsController2(),
+            this.flutterEngine.getPlatformChannel());
 
     try {
       textServicesManager =
@@ -1545,6 +1563,7 @@ public class FlutterView extends FrameLayout
         .setTextScaleFactor(getResources().getConfiguration().fontScale)
         .setDisplayMetrics(getResources().getDisplayMetrics())
         .setNativeSpellCheckServiceDefined(isNativeSpellCheckServiceDefined)
+        .setSupportsShowingSystemContextMenu(isSystemContextMenuEnabled())
         .setBrieflyShowPassword(
             Settings.System.getInt(
                     getContext().getContentResolver(), Settings.System.TEXT_SHOW_PASSWORD, 1)
@@ -1552,6 +1571,61 @@ public class FlutterView extends FrameLayout
         .setUse24HourFormat(DateFormat.is24HourFormat(getContext()))
         .setPlatformBrightness(brightness)
         .send();
+  }
+
+  private boolean isSystemContextMenuEnabled() {
+    if (systemContextMenuEnabled != null) {
+      return systemContextMenuEnabled;
+    }
+    boolean resolved = true;
+    try {
+      PackageManager pm = getContext().getPackageManager();
+      if (pm != null) {
+        Boolean metaDataValue = null;
+        Activity activity = ViewUtils.getActivity(getContext());
+        if (activity != null) {
+          ActivityInfo activityInfo =
+              pm.getActivityInfo(activity.getComponentName(), PackageManager.GET_META_DATA);
+          if (activityInfo != null) {
+            metaDataValue =
+                readBooleanMetaData(
+                    activityInfo.metaData, ENABLE_SYSTEM_CONTEXT_MENU_META_DATA_KEY);
+          }
+        }
+        if (metaDataValue == null) {
+          ApplicationInfo appInfo =
+              pm.getApplicationInfo(getContext().getPackageName(), PackageManager.GET_META_DATA);
+          if (appInfo != null) {
+            metaDataValue =
+                readBooleanMetaData(appInfo.metaData, ENABLE_SYSTEM_CONTEXT_MENU_META_DATA_KEY);
+          }
+        }
+        if (metaDataValue != null) {
+          resolved = metaDataValue;
+        }
+      }
+    } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+      Log.v(TAG, "Unable to read EnableSystemContextMenu manifest meta-data; defaulting to true.");
+    }
+    systemContextMenuEnabled = resolved;
+    return resolved;
+  }
+
+  @Nullable
+  private static Boolean readBooleanMetaData(
+      @Nullable android.os.Bundle metaData, @NonNull String key) {
+    if (metaData == null || !metaData.containsKey(key)) {
+      return null;
+    }
+    @SuppressWarnings("deprecation")
+    Object rawValue = metaData.get(key);
+    if (rawValue instanceof Boolean) {
+      return (Boolean) rawValue;
+    }
+    if (rawValue instanceof Number) {
+      return ((Number) rawValue).intValue() != 0;
+    }
+    return null;
   }
 
   private FlutterViewDelegate delegate = new FlutterViewDelegate();

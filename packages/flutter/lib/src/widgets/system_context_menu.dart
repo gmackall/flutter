@@ -19,8 +19,8 @@ import 'text_selection_toolbar_anchors.dart';
 
 /// Displays the system context menu on top of the Flutter view.
 ///
-/// Currently, only supports iOS 16.0 and above and displays nothing on other
-/// platforms.
+/// Currently, only supports iOS 16.0 and above and Android, and displays
+/// nothing on other platforms.
 ///
 /// The context menu is the menu that appears, for example, when doing text
 /// selection. Flutter typically draws this menu itself, but this class deals
@@ -121,14 +121,16 @@ class SystemContextMenu extends StatefulWidget {
 
   /// Whether the current device supports showing the system context menu.
   ///
-  /// Currently, this is only supported on newer versions of iOS.
+  /// Currently, this is supported on iOS 16.0 and above and Android.
   ///
   /// See also:
   ///
   ///  * [isSupportedByField], which uses this method and determines whether an
   ///    individual [EditableTextState] supports the system context menu.
   static bool isSupported(BuildContext context) {
-    return defaultTargetPlatform == TargetPlatform.iOS &&
+    return !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android) &&
         (MediaQuery.maybeSupportsShowingSystemContextMenu(context) ?? false);
   }
 
@@ -150,7 +152,10 @@ class SystemContextMenu extends StatefulWidget {
   /// The default [items] for the given [EditableTextState].
   ///
   /// For example, [IOSSystemContextMenuItemCopy] will only be included when the
-  /// field represented by the [EditableTextState] has a selection.
+  /// field represented by the [EditableTextState] has a selection. Custom items
+  /// reported by [EditableTextState.contextMenuButtonItems] (such as Android
+  /// `ACTION_PROCESS_TEXT` actions from [ProcessTextService]) are mapped to
+  /// [IOSSystemContextMenuItemCustom].
   ///
   /// See also:
   ///
@@ -179,12 +184,15 @@ class SystemContextMenu extends StatefulWidget {
         case ContextMenuButtonKind.liveTextInput:
           items.add(const IOSSystemContextMenuItemLiveText());
         case ContextMenuButtonKind.delete:
-        // No native iOS system menu button for Delete — intentionally ignored.
+        // No native iOS or Android system menu button for Delete — intentionally ignored.
         case ContextMenuButtonKind.translate:
         // Not mapped to a system menu item yet.
         case ContextMenuButtonKind.custom:
-        // Custom items are provided explicitly via SystemContextMenu.items,
-        // not via defaults. Intentionally ignore in default mapping.
+          if (button.label != null && button.label!.isNotEmpty && button.onPressed != null) {
+            items.add(
+              IOSSystemContextMenuItemCustom(title: button.label!, onPressed: button.onPressed!),
+            );
+          }
         case _:
         // Kinds added in the future are ignored until they're mapped here.
       }
@@ -494,7 +502,7 @@ final class IOSSystemContextMenuItemLiveText extends IOSSystemContextMenuItem {
 /// Creates an instance of [IOSSystemContextMenuItem] for custom action buttons
 /// defined by the developer.
 ///
-/// Only supported on iOS 16.0 and above.
+/// Supported on iOS 16.0 and above and Android.
 ///
 /// The [title] and [onPressed] callback must be provided.
 ///

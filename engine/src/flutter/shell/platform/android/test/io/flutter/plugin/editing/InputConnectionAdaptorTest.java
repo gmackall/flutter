@@ -1253,6 +1253,24 @@ public class InputConnectionAdaptorTest {
     verify(adaptor, times(4)).endBatchEdit();
   }
 
+  @Test
+  public void testPerformContextMenuAction_pasteRawUriFallsBackToCoerceToText() {
+    Context context = ApplicationProvider.getApplicationContext();
+    android.content.ClipboardManager clipboard =
+        (android.content.ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+    clipboard.setPrimaryClip(
+        android.content.ClipData.newRawUri("link", android.net.Uri.parse("https://flutter.dev")));
+
+    // Strict system context menu clipboard reader ignores non-content URIs, while IME paste
+    // preserves coerceToText fallback.
+    assertNull(TextInputPlugin.readPlainTextFromClipboard(context));
+
+    ListenableEditingState editable = sampleEditable(0, 5, "Hello");
+    InputConnectionAdaptor adaptor = sampleInputConnectionAdaptor(editable);
+    assertTrue(adaptor.performContextMenuAction(android.R.id.paste));
+    assertEquals("https://flutter.dev", editable.toString());
+  }
+
   private static final String SAMPLE_TEXT =
       "Lorem ipsum dolor sit amet," + "\nconsectetur adipiscing elit.";
 

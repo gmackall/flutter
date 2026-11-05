@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -693,7 +695,7 @@ void main() {
   );
 
   testWidgets(
-    'when supportsShowingSystemContextMenu is true and the platform is iOS, isSupported is true',
+    'when supportsShowingSystemContextMenu is true and the platform is iOS or Android, isSupported is true',
     (WidgetTester tester) async {
       final controller = TextEditingController(text: 'one two three');
       addTearDown(controller.dispose);
@@ -716,7 +718,7 @@ void main() {
       );
 
       expect(SystemContextMenu.isSupported(buildContext), switch (defaultTargetPlatform) {
-        TargetPlatform.iOS => isTrue,
+        TargetPlatform.iOS || TargetPlatform.android => isTrue,
         _ => isFalse,
       });
     },
@@ -742,7 +744,10 @@ void main() {
         });
       },
       skip: kIsWeb, // [intended] SystemContextMenu is not supported on web.
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant(<TargetPlatform>{
+        TargetPlatform.iOS,
+        TargetPlatform.android,
+      }),
     );
   }
 
@@ -1239,6 +1244,358 @@ void main() {
       expect(itemsReceived.last, contains(isA<IOSSystemContextMenuItemDataShare>()));
     },
     skip: kIsWeb, // [intended]
-    variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    variant: const TargetPlatformVariant(<TargetPlatform>{
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+    }),
+  );
+
+  testWidgets(
+    'Android default items order Share before Select All and include ProcessText actions with stable callbacks',
+    (WidgetTester tester) async {
+      final itemsReceived = <List<IOSSystemContextMenuItemData>>[];
+      String? lastProcessedId;
+      String? lastProcessedText;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.processText,
+        (MethodCall methodCall) async {
+          switch (methodCall.method) {
+            case 'ProcessText.queryTextActions':
+              return <String, String>{'translate_id': 'Translate', 'define_id': 'Define'};
+            case 'ProcessText.processTextAction':
+              final args = methodCall.arguments as List<dynamic>;
+              lastProcessedId = args[0] as String;
+              lastProcessedText = args[1] as String;
+              return 'HOLA';
+            default:
+              return null;
+          }
+        },
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'Clipboard.hasStrings') {
+            return <String, bool>{'value': true};
+          }
+          if (methodCall.method == 'ContextMenu.showSystemContextMenu') {
+            final arguments = methodCall.arguments as Map<String, dynamic>;
+            final untypedItems = arguments['items'] as List<dynamic>;
+            itemsReceived.add(
+              untypedItems.map((dynamic value) {
+                final itemJson = value as Map<String, dynamic>;
+                return systemContextMenuItemDataFromJson(itemJson);
+              }).toList(),
+            );
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.processText,
+          null,
+        );
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        );
+      });
+
+      final controller = TextEditingController(text: 'Hello world');
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        _buildSystemContextMenuTestApp(
+          supportsShowingSystemContextMenu: true,
+          child: Center(
+            child: TestTextField(
+              controller: controller,
+              contextMenuBuilder: (BuildContext context, EditableTextState editableTextState) {
+                return SystemContextMenu.editableText(editableTextState: editableTextState);
+              },
+            ),
+          ),
+        ),
+      );
+      // Let _initProcessTextActions complete.
+      await tester.pump();
+
+      await tester.tap(find.byType(TestTextField));
+      await tester.pump();
+      final EditableTextState state = tester.state<EditableTextState>(find.byType(EditableText));
+
+      controller.selection = const TextSelection(baseOffset: 0, extentOffset: 5);
+      await tester.pump();
+
+      expect(state.showToolbar(), isTrue);
+      await tester.pump();
+
+      expect(itemsReceived, hasLength(1));
+      expect(itemsReceived.last, <Matcher>[
+        isA<IOSSystemContextMenuItemDataCut>(),
+        isA<IOSSystemContextMenuItemDataCopy>(),
+        isA<IOSSystemContextMenuItemDataPaste>(),
+        isA<IOSSystemContextMenuItemDataShare>(),
+        isA<IOSSystemContextMenuItemDataSelectAll>(),
+        isA<IOSSystemContextMenuItemDataCustom>().having(
+          (IOSSystemContextMenuItemDataCustom item) => item.title,
+          'title',
+          'Translate',
+        ),
+        isA<IOSSystemContextMenuItemDataCustom>().having(
+          (IOSSystemContextMenuItemDataCustom item) => item.title,
+          'title',
+          'Define',
+        ),
+      ]);
+
+      // Rebuilding without changing selection or items should deduplicate and NOT re-send
+      // showSystemContextMenu because ProcessText callbacks are cached per action ID.
+      (tester.element(find.byType(SystemContextMenu)) as StatefulElement).markNeedsBuild();
+      await tester.pump();
+      expect(itemsReceived, hasLength(1));
+
+      // Trigger the ProcessText custom action via SystemContextMenu.getDefaultItems callback ID.
+      final List<IOSSystemContextMenuItem> defaultItems = SystemContextMenu.getDefaultItems(state);
+      final translateItem = defaultItems[5] as IOSSystemContextMenuItemCustom;
+      final translateData =
+          translateItem.getData(const DefaultWidgetsLocalizations())
+              as IOSSystemContextMenuItemDataCustom;
+      final ByteData performActionBytes = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[
+          0,
+          translateData.callbackId,
+        ]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        performActionBytes,
+        (ByteData? _) {},
+      );
+      await tester.pump();
+
+      expect(lastProcessedId, 'translate_id');
+      expect(lastProcessedText, 'Hello');
+      expect(controller.text, 'HOLA world');
+    },
+    skip: kIsWeb, // [intended]
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
+  testWidgets(
+    'late ContextMenu.onDismissSystemContextMenu after toolbar is hidden does not throw',
+    (WidgetTester tester) async {
+      final controller = TextEditingController(text: 'Hello world');
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        _buildSystemContextMenuTestApp(
+          supportsShowingSystemContextMenu: true,
+          child: Center(
+            child: TestTextField(
+              controller: controller,
+              contextMenuBuilder: (BuildContext context, EditableTextState editableTextState) {
+                return SystemContextMenu.editableText(editableTextState: editableTextState);
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byType(TestTextField));
+      await tester.pump();
+      final EditableTextState state = tester.state<EditableTextState>(find.byType(EditableText));
+      controller.selection = const TextSelection(baseOffset: 0, extentOffset: 5);
+      await tester.pump();
+
+      expect(state.showToolbar(), isTrue);
+      await tester.pump();
+
+      // Hide toolbar from Dart first (unregistering the SystemContextMenuClient),
+      // then simulate an in-flight platform dismissal message arriving afterwards.
+      state.hideToolbar();
+      await tester.pump();
+
+      final ByteData dismissBytes = const JSONMethodCodec().encodeMethodCall(
+        const MethodCall('ContextMenu.onDismissSystemContextMenu', <dynamic>[0]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        dismissBytes,
+        (ByteData? _) {},
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+    skip: kIsWeb, // [intended]
+    variant: const TargetPlatformVariant(<TargetPlatform>{
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+    }),
+  );
+
+  testWidgets(
+    'Android getDefaultItems handles empty ProcessText actions and obscureText fields',
+    (WidgetTester tester) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'Clipboard.hasStrings') {
+            return <String, bool>{'value': true};
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        );
+      });
+
+      final controller = TextEditingController(text: 'secret text');
+      addTearDown(controller.dispose);
+
+      // 1. Non-obscured field with no ProcessText actions.
+      await tester.pumpWidget(
+        _buildSystemContextMenuTestApp(
+          supportsShowingSystemContextMenu: true,
+          child: Center(
+            child: TestTextField(
+              controller: controller,
+              contextMenuBuilder: (BuildContext context, EditableTextState editableTextState) {
+                return SystemContextMenu.editableText(editableTextState: editableTextState);
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byType(TestTextField));
+      await tester.pump();
+      controller.selection = const TextSelection(baseOffset: 0, extentOffset: 6);
+      await tester.pump();
+
+      EditableTextState state = tester.state<EditableTextState>(find.byType(EditableText));
+      expect(SystemContextMenu.getDefaultItems(state), <Matcher>[
+        isA<IOSSystemContextMenuItemCut>(),
+        isA<IOSSystemContextMenuItemCopy>(),
+        isA<IOSSystemContextMenuItemPaste>(),
+        isA<IOSSystemContextMenuItemShare>(),
+        isA<IOSSystemContextMenuItemSelectAll>(),
+      ]);
+
+      // 2. Obscured field omits Cut, Copy, Share, and ProcessText actions.
+      final focusNode = FocusNode();
+      addTearDown(focusNode.dispose);
+      await tester.pumpWidget(
+        _buildSystemContextMenuTestApp(
+          supportsShowingSystemContextMenu: true,
+          child: Center(
+            child: EditableText(
+              controller: controller,
+              focusNode: focusNode,
+              obscureText: true,
+              style: const TextStyle(),
+              cursorColor: const Color(0xFF000000),
+              backgroundCursorColor: const Color(0xFF888888),
+              contextMenuBuilder: (BuildContext context, EditableTextState editableTextState) {
+                return SystemContextMenu.editableText(editableTextState: editableTextState);
+              },
+            ),
+          ),
+        ),
+      );
+      focusNode.requestFocus();
+      await tester.pump();
+      controller.selection = const TextSelection(baseOffset: 0, extentOffset: 6);
+      await tester.pump();
+
+      state = tester.state<EditableTextState>(find.byType(EditableText));
+      expect(SystemContextMenu.getDefaultItems(state), <Matcher>[
+        isA<IOSSystemContextMenuItemPaste>(),
+        isA<IOSSystemContextMenuItemSelectAll>(),
+      ]);
+    },
+    skip: kIsWeb, // [intended]
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
+  testWidgets(
+    'ProcessText action completing after EditableText unmount is safely ignored',
+    (WidgetTester tester) async {
+      final processCompleter = Completer<String?>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.processText,
+        (MethodCall methodCall) async {
+          switch (methodCall.method) {
+            case 'ProcessText.queryTextActions':
+              return <String, String>{'async_id': 'AsyncTransform'};
+            case 'ProcessText.processTextAction':
+              return processCompleter.future;
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.processText,
+          null,
+        );
+      });
+
+      final controller = TextEditingController(text: 'Hello world');
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        _buildSystemContextMenuTestApp(
+          supportsShowingSystemContextMenu: true,
+          child: Center(
+            child: TestTextField(
+              controller: controller,
+              contextMenuBuilder: (BuildContext context, EditableTextState editableTextState) {
+                return SystemContextMenu.editableText(editableTextState: editableTextState);
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byType(TestTextField));
+      await tester.pump();
+      controller.selection = const TextSelection(baseOffset: 0, extentOffset: 5);
+      await tester.pump();
+
+      final EditableTextState state = tester.state<EditableTextState>(find.byType(EditableText));
+      expect(state.showToolbar(), isTrue);
+      await tester.pump();
+
+      final List<IOSSystemContextMenuItem> defaultItems = SystemContextMenu.getDefaultItems(state);
+      final IOSSystemContextMenuItemCustom asyncCustomItem =
+          defaultItems.whereType<IOSSystemContextMenuItemCustom>().single;
+      final String callbackId =
+          (asyncCustomItem.getData(const DefaultWidgetsLocalizations())
+                  as IOSSystemContextMenuItemDataCustom)
+              .callbackId;
+
+      final ByteData performActionBytes = const JSONMethodCodec().encodeMethodCall(
+        MethodCall('ContextMenu.onPerformCustomAction', <dynamic>[0, callbackId]),
+      );
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/platform',
+        performActionBytes,
+        (ByteData? _) {},
+      );
+      await tester.pump();
+
+      // Unmount EditableText while ProcessText activity result is still pending.
+      await tester.pumpWidget(const SizedBox.shrink());
+      processCompleter.complete('REPLACED');
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(controller.text, 'Hello world');
+    },
+    skip: kIsWeb, // [intended]
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 }

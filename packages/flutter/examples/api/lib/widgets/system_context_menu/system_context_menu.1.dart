@@ -57,11 +57,11 @@ class _SystemContextMenuExampleState extends State<SystemContextMenuExample> {
         decoration: const InputDecoration(
           border: OutlineInputBorder(),
           labelText: 'Text Field with Custom Context Menu',
-          helperText: 'Long press to see custom menu items (iOS 16.0+)',
+          helperText: 'Long press to see custom menu items (iOS 16.0+ and Android)',
         ),
         contextMenuBuilder:
             (BuildContext context, EditableTextState editableTextState) {
-              if (!MediaQuery.of(context).supportsShowingSystemContextMenu) {
+              if (!SystemContextMenu.isSupported(context)) {
                 return AdaptiveTextSelectionToolbar.editableText(
                   editableTextState: editableTextState,
                 );

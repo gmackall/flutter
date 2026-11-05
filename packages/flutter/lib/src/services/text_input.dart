@@ -2904,6 +2904,8 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
 
   static SystemContextMenuController? _lastShown;
 
+  static int _nextSessionId = 1;
+
   final Map<String, VoidCallback> _customActionCallbacks = <String, VoidCallback>{};
 
   /// The target [Rect] that was last given to [show].
@@ -2915,6 +2917,15 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
   ///
   /// Null if [show] has not been called.
   List<IOSSystemContextMenuItemData>? _lastItems;
+
+  /// The [TextInputConnection] ID that was active when [show] or [showWithItems]
+  /// was last called.
+  int? _shownClientId;
+
+  /// Monotonically increasing session token assigned to each [show] or
+  /// [showWithItems] invocation so late platform callbacks from a superseded
+  /// show on the same [TextInputConnection] are ignored.
+  int? _shownSessionId;
 
   /// True when the instance most recently [show]n has been hidden by the
   /// system.
@@ -2928,6 +2939,56 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
   /// After calling [dispose], this instance can no longer be used.
   bool _isDisposed = false;
 
+  /// Resolves how a platform-initiated system context menu callback should be
+  /// routed.
+  ///
+  /// Returns `(handled: true, controller: active)` when the callback matches
+  /// the currently visible [SystemContextMenuController], `(handled: true,
+  /// controller: null)` when the callback is a stale message intended for a
+  /// [SystemContextMenuController] that is no longer active for that session or
+  /// client, and `(handled: false, controller: null)` when a custom
+  /// non-[SystemContextMenuController] [SystemContextMenuClient] should handle
+  /// the message instead.
+  @internal
+  static ({bool handled, SystemContextMenuController? controller}) resolveForPlatformCallback(
+    SystemContextMenuClient? registeredClient, {
+    int? targetClientId,
+    int? sessionId,
+    String? customActionCallbackId,
+  }) {
+    if (registeredClient != null &&
+        registeredClient is! SystemContextMenuController &&
+        sessionId == null) {
+      return (handled: false, controller: null);
+    }
+    final SystemContextMenuController? active = _lastShown;
+    if (active != null && active.isVisible) {
+      if (targetClientId != null &&
+          active._shownClientId != null &&
+          targetClientId != active._shownClientId) {
+        return (handled: true, controller: null);
+      }
+      if (sessionId != null &&
+          active._shownSessionId != null &&
+          sessionId != active._shownSessionId) {
+        // If Dart issued an in-place showWithItems update (advancing sessionId)
+        // on the same client while the user was tapping a still-registered
+        // custom action, honor the tap while keeping strict sessionId matching
+        // for dismissals.
+        if (customActionCallbackId != null &&
+            active._customActionCallbacks.containsKey(customActionCallbackId)) {
+          return (handled: true, controller: active);
+        }
+        return (handled: true, controller: null);
+      }
+      return (handled: true, controller: active);
+    }
+    if (sessionId != null || registeredClient is SystemContextMenuController) {
+      return (handled: true, controller: null);
+    }
+    return (handled: false, controller: null);
+  }
+
   // Begin SystemContextMenuClient.
 
   @override
@@ -2940,6 +3001,8 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
     if (_lastShown == this) {
       _lastShown = null;
     }
+    _shownClientId = null;
+    _shownSessionId = null;
     _hiddenBySystem = true;
     _customActionCallbacks.clear();
     onSystemHide?.call();
@@ -2959,7 +3022,7 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
 
   /// Shows the system context menu anchored on the given [Rect].
   ///
-  /// Currently only supported on iOS 16.0 and later. Check
+  /// Currently only supported on iOS 16.0 and later, and on Android. Check
   /// [MediaQuery.maybeSupportsShowingSystemContextMenu] before calling this.
   ///
   /// The [Rect] represents what the context menu is pointing to. For example,
@@ -3000,7 +3063,10 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
 
     ServicesBinding.systemContextMenuClient = this;
 
+    final int sessionId = _nextSessionId++;
     _lastTargetRect = targetRect;
+    _shownClientId = TextInput._instance._currentConnection?._id;
+    _shownSessionId = sessionId;
     _lastShown = this;
     _hiddenBySystem = false;
     return _channel.invokeMethod('ContextMenu.showSystemContextMenu', <String, dynamic>{
@@ -3010,13 +3076,14 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
         'width': targetRect.width,
         'height': targetRect.height,
       },
+      'sessionId': sessionId,
     });
   }
 
   /// Shows the system context menu anchored on the given [Rect] with the given
   /// buttons.
   ///
-  /// Currently only supported on iOS 16.0 and later. Check
+  /// Currently only supported on iOS 16.0 and later, and on Android. Check
   /// [MediaQuery.maybeSupportsShowingSystemContextMenu] before calling this.
   ///
   /// The [Rect] represents what the context menu is pointing to. For example,
@@ -3080,8 +3147,11 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
         .map<Map<String, dynamic>>((IOSSystemContextMenuItemData item) => item._json)
         .toList();
 
+    final int sessionId = _nextSessionId++;
     _lastTargetRect = targetRect;
     _lastItems = items;
+    _shownClientId = TextInput._instance._currentConnection?._id;
+    _shownSessionId = sessionId;
     _lastShown = this;
     _hiddenBySystem = false;
     return _channel.invokeMethod('ContextMenu.showSystemContextMenu', <String, dynamic>{
@@ -3092,6 +3162,7 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
         'height': targetRect.height,
       },
       'items': itemsJson,
+      'sessionId': sessionId,
     });
   }
 
@@ -3100,7 +3171,7 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
   /// If this hasn't been shown, or if another instance has hidden this menu,
   /// does nothing.
   ///
-  /// Currently this is only supported on iOS 16.0 and later.
+  /// Currently this is only supported on iOS 16.0 and later, and on Android.
   ///
   /// See also:
   ///
@@ -3115,6 +3186,8 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
       return;
     }
     _lastShown = null;
+    _shownClientId = null;
+    _shownSessionId = null;
     ServicesBinding.systemContextMenuClient = null;
     _customActionCallbacks.clear();
     // This may be called unnecessarily in the case where the user has already
@@ -3389,7 +3462,7 @@ final class IOSSystemContextMenuItemDataLiveText extends IOSSystemContextMenuIte
 ///
 /// Must specify a [title] and [onPressed].
 ///
-/// Only supported on iOS 16.0 and above.
+/// Supported on iOS 16.0 and above, and on Android.
 ///
 /// See also:
 ///

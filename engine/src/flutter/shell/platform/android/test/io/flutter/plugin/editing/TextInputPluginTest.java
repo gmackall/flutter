@@ -4,6 +4,8 @@ import static io.flutter.Build.API_LEVELS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.AdditionalMatchers.aryEq;
@@ -23,6 +25,8 @@ import static org.mockito.Mockito.when;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.res.AssetManager;
 import android.graphics.Insets;
@@ -35,13 +39,17 @@ import android.text.InputType;
 import android.text.Selection;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
+import android.view.ActionMode;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewStructure;
 import android.view.WindowInsets;
 import android.view.WindowInsetsAnimation;
 import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -58,6 +66,7 @@ import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.loader.FlutterLoader;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
+import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel.TextEditState;
@@ -68,6 +77,7 @@ import io.flutter.plugin.platform.PlatformViewsController;
 import io.flutter.plugin.platform.PlatformViewsController2;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -3200,6 +3210,792 @@ public class TextInputPluginTest {
     assertEquals(
         InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD,
         editorInfo.inputType);
+  }
+
+  private static TextInputChannel.Configuration createTextConfiguration(
+      boolean obscureText, boolean enableDeltaModel) {
+    return new TextInputChannel.Configuration(
+        obscureText,
+        true,
+        true,
+        true,
+        enableDeltaModel,
+        TextInputChannel.TextCapitalization.NONE,
+        new TextInputChannel.InputType(TextInputChannel.TextInputType.TEXT, false, false, false),
+        null,
+        null,
+        null,
+        null,
+        null,
+        null);
+  }
+
+  @Test
+  public void systemContextMenu_startsFloatingActionModeWithExpectedMenuIdsAndContentRect() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = spy(new View(activity));
+            activity.setContentView(testView);
+            final float originalDensity = testView.getResources().getDisplayMetrics().density;
+            testView.getResources().getDisplayMetrics().density = 2.0f;
+            try {
+
+              DartExecutor dartExecutor =
+                  spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+              dartExecutor.onAttachedToJNI();
+              TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+              ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+              PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+              TextInputPlugin textInputPlugin =
+                  new TextInputPlugin(
+                      testView,
+                      textInputChannel,
+                      scribeChannel,
+                      mock(PlatformViewsController.class),
+                      mock(PlatformViewsController2.class),
+                      platformChannel);
+
+              textInputPlugin.setTextInputClient(5, createTextConfiguration(false, false));
+              textInputPlugin.setTextInputEditingState(
+                  testView, new TextEditState("Hello world", 0, 5, -1, -1));
+
+              ArgumentCaptor<ActionMode.Callback> callbackCaptor =
+                  ArgumentCaptor.forClass(ActionMode.Callback.class);
+              PlatformChannel.SystemContextMenuRequest request =
+                  new PlatformChannel.SystemContextMenuRequest(
+                      new PlatformChannel.SystemContextMenuTargetRect(10.0, 20.0, 0.0, 15.0),
+                      Arrays.asList(
+                          new PlatformChannel.SystemContextMenuItem("cut", null, null),
+                          new PlatformChannel.SystemContextMenuItem("copy", null, null),
+                          new PlatformChannel.SystemContextMenuItem("paste", null, null),
+                          new PlatformChannel.SystemContextMenuItem("share", "Share", null),
+                          new PlatformChannel.SystemContextMenuItem("selectAll", null, null),
+                          new PlatformChannel.SystemContextMenuItem("lookUp", "Look Up", null),
+                          new PlatformChannel.SystemContextMenuItem(
+                              "custom", "Translate", "cb-1")));
+
+              textInputPlugin.showSystemContextMenu(request);
+
+              verify(testView)
+                  .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+              ActionMode mode = textInputPlugin.getSystemContextMenuActionMode();
+              assertNotNull(mode);
+
+              Menu menu = mode.getMenu();
+              assertEquals(6, menu.size());
+              assertEquals(android.R.id.cut, menu.getItem(0).getItemId());
+              assertEquals(android.R.id.copy, menu.getItem(1).getItemId());
+              assertEquals(android.R.id.paste, menu.getItem(2).getItemId());
+              assertEquals(android.R.id.shareText, menu.getItem(3).getItemId());
+              assertEquals(android.R.id.selectAll, menu.getItem(4).getItemId());
+              assertEquals("Translate", menu.getItem(5).getTitle().toString());
+
+              ActionMode.Callback2 callback2 = (ActionMode.Callback2) callbackCaptor.getValue();
+              Rect outRect = new Rect();
+              callback2.onGetContentRect(mode, testView, outRect);
+              // Zero logical width must clamp to >= 1 physical pixel so outRect is non-empty.
+              assertEquals(new Rect(20, 40, 21, 70), outRect);
+              assertFalse(outRect.isEmpty());
+
+              // Updating while visible reuses the same ActionMode in place.
+              PlatformChannel.SystemContextMenuRequest updatedRequest =
+                  new PlatformChannel.SystemContextMenuRequest(
+                      new PlatformChannel.SystemContextMenuTargetRect(15.0, 25.0, 30.0, 15.0),
+                      Arrays.asList(
+                          new PlatformChannel.SystemContextMenuItem("paste", null, null)));
+              textInputPlugin.showSystemContextMenu(updatedRequest);
+              assertSame(mode, textInputPlugin.getSystemContextMenuActionMode());
+              assertEquals(1, mode.getMenu().size());
+              assertEquals(android.R.id.paste, mode.getMenu().getItem(0).getItemId());
+            } finally {
+              testView.getResources().getDisplayMetrics().density = originalDensity;
+            }
+          });
+    }
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void systemContextMenu_pasteDismissesBeforeSendingDeltaEditingUpdate()
+      throws JSONException {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = spy(new View(activity));
+            activity.setContentView(testView);
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("label", "Flutter"));
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+            dartExecutor.onAttachedToJNI();
+            TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+            ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+
+            textInputPlugin.setTextInputClient(3, createTextConfiguration(false, true));
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("Hi world", 0, 2, -1, -1));
+
+            ArgumentCaptor<ActionMode.Callback> callbackCaptor =
+                ArgumentCaptor.forClass(ActionMode.Callback.class);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+
+            ActionMode mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertNotNull(mode);
+            MenuItem pasteItem = mode.getMenu().findItem(android.R.id.paste);
+            assertNotNull(pasteItem);
+
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            assertTrue(callbackCaptor.getValue().onActionItemClicked(mode, pasteItem));
+            assertNull(textInputPlugin.getSystemContextMenuActionMode());
+            assertEquals("Flutter world", textInputPlugin.getEditable().toString());
+            assertEquals(7, Selection.getSelectionStart(textInputPlugin.getEditable()));
+            assertEquals(7, Selection.getSelectionEnd(textInputPlugin.getEditable()));
+
+            ArgumentCaptor<String> channelCaptor = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<ByteBuffer> bufferCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor, times(2))
+                .send(channelCaptor.capture(), bufferCaptor.capture(), isNull());
+
+            // 1st message MUST be ContextMenu.onDismissSystemContextMenu on flutter/platform.
+            assertEquals("flutter/platform", channelCaptor.getAllValues().get(0));
+            ByteBuffer firstBuf = bufferCaptor.getAllValues().get(0);
+            firstBuf.rewind();
+            MethodCall firstCall = JSONMethodCodec.INSTANCE.decodeMethodCall(firstBuf);
+            assertEquals("ContextMenu.onDismissSystemContextMenu", firstCall.method);
+
+            // 2nd message MUST be TextInputClient.updateEditingStateWithDeltas on
+            // flutter/textinput.
+            assertEquals("flutter/textinput", channelCaptor.getAllValues().get(1));
+            ByteBuffer secondBuf = bufferCaptor.getAllValues().get(1);
+            secondBuf.rewind();
+            MethodCall secondCall = JSONMethodCodec.INSTANCE.decodeMethodCall(secondBuf);
+            assertEquals("TextInputClient.updateEditingStateWithDeltas", secondCall.method);
+          });
+    }
+  }
+
+  @Test
+  public void systemContextMenu_cutCopySelectAllAndObscureTextBehavior() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = spy(new View(activity));
+            activity.setContentView(testView);
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("initial", "UNCHANGED"));
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+            dartExecutor.onAttachedToJNI();
+            TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+            ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+
+            // 1. Select All keeps ActionMode active and selects entire text.
+            textInputPlugin.setTextInputClient(1, createTextConfiguration(false, false));
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("abcdef", 2, 2, -1, -1));
+            ArgumentCaptor<ActionMode.Callback> callbackCaptor =
+                ArgumentCaptor.forClass(ActionMode.Callback.class);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(
+                        new PlatformChannel.SystemContextMenuItem("selectAll", null, null),
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null),
+                        new PlatformChannel.SystemContextMenuItem("cut", null, null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            ActionMode mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertNotNull(mode);
+
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.selectAll)));
+            // ActionMode remains open after Select All so items can update in place.
+            assertSame(mode, textInputPlugin.getSystemContextMenuActionMode());
+            assertEquals(0, Selection.getSelectionStart(textInputPlugin.getEditable()));
+            assertEquals(6, Selection.getSelectionEnd(textInputPlugin.getEditable()));
+
+            // 2. Copy copies text, finishes ActionMode, and collapses selection to selMax.
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.copy)));
+            assertNull(textInputPlugin.getSystemContextMenuActionMode());
+            assertEquals("abcdef", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+            assertEquals(6, Selection.getSelectionStart(textInputPlugin.getEditable()));
+            assertEquals(6, Selection.getSelectionEnd(textInputPlugin.getEditable()));
+
+            // 3. Obscure text never writes password characters to clipboard on Cut.
+            clipboard.setPrimaryClip(ClipData.newPlainText("initial", "SAFE"));
+            textInputPlugin.setTextInputClient(2, createTextConfiguration(true, false));
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("secret", 0, 6, -1, -1));
+            org.mockito.Mockito.clearInvocations(testView);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("cut", null, null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            ActionMode obscureMode = textInputPlugin.getSystemContextMenuActionMode();
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(
+                        obscureMode, obscureMode.getMenu().findItem(android.R.id.cut)));
+            assertEquals("SAFE", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+            // Cut on an obscured field is a no-op backstop and does not delete password text.
+            assertEquals("secret", textInputPlugin.getEditable().toString());
+          });
+    }
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void systemContextMenu_customActionAndDismissLifecycleOrdering() throws JSONException {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = spy(new View(activity));
+            activity.setContentView(testView);
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+            dartExecutor.onAttachedToJNI();
+            TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+            ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+
+            textInputPlugin.setTextInputClient(9, createTextConfiguration(false, false));
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("Hello", 0, 5, -1, -1));
+
+            ArgumentCaptor<ActionMode.Callback> callbackCaptor =
+                ArgumentCaptor.forClass(ActionMode.Callback.class);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(
+                        new PlatformChannel.SystemContextMenuItem(
+                            "custom", "Custom Action", "cb-99"))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            ActionMode mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertNotNull(mode);
+
+            // Clicking custom item sends onPerformCustomAction FIRST, then
+            // onDismissSystemContextMenu.
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            MenuItem customItem = mode.getMenu().getItem(0);
+            assertTrue(callbackCaptor.getValue().onActionItemClicked(mode, customItem));
+
+            ArgumentCaptor<ByteBuffer> bufferCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor, times(2))
+                .send(eq("flutter/platform"), bufferCaptor.capture(), isNull());
+
+            ByteBuffer first = bufferCaptor.getAllValues().get(0);
+            first.rewind();
+            assertEquals(
+                "ContextMenu.onPerformCustomAction",
+                JSONMethodCodec.INSTANCE.decodeMethodCall(first).method);
+
+            ByteBuffer second = bufferCaptor.getAllValues().get(1);
+            second.rewind();
+            assertEquals(
+                "ContextMenu.onDismissSystemContextMenu",
+                JSONMethodCodec.INSTANCE.decodeMethodCall(second).method);
+
+            // Programmatic hideSystemContextMenu() finishes ActionMode WITHOUT echoing
+            // onDismissSystemContextMenu.
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(textInputPlugin.getSystemContextMenuActionMode());
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            textInputPlugin.hideSystemContextMenu();
+            assertNull(textInputPlugin.getSystemContextMenuActionMode());
+            verify(dartExecutor, never()).send(eq("flutter/platform"), any(), any());
+
+            // Switching to a Platform View while ActionMode is active finishes it AND notifies
+            // framework.
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(textInputPlugin.getSystemContextMenuActionMode());
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            textInputPlugin.setPlatformViewTextInputClient(42, false);
+            assertNull(textInputPlugin.getSystemContextMenuActionMode());
+            ArgumentCaptor<ByteBuffer> pvDismissCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor, times(1))
+                .send(eq("flutter/platform"), pvDismissCaptor.capture(), isNull());
+            ByteBuffer pvBuf = pvDismissCaptor.getValue();
+            pvBuf.rewind();
+            MethodCall pvCall = JSONMethodCodec.INSTANCE.decodeMethodCall(pvBuf);
+            assertEquals("ContextMenu.onDismissSystemContextMenu", pvCall.method);
+            assertEquals(9, ((JSONArray) pvCall.arguments).optInt(0));
+          });
+    }
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void
+      systemContextMenu_engineDismissalsNotifyFrameworkWithOwningClientIdAndGuardHandlerOwnership()
+          throws JSONException {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = spy(new View(activity));
+            activity.setContentView(testView);
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+            dartExecutor.onAttachedToJNI();
+            TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+            ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            ArgumentCaptor<BinaryMessenger.BinaryMessageHandler> platformHandlerCaptor =
+                ArgumentCaptor.forClass(BinaryMessenger.BinaryMessageHandler.class);
+            verify(dartExecutor)
+                .setMessageHandler(eq("flutter/platform"), platformHandlerCaptor.capture());
+            java.util.function.IntConsumer assertDismissedWithClientId =
+                expectedClientId -> {
+                  ArgumentCaptor<ByteBuffer> dismissCaptor =
+                      ArgumentCaptor.forClass(ByteBuffer.class);
+                  verify(dartExecutor, times(1))
+                      .send(eq("flutter/platform"), dismissCaptor.capture(), isNull());
+                  ByteBuffer buf = dismissCaptor.getValue();
+                  buf.rewind();
+                  MethodCall call = JSONMethodCodec.INSTANCE.decodeMethodCall(buf);
+                  assertEquals("ContextMenu.onDismissSystemContextMenu", call.method);
+                  assertEquals(expectedClientId, ((JSONArray) call.arguments).optInt(0));
+                };
+            TextInputPlugin pluginA =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+
+            // 1. startActionMode returning null notifies Dart immediately with owning clientId.
+            pluginA.setTextInputClient(10, createTextConfiguration(false, false));
+            pluginA.setTextInputEditingState(testView, new TextEditState("Hello", 0, 5, -1, -1));
+            org.mockito.Mockito.doReturn(null)
+                .when(testView)
+                .startActionMode(any(), eq(ActionMode.TYPE_FLOATING));
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            pluginA.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNull(pluginA.getSystemContextMenuActionMode());
+            assertDismissedWithClientId.accept(10);
+
+            // Restore real startActionMode.
+            org.mockito.Mockito.doCallRealMethod()
+                .when(testView)
+                .startActionMode(any(), eq(ActionMode.TYPE_FLOATING));
+
+            // 2. Unsupported-only items while an ActionMode is showing dismisses & notifies.
+            pluginA.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(pluginA.getSystemContextMenuActionMode());
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            pluginA.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(
+                        new PlatformChannel.SystemContextMenuItem("lookUp", "Look Up", null))));
+            assertNull(pluginA.getSystemContextMenuActionMode());
+            assertDismissedWithClientId.accept(10);
+
+            // 3. Switching client 10 -> 11 while showing notifies with OLD clientId (10).
+            pluginA.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(pluginA.getSystemContextMenuActionMode());
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            pluginA.setTextInputClient(11, createTextConfiguration(false, false));
+            assertNull(pluginA.getSystemContextMenuActionMode());
+            assertDismissedWithClientId.accept(10);
+
+            // 4. clearTextInputClient while showing notifies with clientId 11.
+            pluginA.setTextInputEditingState(testView, new TextEditState("World", 0, 5, -1, -1));
+            pluginA.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(pluginA.getSystemContextMenuActionMode());
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            pluginA.clearTextInputClient();
+            assertNull(pluginA.getSystemContextMenuActionMode());
+            assertDismissedWithClientId.accept(11);
+
+            // 5. Attaching a newer pluginB before pluginA.destroy() preserves pluginB's handler,
+            // and pluginB.destroy() notifies with pluginB's owning clientId.
+            TextInputPlugin pluginB =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+            pluginA.destroy();
+
+            pluginB.setTextInputClient(12, createTextConfiguration(false, false));
+            pluginB.setTextInputEditingState(testView, new TextEditState("Keep", 0, 4, -1, -1));
+            JSONObject showArgs;
+            try {
+              JSONObject rectJson =
+                  new JSONObject().put("x", 0).put("y", 0).put("width", 10).put("height", 10);
+              JSONArray itemsJson = new JSONArray().put(new JSONObject().put("type", "copy"));
+              showArgs = new JSONObject().put("targetRect", rectJson).put("items", itemsJson);
+            } catch (JSONException e) {
+              throw new RuntimeException(e);
+            }
+            ByteBuffer encodedShowCall =
+                JSONMethodCodec.INSTANCE.encodeMethodCall(
+                    new MethodCall("ContextMenu.showSystemContextMenu", showArgs));
+            encodedShowCall.rewind();
+            BinaryMessenger.BinaryReply binaryReply = mock(BinaryMessenger.BinaryReply.class);
+            platformHandlerCaptor.getValue().onMessage(encodedShowCall, binaryReply);
+            verify(binaryReply).reply(isNotNull());
+            assertNotNull(pluginB.getSystemContextMenuActionMode());
+
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            pluginB.destroy();
+            assertDismissedWithClientId.accept(12);
+          });
+    }
+  }
+
+  @Test
+  public void systemContextMenu_composingRestartSpannedPlainTextAndClipEdgeCases()
+      throws Exception {
+    TestImm testImm = Shadow.extract(ctx.getSystemService(Context.INPUT_METHOD_SERVICE));
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = spy(new View(activity));
+            activity.setContentView(testView);
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+            dartExecutor.onAttachedToJNI();
+            TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+            ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+
+            textInputPlugin.setTextInputClient(20, createTextConfiguration(false, false));
+            // Active composing span [0, 3) on "hel".
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("hel", 3, 3, 0, 3));
+            int restartsBefore = testImm.getRestartCount(testView);
+
+            // Clipboard contains a SpannableString marked with SPAN_COMPOSING and URLSpan.
+            android.text.SpannableString styledClip = new android.text.SpannableString("lo!");
+            styledClip.setSpan(
+                new android.text.style.URLSpan("https://flutter.dev"),
+                0,
+                3,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    | android.text.Spanned.SPAN_COMPOSING);
+            clipboard.setPrimaryClip(ClipData.newPlainText("styled", styledClip));
+
+            ArgumentCaptor<ActionMode.Callback> callbackCaptor =
+                ArgumentCaptor.forClass(ActionMode.Callback.class);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            ActionMode mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+
+            // Composing region was cleared, IME restarted, and pasted text has NO spans.
+            assertEquals("hello!", textInputPlugin.getEditable().toString());
+            assertEquals(
+                -1, BaseInputConnection.getComposingSpanStart(textInputPlugin.getEditable()));
+            assertEquals(
+                0,
+                textInputPlugin
+                    .getEditable()
+                    .getSpans(0, 6, android.text.style.URLSpan.class)
+                    .length);
+            assertEquals(restartsBefore + 1, testImm.getRestartCount(testView));
+
+            // Empty-string clip does NOT delete selected text on paste.
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("keepme", 0, 6, -1, -1));
+            clipboard.setPrimaryClip(ClipData.newPlainText("empty", ""));
+            org.mockito.Mockito.clearInvocations(testView);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+            assertEquals("keepme", textInputPlugin.getEditable().toString());
+
+            // Raw file:// URI clip is ignored on paste and omitted from legacy default menu.
+            clipboard.setPrimaryClip(
+                ClipData.newRawUri("file", android.net.Uri.parse("file:///sdcard/secret.txt")));
+            org.mockito.Mockito.clearInvocations(testView);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10), null));
+            // Entire text [0, 6] is already selected and raw URI is not pasteable -> only Cut/Copy.
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertNull(mode.getMenu().findItem(android.R.id.paste));
+            mode.finish();
+
+            // Invalid selection (-1, -1) is a no-op on paste.
+            clipboard.setPrimaryClip(ClipData.newPlainText("valid", "NEW"));
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("untouched", -1, -1, -1, -1));
+            org.mockito.Mockito.clearInvocations(testView);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+            assertEquals("untouched", textInputPlugin.getEditable().toString());
+          });
+    }
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void
+      systemContextMenu_stableCustomIdsLegacySelectAllInvalidateAndShareSearchContextWrapper()
+          throws JSONException {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            Activity spyActivity = spy(activity);
+            android.content.ContextWrapper wrappedContext =
+                new android.content.ContextWrapper(spyActivity);
+            View testView = spy(new View(wrappedContext));
+            activity.setContentView(testView);
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+            dartExecutor.onAttachedToJNI();
+            TextInputChannel textInputChannel = new TextInputChannel(dartExecutor);
+            ScribeChannel scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel,
+                    scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    platformChannel);
+
+            textInputPlugin.setTextInputClient(30, createTextConfiguration(false, false));
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("Hello Flutter", 0, 5, -1, -1));
+
+            // 1. Custom item IDs remain pinned to callbackId across invalidate() reordering.
+            ArgumentCaptor<ActionMode.Callback> callbackCaptor =
+                ArgumentCaptor.forClass(ActionMode.Callback.class);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action A", "cb-A"),
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action B", "cb-B"))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            ActionMode mode = textInputPlugin.getSystemContextMenuActionMode();
+            int idA = mode.getMenu().getItem(0).getItemId();
+            int idB = mode.getMenu().getItem(1).getItemId();
+            MenuItem staleItemA = mode.getMenu().getItem(0);
+
+            // Reorder to [B, C], dropping A.
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action B", "cb-B"),
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action C", "cb-C"))));
+            assertEquals(idB, mode.getMenu().getItem(0).getItemId());
+            int idC = mode.getMenu().getItem(1).getItemId();
+            org.junit.Assert.assertNotEquals(idA, idC);
+
+            // Clicking B dispatches cb-B (never cb-C).
+            org.mockito.Mockito.clearInvocations(dartExecutor);
+            assertTrue(
+                callbackCaptor.getValue().onActionItemClicked(mode, mode.getMenu().getItem(0)));
+            ArgumentCaptor<ByteBuffer> bufCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor, org.mockito.Mockito.atLeastOnce())
+                .send(eq("flutter/platform"), bufCaptor.capture(), isNull());
+            ByteBuffer firstBuf = bufCaptor.getAllValues().get(0);
+            firstBuf.rewind();
+            MethodCall customCall = JSONMethodCodec.INSTANCE.decodeMethodCall(firstBuf);
+            assertEquals("ContextMenu.onPerformCustomAction", customCall.method);
+            assertEquals("cb-B", ((JSONArray) customCall.arguments).optString(1));
+            assertNull(staleItemA.getSubMenu());
+
+            // 2. Legacy request.items == null: selectAll refreshes menu via mode.invalidate().
+            org.mockito.Mockito.clearInvocations(testView);
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextEditState("Hello Flutter", 0, 0, -1, -1));
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10), null));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            mode = textInputPlugin.getSystemContextMenuActionMode();
+            assertNull(mode.getMenu().findItem(android.R.id.copy));
+            assertNotNull(mode.getMenu().findItem(android.R.id.selectAll));
+            assertTrue(
+                callbackCaptor
+                    .getValue()
+                    .onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.selectAll)));
+            // After invalidate(), Copy/Cut are now present and Select All is gone!
+            assertNotNull(mode.getMenu().findItem(android.R.id.copy));
+            assertNull(mode.getMenu().findItem(android.R.id.selectAll));
+            mode.finish();
+
+            // 3. Share and SearchWeb unwrap ContextWrapper -> Activity without NEW_TASK and survive
+            // ActivityNotFoundException.
+            org.mockito.Mockito.doThrow(new android.content.ActivityNotFoundException("no handler"))
+                .when(spyActivity)
+                .startActivity(any(android.content.Intent.class));
+            org.mockito.Mockito.clearInvocations(testView);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(
+                        new PlatformChannel.SystemContextMenuItem("share", "Share", null),
+                        new PlatformChannel.SystemContextMenuItem("searchWeb", "Web", null))));
+            verify(testView)
+                .startActionMode(callbackCaptor.capture(), eq(ActionMode.TYPE_FLOATING));
+            mode = textInputPlugin.getSystemContextMenuActionMode();
+            MenuItem shareItem = mode.getMenu().findItem(android.R.id.shareText);
+            assertTrue(callbackCaptor.getValue().onActionItemClicked(mode, shareItem));
+            ArgumentCaptor<android.content.Intent> intentCaptor =
+                ArgumentCaptor.forClass(android.content.Intent.class);
+            verify(spyActivity).startActivity(intentCaptor.capture());
+            assertEquals(
+                0,
+                intentCaptor.getValue().getFlags() & android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            // 4. Session ID echoing and dismissal when a sibling native EditText steals focus.
+            android.widget.FrameLayout container = new android.widget.FrameLayout(activity);
+            testView.setFocusable(true);
+            testView.setFocusableInTouchMode(true);
+            android.widget.EditText siblingEditText = new android.widget.EditText(activity);
+            siblingEditText.setFocusable(true);
+            siblingEditText.setFocusableInTouchMode(true);
+            if (testView.getParent() instanceof android.view.ViewGroup) {
+              ((android.view.ViewGroup) testView.getParent()).removeView(testView);
+            }
+            container.addView(testView);
+            container.addView(siblingEditText);
+            activity.setContentView(container);
+            testView.requestFocus();
+
+            org.mockito.Mockito.clearInvocations(testView, dartExecutor);
+            textInputPlugin.showSystemContextMenu(
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10),
+                    Arrays.asList(new PlatformChannel.SystemContextMenuItem("copy", null, null)),
+                    4242));
+            assertNotNull(textInputPlugin.getSystemContextMenuActionMode());
+
+            // Focusing the native EditText immediately dismisses Flutter's floating ActionMode
+            // and echoes sessionId 4242 to the framework.
+            siblingEditText.requestFocus();
+            assertNull(textInputPlugin.getSystemContextMenuActionMode());
+            ArgumentCaptor<ByteBuffer> focusDismissCaptor =
+                ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor)
+                .send(eq("flutter/platform"), focusDismissCaptor.capture(), isNull());
+            ByteBuffer focusDismissBuf = focusDismissCaptor.getValue();
+            focusDismissBuf.rewind();
+            MethodCall focusDismissCall =
+                JSONMethodCodec.INSTANCE.decodeMethodCall(focusDismissBuf);
+            assertEquals("ContextMenu.onDismissSystemContextMenu", focusDismissCall.method);
+            JSONArray focusDismissArgs = (JSONArray) focusDismissCall.arguments;
+            assertEquals(30, focusDismissArgs.optInt(0));
+            assertEquals(4242, focusDismissArgs.optInt(1));
+          });
+    }
   }
 
   interface EventHandler {

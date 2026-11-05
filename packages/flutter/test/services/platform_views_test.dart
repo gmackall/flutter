@@ -854,4 +854,27 @@ void main() {
       expect(calls.first.arguments, <String, dynamic>{'id': 45});
     },
   );
+
+  test('PlatformViewsService dispatches viewFocused from flutter/platform_views_2', () async {
+    var focusCount = 0;
+    PlatformViewsService.initAndroidView(
+      id: 77,
+      viewType: 'test_view',
+      layoutDirection: TextDirection.ltr,
+      onFocus: () {
+        focusCount += 1;
+      },
+    );
+
+    final ByteData message = const StandardMethodCodec().encodeMethodCall(
+      const MethodCall('viewFocused', 77),
+    );
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/platform_views_2',
+      message,
+      (_) {},
+    );
+
+    expect(focusCount, 1);
+  });
 }
