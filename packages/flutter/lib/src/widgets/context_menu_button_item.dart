@@ -190,8 +190,8 @@ final class ContextMenuButtonKind {
 ///  * [AdaptiveTextSelectionToolbar], which can take a list of
 ///    ContextMenuButtonItems and create a platform-specific context menu with
 ///    the indicated buttons.
-///  * [IOSSystemContextMenuItem], which serves a similar role but for
-///    system-drawn context menu items on iOS.
+///  * [SystemContextMenuItem], which serves a similar role for system-drawn
+///    context menu items.
 @immutable
 class ContextMenuButtonItem {
   /// Creates a const instance of [ContextMenuButtonItem].
@@ -203,6 +203,7 @@ class ContextMenuButtonItem {
     ContextMenuButtonType? type,
     ContextMenuButtonKind? kind,
     this.label,
+    this.id,
   }) : assert(type == null || kind == null, 'Only one of type and kind may be given.'),
        _type = type,
        _kind = kind;
@@ -247,6 +248,13 @@ class ContextMenuButtonItem {
   /// platform will be looked up.
   final String? label;
 
+  /// An optional stable identifier for a [ContextMenuButtonKind.custom] button.
+  ///
+  /// When mapped to [SystemContextMenuItemCustom], providing a stable [id]
+  /// allows [SystemContextMenu] to update [onPressed] across rebuilds without
+  /// re-showing the platform menu.
+  final String? id;
+
   /// Creates a new [ContextMenuButtonItem] with the provided parameters
   /// overridden.
   ContextMenuButtonItem copyWith({
@@ -254,12 +262,14 @@ class ContextMenuButtonItem {
     ContextMenuButtonType? type,
     ContextMenuButtonKind? kind,
     String? label,
+    String? id,
   }) {
     assert(type == null || kind == null, 'Only one of type and kind may be given.');
     return ContextMenuButtonItem(
       onPressed: onPressed ?? this.onPressed,
       kind: kind ?? (type != null ? ContextMenuButtonKind._fromLegacyType(type) : this.kind),
       label: label ?? this.label,
+      id: id ?? this.id,
     );
   }
 
@@ -269,13 +279,14 @@ class ContextMenuButtonItem {
       return false;
     }
     return other is ContextMenuButtonItem &&
+        other.id == id &&
         other.label == label &&
         other.onPressed == onPressed &&
         other.kind == kind;
   }
 
   @override
-  int get hashCode => Object.hash(label, onPressed, kind);
+  int get hashCode => Object.hash(id, label, onPressed, kind);
 
   @override
   String toString() => 'ContextMenuButtonItem $kind, $label';

@@ -15,6 +15,7 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -31,6 +32,7 @@ public class PlatformChannel {
   @Nullable private PlatformMessageHandler platformMessageHandler;
   // This state belongs to the FlutterEngine, so retain it while Activities attach and detach.
   @Nullable private Boolean frameworkHandlesBack;
+  @Nullable private SystemContextMenuHandler systemContextMenuHandler;
 
   @NonNull @VisibleForTesting
   final MethodChannel.MethodCallHandler parsingMethodCallHandler =
@@ -40,6 +42,35 @@ public class PlatformChannel {
           String method = call.method;
           Object arguments = call.arguments;
           Log.v(TAG, "Received '" + method + "' message.");
+
+          if ("ContextMenu.showSystemContextMenu".equals(method)) {
+            if (!(arguments instanceof JSONObject)) {
+              result.error(
+                  "error",
+                  "Expected JSONObject arguments for ContextMenu.showSystemContextMenu",
+                  null);
+              return;
+            }
+            try {
+              SystemContextMenuRequest request =
+                  decodeSystemContextMenuRequest((JSONObject) arguments);
+              if (systemContextMenuHandler == null) {
+                result.success(false);
+                return;
+              }
+              boolean shown = systemContextMenuHandler.showSystemContextMenu(request);
+              result.success(shown);
+            } catch (JSONException e) {
+              result.error("error", "JSON error: " + e.getMessage(), null);
+            }
+            return;
+          } else if ("ContextMenu.hideSystemContextMenu".equals(method)) {
+            if (systemContextMenuHandler != null) {
+              systemContextMenuHandler.hideSystemContextMenu();
+            }
+            result.success(null);
+            return;
+          }
 
           if (platformMessageHandler == null
               && !method.equals("SystemNavigator.setFrameworkHandlesBack")) {
@@ -230,10 +261,88 @@ public class PlatformChannel {
     }
   }
 
+  /**
+   * Sets the {@link SystemContextMenuHandler} which receives requests to show or hide the system
+   * context menu.
+   *
+   * <p>This handler is registered separately from {@link PlatformMessageHandler} because {@link
+   * io.flutter.plugin.platform.PlatformPlugin} (which implements {@link PlatformMessageHandler}) is
+   * {@link android.app.Activity}/Fragment-scoped, whereas {@link
+   * io.flutter.plugin.editing.TextInputPlugin} and Android's floating {@link
+   * android.view.ActionMode} are {@link io.flutter.embedding.android.FlutterView}-scoped.
+   */
+  public void setSystemContextMenuHandler(
+      @Nullable SystemContextMenuHandler systemContextMenuHandler) {
+    this.systemContextMenuHandler = systemContextMenuHandler;
+  }
+
+  /**
+   * Clears the {@link SystemContextMenuHandler} if {@code handler} is still the currently
+   * registered handler.
+   */
+  public void clearSystemContextMenuHandler(@NonNull SystemContextMenuHandler handler) {
+    if (this.systemContextMenuHandler == handler) {
+      this.systemContextMenuHandler = null;
+    }
+  }
+
   /** Informs Flutter of a change in the SystemUI overlays. */
   public void systemChromeChanged(boolean overlaysAreVisible) {
     Log.v(TAG, "Sending 'systemUIChange' message.");
     channel.invokeMethod("SystemChrome.systemUIChange", Arrays.asList(overlaysAreVisible));
+  }
+
+  /** Informs Flutter that the system dismissed the system context menu. */
+  public void onDismissSystemContextMenu(int clientId) {
+    Log.v(TAG, "Sending 'ContextMenu.onDismissSystemContextMenu' message.");
+    channel.invokeMethod(
+        "ContextMenu.onDismissSystemContextMenu", Collections.singletonList(clientId));
+  }
+
+  /** Informs Flutter that the user selected a custom action in the system context menu. */
+  public void onPerformCustomAction(int clientId, @NonNull String actionId) {
+    Log.v(TAG, "Sending 'ContextMenu.onPerformCustomAction' message.");
+    channel.invokeMethod("ContextMenu.onPerformCustomAction", Arrays.asList(clientId, actionId));
+  }
+
+  /**
+   * Informs Flutter that the user selected a standard system action (such as {@code cut}, {@code
+   * copy}, {@code paste}, {@code selectAll}, or {@code share}) in the system context menu.
+   */
+  public void onPerformSystemAction(int clientId, @NonNull String action, @Nullable String text) {
+    Log.v(TAG, "Sending 'ContextMenu.onPerformSystemAction' message.");
+    channel.invokeMethod(
+        "ContextMenu.onPerformSystemAction", Arrays.asList(clientId, action, text));
+  }
+
+  @NonNull
+  private SystemContextMenuRequest decodeSystemContextMenuRequest(
+      @NonNull JSONObject encodedRequest) throws JSONException {
+    JSONObject encodedRect = encodedRequest.getJSONObject("targetRect");
+    SystemContextMenuTargetRect targetRect =
+        new SystemContextMenuTargetRect(
+            encodedRect.getDouble("x"),
+            encodedRect.getDouble("y"),
+            encodedRect.getDouble("width"),
+            encodedRect.getDouble("height"));
+
+    List<SystemContextMenuItem> items = null;
+    if (encodedRequest.has("items") && !encodedRequest.isNull("items")) {
+      JSONArray encodedItems = encodedRequest.getJSONArray("items");
+      items = new ArrayList<>(encodedItems.length());
+      for (int i = 0; i < encodedItems.length(); i++) {
+        JSONObject encodedItem = encodedItems.getJSONObject(i);
+        String type = encodedItem.getString("type");
+        String title =
+            encodedItem.has("title") && !encodedItem.isNull("title")
+                ? encodedItem.getString("title")
+                : null;
+        String id =
+            encodedItem.has("id") && !encodedItem.isNull("id") ? encodedItem.getString("id") : null;
+        items.add(new SystemContextMenuItem(type, title, id));
+      }
+    }
+    return new SystemContextMenuRequest(targetRect, items);
   }
 
   // TODO(mattcarroll): add support for IntDef annotations, then add @ScreenOrientation
@@ -789,6 +898,68 @@ public class PlatformChannel {
 
     ClipboardContentFormat(@NonNull String encodedName) {
       this.encodedName = encodedName;
+    }
+  }
+
+  /**
+   * Handler that receives system context menu requests from Flutter.
+   *
+   * <p>Kept separate from {@link PlatformMessageHandler} because {@link
+   * io.flutter.plugin.platform.PlatformPlugin} is {@link android.app.Activity}/Fragment-scoped,
+   * whereas {@link io.flutter.plugin.editing.TextInputPlugin} and floating {@link
+   * android.view.ActionMode} instances are {@link io.flutter.embedding.android.FlutterView}-scoped.
+   */
+  public interface SystemContextMenuHandler {
+    /**
+     * Shows or updates the system context menu for {@code request}.
+     *
+     * @return {@code true} if the system context menu is now showing; {@code false} otherwise.
+     */
+    boolean showSystemContextMenu(@NonNull SystemContextMenuRequest request);
+
+    /** Hides any currently visible system context menu without notifying the framework. */
+    void hideSystemContextMenu();
+  }
+
+  /** Logical-pixel rectangle in {@code FlutterView} coordinates for anchoring a context menu. */
+  public static class SystemContextMenuTargetRect {
+    public final double x;
+    public final double y;
+    public final double width;
+    public final double height;
+
+    public SystemContextMenuTargetRect(double x, double y, double width, double height) {
+      this.x = x;
+      this.y = y;
+      this.width = width;
+      this.height = height;
+    }
+  }
+
+  /** A single menu item requested by Flutter for the system context menu. */
+  public static class SystemContextMenuItem {
+    @NonNull public final String type;
+    @Nullable public final String title;
+    @Nullable public final String id;
+
+    public SystemContextMenuItem(
+        @NonNull String type, @Nullable String title, @Nullable String id) {
+      this.type = type;
+      this.title = title;
+      this.id = id;
+    }
+  }
+
+  /** Decoded parameters of a {@code ContextMenu.showSystemContextMenu} channel call. */
+  public static class SystemContextMenuRequest {
+    @NonNull public final SystemContextMenuTargetRect targetRect;
+    @Nullable public final List<SystemContextMenuItem> items;
+
+    public SystemContextMenuRequest(
+        @NonNull SystemContextMenuTargetRect targetRect,
+        @Nullable List<SystemContextMenuItem> items) {
+      this.targetRect = targetRect;
+      this.items = items;
     }
   }
 }

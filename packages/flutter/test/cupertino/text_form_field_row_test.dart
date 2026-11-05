@@ -636,18 +636,10 @@ void main() {
       await tester.tapAt(textOffsetToPosition(tester, 5));
       await tester.pump(waitDuration);
 
-      // Now iOS is showing the SystemContextMenu while others continue to show
-      // the Flutter-drawn context menu.
-      switch (defaultTargetPlatform) {
-        case TargetPlatform.iOS:
-          expect(find.byType(SystemContextMenu), findsOneWidget);
-        case TargetPlatform.macOS:
-        case TargetPlatform.android:
-        case TargetPlatform.fuchsia:
-        case TargetPlatform.linux:
-        case TargetPlatform.windows:
-          expect(find.byType(CupertinoAdaptiveTextSelectionToolbar), findsOneWidget);
-      }
+      // Now that readOnly is false, SystemContextMenu is shown whenever
+      // supportsShowingSystemContextMenu is true.
+      expect(find.byType(SystemContextMenu), findsOneWidget);
+      expect(find.byType(CupertinoAdaptiveTextSelectionToolbar), findsNothing);
     },
     variant: TargetPlatformVariant.all(),
     skip: kIsWeb, // [intended] on web the browser handles the context menu.

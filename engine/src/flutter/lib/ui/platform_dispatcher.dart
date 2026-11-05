@@ -1313,12 +1313,15 @@ class PlatformDispatcher {
       _nativeSpellCheckServiceDefined = false;
     }
 
+    final bool previousSupportsShowingSystemContextMenu = _supportsShowingSystemContextMenu;
     final supportsShowingSystemContextMenu = data['supportsShowingSystemContextMenu'] as bool?;
     if (supportsShowingSystemContextMenu != null) {
       _supportsShowingSystemContextMenu = supportsShowingSystemContextMenu;
     } else {
       _supportsShowingSystemContextMenu = false;
     }
+    final bool supportsShowingSystemContextMenuChanged =
+        previousSupportsShowingSystemContextMenu != _supportsShowingSystemContextMenu;
 
     // This field is optional.
     final brieflyShowPassword = data['brieflyShowPassword'] as bool?;
@@ -1343,6 +1346,7 @@ class PlatformDispatcher {
         !textScaleFactorChanged &&
         !alwaysUse24HourFormatChanged &&
         !systemFontFamilyChanged &&
+        !supportsShowingSystemContextMenuChanged &&
         configurationId == null) {
       return;
     }

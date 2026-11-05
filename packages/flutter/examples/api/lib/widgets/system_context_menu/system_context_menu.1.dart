@@ -57,11 +57,12 @@ class _SystemContextMenuExampleState extends State<SystemContextMenuExample> {
         decoration: const InputDecoration(
           border: OutlineInputBorder(),
           labelText: 'Text Field with Custom Context Menu',
-          helperText: 'Long press to see custom menu items (iOS 16.0+)',
+          helperText:
+              'Long press to see custom menu items (iOS 16.0+ and Android 17+)',
         ),
         contextMenuBuilder:
             (BuildContext context, EditableTextState editableTextState) {
-              if (!MediaQuery.of(context).supportsShowingSystemContextMenu) {
+              if (!SystemContextMenu.isSupported(context)) {
                 return AdaptiveTextSelectionToolbar.editableText(
                   editableTextState: editableTextState,
                 );
@@ -69,15 +70,15 @@ class _SystemContextMenuExampleState extends State<SystemContextMenuExample> {
 
               return SystemContextMenu.editableText(
                 editableTextState: editableTextState,
-                items: <IOSSystemContextMenuItem>[
-                  IOSSystemContextMenuItemCustom(
+                items: <SystemContextMenuItem>[
+                  SystemContextMenuItemCustom(
                     title: 'Clear Text',
                     onPressed: () {
                       _controller.clear();
                       _showMessage('Text cleared');
                     },
                   ),
-                  IOSSystemContextMenuItemCustom(
+                  SystemContextMenuItemCustom(
                     title: 'Add Heart',
                     onPressed: () {
                       final TextSelection selection = _controller.selection;
@@ -95,7 +96,7 @@ class _SystemContextMenuExampleState extends State<SystemContextMenuExample> {
                       _showMessage('Heart added');
                     },
                   ),
-                  IOSSystemContextMenuItemCustom(
+                  SystemContextMenuItemCustom(
                     title: 'Uppercase',
                     onPressed: () {
                       final TextSelection selection = _controller.selection;

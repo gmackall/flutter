@@ -18,6 +18,96 @@
 # * Fixes in this file are from the Services library. *
 version: 1
 transforms:
+  - title: "Migrate to 'SystemContextMenuItemData'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemData'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemData'
+
+  - title: "Migrate to 'SystemContextMenuItemDataCopy'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataCopy'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataCopy'
+
+  - title: "Migrate to 'SystemContextMenuItemDataCut'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataCut'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataCut'
+
+  - title: "Migrate to 'SystemContextMenuItemDataPaste'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataPaste'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataPaste'
+
+  - title: "Migrate to 'SystemContextMenuItemDataSelectAll'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataSelectAll'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataSelectAll'
+
+  - title: "Migrate to 'SystemContextMenuItemDataLookUp'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataLookUp'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataLookUp'
+
+  - title: "Migrate to 'SystemContextMenuItemDataSearchWeb'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataSearchWeb'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataSearchWeb'
+
+  - title: "Migrate to 'SystemContextMenuItemDataShare'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataShare'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataShare'
+
+  - title: "Migrate to 'SystemContextMenuItemDataLiveText'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataLiveText'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataLiveText'
+
+  - title: "Migrate to 'SystemContextMenuItemDataCustom'"
+    date: 2026-11-08
+    element:
+      uris: [ 'services.dart' ]
+      class: 'IOSSystemContextMenuItemDataCustom'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemDataCustom'
+
   # Changes made in https://github.com/flutter/flutter/pull/122446
   - title: "Migrate to empty 'text' string"
     date: 2023-06-26

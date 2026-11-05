@@ -592,6 +592,15 @@ public class FlutterView extends FrameLayout
     super.onDetachedFromWindow();
   }
 
+  @Override
+  protected void onFocusChanged(
+      boolean gainFocus, int direction, @Nullable Rect previouslyFocusedRect) {
+    super.onFocusChanged(gainFocus, direction, previouslyFocusedRect);
+    if (!gainFocus && textInputPlugin != null) {
+      textInputPlugin.onViewFocusLost();
+    }
+  }
+
   /**
    * Refresh {@link androidx.window.layout.WindowInfoTracker} and {@link android.view.DisplayCutout}
    * display features. Fold, hinge and cutout areas are populated here.
@@ -1194,7 +1203,8 @@ public class FlutterView extends FrameLayout
             this.flutterEngine
                 .getPlatformViewsController(), // TODO(gmackall): this can be changed to take a pvc
             // delegator.
-            this.flutterEngine.getPlatformViewsController2());
+            this.flutterEngine.getPlatformViewsController2(),
+            this.flutterEngine.getPlatformChannel());
 
     try {
       textServicesManager =
@@ -1499,8 +1509,12 @@ public class FlutterView extends FrameLayout
   /**
    * Send various user preferences of this Android device to Flutter.
    *
-   * <p>For example, sends the user's "text scale factor" preferences, as well as the user's clock
-   * format preference.
+   * <p>For example, sends the user's "text scale factor" preferences, clock format preference, and
+   * whether Android's system context menu is supported. On Android 17+ (API 37+), floating text
+   * selection toolbars ({@link android.view.ActionMode#TYPE_FLOATING}) are rendered out-of-process
+   * by SystemUI's {@code SelectionToolbarRenderService}, which authorizes paste clipboard reads
+   * inside {@link android.view.ActionMode.Callback#onActionItemClicked} without clipboard-access
+   * toast notifications.
    *
    * <p>FlutterEngine must be non-null when this method is invoked.
    */
@@ -1539,12 +1553,18 @@ public class FlutterView extends FrameLayout
       }
     }
 
+    boolean supportsShowingSystemContextMenu =
+        Build.VERSION.SDK_INT >= API_LEVELS.API_37
+            && textInputPlugin != null
+            && textInputPlugin.isSystemContextMenuSupported();
+
     flutterEngine
         .getSettingsChannel()
         .startMessage()
         .setTextScaleFactor(getResources().getConfiguration().fontScale)
         .setDisplayMetrics(getResources().getDisplayMetrics())
         .setNativeSpellCheckServiceDefined(isNativeSpellCheckServiceDefined)
+        .setSupportsShowingSystemContextMenu(supportsShowingSystemContextMenu)
         .setBrieflyShowPassword(
             Settings.System.getInt(
                     getContext().getContentResolver(), Settings.System.TEXT_SHOW_PASSWORD, 1)
@@ -1559,6 +1579,11 @@ public class FlutterView extends FrameLayout
   @VisibleForTesting
   public void setDelegate(@NonNull FlutterViewDelegate delegate) {
     this.delegate = delegate;
+  }
+
+  @VisibleForTesting
+  /* package */ void setTextInputPlugin(@Nullable TextInputPlugin textInputPlugin) {
+    this.textInputPlugin = textInputPlugin;
   }
 
   @Override

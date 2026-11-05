@@ -291,4 +291,16 @@ void main() {
     curve: Curves.elasticIn,
     reverseCurve: Curves.elasticOut,
   );
+
+  final List<IOSSystemContextMenuItem> systemContextMenuItems = <IOSSystemContextMenuItem>[
+    const IOSSystemContextMenuItemCopy(),
+    const IOSSystemContextMenuItemCut(),
+    const IOSSystemContextMenuItemPaste(),
+    const IOSSystemContextMenuItemSelectAll(),
+    const IOSSystemContextMenuItemLookUp(title: 'Look Up'),
+    const IOSSystemContextMenuItemSearchWeb(title: 'Search Web'),
+    const IOSSystemContextMenuItemShare(title: 'Share'),
+    const IOSSystemContextMenuItemLiveText(),
+    IOSSystemContextMenuItemCustom(title: 'Custom', onPressed: () {}),
+  ];
 }

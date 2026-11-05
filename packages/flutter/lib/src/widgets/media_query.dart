@@ -798,9 +798,12 @@ class MediaQueryData {
 
   /// Whether showing the system context menu is supported.
   ///
-  /// For example, on iOS 16.0 and above, the system text selection context menu
-  /// may be shown instead of the Flutter-drawn context menu in order to avoid
-  /// the iOS clipboard access notification when the "Paste" button is pressed.
+  /// Currently supported on iOS 16.0 and above (via `UIEditMenuInteraction`),
+  /// where showing the system context menu avoids system clipboard access
+  /// notifications when the "Paste" button is pressed, and on Android 17 (API
+  /// level 37) and above when the floating selection toolbar
+  /// (`ActionMode.TYPE_FLOATING`) is rendered out-of-process by SystemUI's
+  /// `SelectionToolbarRenderService`.
   ///
   /// See also:
   ///

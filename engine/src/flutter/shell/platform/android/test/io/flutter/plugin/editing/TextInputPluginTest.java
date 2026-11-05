@@ -3,7 +3,10 @@ package io.flutter.plugin.editing;
 import static io.flutter.Build.API_LEVELS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.AdditionalMatchers.aryEq;
@@ -11,6 +14,8 @@ import static org.mockito.AdditionalMatchers.gt;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.isNotNull;
 import static org.mockito.Mockito.isNull;
@@ -23,19 +28,28 @@ import static org.mockito.Mockito.when;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.res.AssetManager;
 import android.graphics.Insets;
 import android.graphics.Rect;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.LocaleList;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.Selection;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.URLSpan;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
+import android.view.ActionMode;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewStructure;
 import android.view.WindowInsets;
@@ -58,6 +72,7 @@ import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.loader.FlutterLoader;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
+import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel.TextEditState;
@@ -68,6 +83,7 @@ import io.flutter.plugin.platform.PlatformViewsController;
 import io.flutter.plugin.platform.PlatformViewsController2;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -3200,6 +3216,1032 @@ public class TextInputPluginTest {
     assertEquals(
         InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD,
         editorInfo.inputType);
+  }
+
+  private static TextInputChannel.Configuration createTextConfiguration(
+      boolean obscureText, boolean enableDeltaModel) {
+    return new TextInputChannel.Configuration(
+        obscureText,
+        true,
+        true,
+        true,
+        enableDeltaModel,
+        TextInputChannel.TextCapitalization.NONE,
+        new TextInputChannel.InputType(TextInputChannel.TextInputType.TEXT, false, false, false),
+        null,
+        null,
+        null,
+        null,
+        null,
+        null);
+  }
+
+  private static final class SystemContextMenuHarness {
+    final View view;
+    final DartExecutor dartExecutor;
+    final TextInputChannel textInputChannel;
+    final ScribeChannel scribeChannel;
+    final PlatformChannel platformChannel;
+    final TextInputPlugin plugin;
+
+    SystemContextMenuHarness(Activity activity) {
+      this(activity, true);
+    }
+
+    SystemContextMenuHarness(Activity activity, boolean attachContentView) {
+      View baseView = new View(activity);
+      if (attachContentView) {
+        activity.setContentView(baseView);
+      }
+      this.view = spy(baseView);
+      this.dartExecutor = spy(new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class)));
+      this.dartExecutor.onAttachedToJNI();
+      this.textInputChannel = new TextInputChannel(this.dartExecutor);
+      this.scribeChannel = new ScribeChannel(mock(DartExecutor.class));
+      this.platformChannel = new PlatformChannel(this.dartExecutor);
+      this.plugin =
+          new TextInputPlugin(
+              this.view,
+              this.textInputChannel,
+              this.scribeChannel,
+              mock(PlatformViewsController.class),
+              mock(PlatformViewsController2.class),
+              this.platformChannel);
+    }
+
+    void attachClient(int clientId, String text, int selStart, int selEnd) {
+      plugin.setTextInputClient(clientId, createTextConfiguration(false, false));
+      plugin.setTextInputEditingState(view, new TextEditState(text, selStart, selEnd, -1, -1));
+    }
+
+    ActionMode.Callback captureStartedCallback() {
+      ArgumentCaptor<ActionMode.Callback> captor =
+          ArgumentCaptor.forClass(ActionMode.Callback.class);
+      verify(view).startActionMode(captor.capture(), eq(ActionMode.TYPE_FLOATING));
+      return captor.getValue();
+    }
+
+    @SuppressWarnings("deprecation")
+    List<MethodCall> capturedPlatformCalls(int expectedCount) {
+      ArgumentCaptor<ByteBuffer> bufferCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+      verify(dartExecutor, times(expectedCount))
+          .send(eq("flutter/platform"), bufferCaptor.capture(), isNull());
+      List<MethodCall> calls = new ArrayList<>();
+      for (ByteBuffer buf : bufferCaptor.getAllValues()) {
+        buf.rewind();
+        calls.add(JSONMethodCodec.INSTANCE.decodeMethodCall(buf));
+      }
+      return calls;
+    }
+
+    @SuppressWarnings("deprecation")
+    void verifyNoPlatformCalls() {
+      verify(dartExecutor, never()).send(eq("flutter/platform"), any(), any());
+    }
+
+    @SuppressWarnings("deprecation")
+    void verifyNoTextInputCalls() {
+      verify(dartExecutor, never()).send(eq("flutter/textinput"), any(), any());
+    }
+  }
+
+  private static PlatformChannel.SystemContextMenuRequest createMenuRequest(
+      double x,
+      double y,
+      double width,
+      double height,
+      PlatformChannel.SystemContextMenuItem... items) {
+    return new PlatformChannel.SystemContextMenuRequest(
+        new PlatformChannel.SystemContextMenuTargetRect(x, y, width, height),
+        items == null ? null : Arrays.asList(items));
+  }
+
+  private static void assertSystemActionCall(
+      MethodCall call, int expectedClientId, String expectedAction, String expectedText) {
+    assertEquals("ContextMenu.onPerformSystemAction", call.method);
+    JSONArray args = (JSONArray) call.arguments;
+    assertEquals(3, args.length());
+    assertEquals(expectedClientId, args.optInt(0));
+    assertEquals(expectedAction, args.optString(1));
+    if (expectedText == null) {
+      assertTrue(args.isNull(2));
+    } else {
+      assertFalse(args.isNull(2));
+      assertEquals(expectedText, args.optString(2));
+    }
+  }
+
+  private static void assertCustomActionCall(
+      MethodCall call, int expectedClientId, String expectedActionId) {
+    assertEquals("ContextMenu.onPerformCustomAction", call.method);
+    JSONArray args = (JSONArray) call.arguments;
+    assertEquals(2, args.length());
+    assertEquals(expectedClientId, args.optInt(0));
+    assertEquals(expectedActionId, args.optString(1));
+  }
+
+  private static void assertDismissCall(MethodCall call, int expectedClientId) {
+    assertEquals("ContextMenu.onDismissSystemContextMenu", call.method);
+    JSONArray args = (JSONArray) call.arguments;
+    assertEquals(1, args.length());
+    assertEquals(expectedClientId, args.optInt(0));
+  }
+
+  @Test
+  public void isSystemContextMenuSupported_dependsOnPlatformChannelPresence() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            View testView = new View(activity);
+            activity.setContentView(testView);
+            DartExecutor dartExecutor =
+                new DartExecutor(mock(FlutterJNI.class), mock(AssetManager.class));
+            TextInputPlugin legacyPlugin =
+                new TextInputPlugin(
+                    testView,
+                    new TextInputChannel(dartExecutor),
+                    new ScribeChannel(dartExecutor),
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class));
+            assertFalse(legacyPlugin.isSystemContextMenuSupported());
+            legacyPlugin.setTextInputClient(1, createTextConfiguration(false, false));
+            legacyPlugin.setTextInputEditingState(
+                testView, new TextEditState("Hello", 0, 5, -1, -1));
+            assertFalse(
+                legacyPlugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            assertTrue(harness.plugin.isSystemContextMenuSupported());
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_populatesSupportedItemsAndIgnoresUnsupportedItems() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(5, "Hello world", 0, 5);
+
+            boolean shown =
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        10.0,
+                        20.0,
+                        30.0,
+                        15.0,
+                        new PlatformChannel.SystemContextMenuItem("cut", null, null),
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null),
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null),
+                        new PlatformChannel.SystemContextMenuItem("share", "Partager", null),
+                        new PlatformChannel.SystemContextMenuItem("share", null, null),
+                        new PlatformChannel.SystemContextMenuItem("share", "", null),
+                        new PlatformChannel.SystemContextMenuItem("selectAll", null, null),
+                        new PlatformChannel.SystemContextMenuItem("lookUp", "Look Up", null),
+                        new PlatformChannel.SystemContextMenuItem("searchWeb", "Search Web", null),
+                        new PlatformChannel.SystemContextMenuItem(
+                            "captureTextFromCamera", null, null),
+                        new PlatformChannel.SystemContextMenuItem("unknown", "Mystery", null),
+                        new PlatformChannel.SystemContextMenuItem("custom", "Missing ID", ""),
+                        new PlatformChannel.SystemContextMenuItem("custom", "", "cb-empty-title"),
+                        new PlatformChannel.SystemContextMenuItem("custom", "Translate", "cb-1")));
+
+            assertTrue(shown);
+            harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+            assertNotNull(mode);
+
+            Menu menu = mode.getMenu();
+            assertEquals(6, menu.size());
+            assertEquals(android.R.id.cut, menu.getItem(0).getItemId());
+            assertEquals(android.R.id.copy, menu.getItem(1).getItemId());
+            assertEquals(android.R.id.paste, menu.getItem(2).getItemId());
+            assertEquals(android.R.id.shareText, menu.getItem(3).getItemId());
+            assertEquals("Partager", menu.getItem(3).getTitle().toString());
+            assertEquals(android.R.id.selectAll, menu.getItem(4).getItemId());
+            assertEquals("Translate", menu.getItem(5).getTitle().toString());
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_roundsContentRectByDensityAndClampsZeroDimensions() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            final float originalDensity = harness.view.getResources().getDisplayMetrics().density;
+            harness.view.getResources().getDisplayMetrics().density = 2.0f;
+            try {
+              harness.attachClient(5, "Hello world", 0, 5);
+              assertTrue(
+                  harness.plugin.showSystemContextMenu(
+                      createMenuRequest(
+                          10.3,
+                          20.7,
+                          0.0,
+                          0.0,
+                          new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+
+              ActionMode.Callback2 callback2 =
+                  (ActionMode.Callback2) harness.captureStartedCallback();
+              ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+              Rect outRect = new Rect();
+              callback2.onGetContentRect(mode, harness.view, outRect);
+              // left = floor(20.6) = 20, top = floor(41.4) = 41; zero width/height clamp to >= 1px.
+              assertEquals(new Rect(20, 41, 21, 42), outRect);
+              assertFalse(outRect.isEmpty());
+            } finally {
+              harness.view.getResources().getDisplayMetrics().density = originalDensity;
+            }
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_updatesActiveActionModeInPlace() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(5, "Hello world", 0, 5);
+
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        10.0,
+                        20.0,
+                        30.0,
+                        15.0,
+                        new PlatformChannel.SystemContextMenuItem("cut", null, null),
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            ActionMode.Callback2 callback2 =
+                (ActionMode.Callback2) harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+            assertNotNull(mode);
+            assertEquals(2, mode.getMenu().size());
+
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        15.0,
+                        25.0,
+                        40.0,
+                        20.0,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            assertSame(mode, harness.plugin.getSystemContextMenuActionMode());
+            assertEquals(1, mode.getMenu().size());
+            assertEquals(android.R.id.paste, mode.getMenu().getItem(0).getItemId());
+
+            final float density = harness.view.getResources().getDisplayMetrics().density;
+            Rect updatedRect = new Rect();
+            callback2.onGetContentRect(mode, harness.view, updatedRect);
+            assertEquals((int) Math.floor(15.0 * density), updatedRect.left);
+            assertEquals((int) Math.floor(25.0 * density), updatedRect.top);
+
+            harness.plugin.hideSystemContextMenu();
+
+            // Verify both invalidate() and invalidateContentRect() are invoked on in-place updates.
+            ActionMode mockMode = mock(ActionMode.class);
+            doReturn(mockMode)
+                .when(harness.view)
+                .startActionMode(any(), eq(ActionMode.TYPE_FLOATING));
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        5,
+                        5,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            verify(mockMode).invalidate();
+            verify(mockMode).invalidateContentRect();
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_preservesCustomActionIdsAcrossInPlaceReorder() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(30, "Hello Flutter", 0, 5);
+
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action A", "cb-A"),
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action B", "cb-B"))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+            int idA = mode.getMenu().getItem(0).getItemId();
+            int idB = mode.getMenu().getItem(1).getItemId();
+
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action B", "cb-B"),
+                        new PlatformChannel.SystemContextMenuItem("custom", "Action C", "cb-C"))));
+            assertEquals(idB, mode.getMenu().getItem(0).getItemId());
+            int idC = mode.getMenu().getItem(1).getItemId();
+            assertNotEquals(idA, idC);
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(callback.onActionItemClicked(mode, mode.getMenu().getItem(0)));
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertCustomActionCall(calls.get(0), 30, "cb-B");
+            assertDismissCall(calls.get(1), 30);
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_returnsFalseWithoutDismissWhenStartActionModeReturnsNull() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(10, "Hello", 0, 5);
+            doReturn(null).when(harness.view).startActionMode(any(), eq(ActionMode.TYPE_FLOATING));
+            clearInvocations(harness.dartExecutor);
+
+            assertFalse(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            harness.verifyNoPlatformCalls();
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_returnsFalseWithoutDismissWhenItemsNull() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(10, "Hello", 0, 5);
+            clearInvocations(harness.dartExecutor);
+
+            PlatformChannel.SystemContextMenuRequest nullItemsRequest =
+                new PlatformChannel.SystemContextMenuRequest(
+                    new PlatformChannel.SystemContextMenuTargetRect(0, 0, 10, 10), null);
+            assertFalse(harness.plugin.showSystemContextMenu(nullItemsRequest));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            harness.verifyNoPlatformCalls();
+
+            // If an ActionMode was already active, null items dismisses it without echoing dismiss.
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+            clearInvocations(harness.dartExecutor);
+
+            assertFalse(harness.plugin.showSystemContextMenu(nullItemsRequest));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            harness.verifyNoPlatformCalls();
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_returnsFalseWithoutDismissForUnsupportedOnlyItems() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(10, "Hello", 0, 5);
+            clearInvocations(harness.dartExecutor);
+
+            PlatformChannel.SystemContextMenuRequest unsupportedRequest =
+                createMenuRequest(
+                    0,
+                    0,
+                    10,
+                    10,
+                    new PlatformChannel.SystemContextMenuItem("lookUp", "Look Up", null),
+                    new PlatformChannel.SystemContextMenuItem("searchWeb", "Search Web", null),
+                    new PlatformChannel.SystemContextMenuItem("captureTextFromCamera", null, null),
+                    new PlatformChannel.SystemContextMenuItem("share", null, null),
+                    new PlatformChannel.SystemContextMenuItem("share", "", null));
+            assertFalse(harness.plugin.showSystemContextMenu(unsupportedRequest));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            harness.verifyNoPlatformCalls();
+
+            // Updating an active ActionMode with unsupported-only items closes it without echoing.
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+            clearInvocations(harness.dartExecutor);
+
+            assertFalse(harness.plugin.showSystemContextMenu(unsupportedRequest));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            harness.verifyNoPlatformCalls();
+          });
+    }
+  }
+
+  @Test
+  public void showSystemContextMenu_returnsFalseWhenViewUnattachedOrNoFrameworkClient() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            PlatformChannel.SystemContextMenuRequest validRequest =
+                createMenuRequest(
+                    0, 0, 10, 10, new PlatformChannel.SystemContextMenuItem("copy", null, null));
+
+            // Unattached View returns false without starting ActionMode.
+            SystemContextMenuHarness unattachedHarness =
+                new SystemContextMenuHarness(activity, false);
+            unattachedHarness.attachClient(10, "Hello", 0, 5);
+            clearInvocations(unattachedHarness.dartExecutor);
+            assertFalse(unattachedHarness.plugin.showSystemContextMenu(validRequest));
+            unattachedHarness.verifyNoPlatformCalls();
+
+            // Attached View without an active framework text input client returns false.
+            SystemContextMenuHarness noClientHarness = new SystemContextMenuHarness(activity);
+            clearInvocations(noClientHarness.dartExecutor);
+            assertFalse(noClientHarness.plugin.showSystemContextMenu(validRequest));
+            noClientHarness.verifyNoPlatformCalls();
+          });
+    }
+  }
+
+  @Test
+  public void onPrepareActionMode_finishesActionModeWhenMenuIsEmpty() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(8, "Hello", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            harness.plugin.hideSystemContextMenu();
+            clearInvocations(harness.dartExecutor);
+
+            ActionMode emptyMode = mock(ActionMode.class);
+            Menu emptyMenu = mock(Menu.class);
+            when(emptyMenu.size()).thenReturn(0);
+            assertFalse(callback.onPrepareActionMode(emptyMode, emptyMenu));
+            verify(emptyMode).finish();
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_pastePlainTextForwardsToFrameworkBeforeDismiss() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("label", "Flutter"));
+
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(3, "Hi world", 0, 2);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+            MenuItem pasteItem = mode.getMenu().findItem(android.R.id.paste);
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(callback.onActionItemClicked(mode, pasteItem));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            // Engine does not mutate mEditable directly; Dart owns editing mutations.
+            assertEquals("Hi world", harness.plugin.getEditable().toString());
+            assertEquals(0, Selection.getSelectionStart(harness.plugin.getEditable()));
+            assertEquals(2, Selection.getSelectionEnd(harness.plugin.getEditable()));
+            harness.verifyNoTextInputCalls();
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertSystemActionCall(calls.get(0), 3, "paste", "Flutter");
+            assertDismissCall(calls.get(1), 3);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_pasteCoercesSpannedClipboardTextToPlainString() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            SpannableString styledClip = new SpannableString("lo!");
+            styledClip.setSpan(
+                new URLSpan("https://flutter.dev"),
+                0,
+                3,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE | Spanned.SPAN_COMPOSING);
+            clipboard.setPrimaryClip(ClipData.newPlainText("styled", styledClip));
+
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(20, "hel", 3, 3);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertSystemActionCall(calls.get(0), 20, "paste", "lo!");
+            assertDismissCall(calls.get(1), 20);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_pasteHandlesEmptyAndNonTextClipboardClips() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(21, "keepme", 0, 6);
+
+            // 1. Non-text file:// URI clip returns null from ClipboardUtils -> dismiss only.
+            clipboard.setPrimaryClip(
+                ClipData.newRawUri("file", Uri.parse("file:///sdcard/secret.txt")));
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+            List<MethodCall> uriCalls = harness.capturedPlatformCalls(1);
+            assertDismissCall(uriCalls.get(0), 21);
+
+            // 2. Cleared clipboard returns null -> dismiss only.
+            clipboard.clearPrimaryClip();
+            clearInvocations(harness.view);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            callback = harness.captureStartedCallback();
+            mode = harness.plugin.getSystemContextMenuActionMode();
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+            List<MethodCall> emptyClipCalls = harness.capturedPlatformCalls(1);
+            assertDismissCall(emptyClipCalls.get(0), 21);
+
+            // 3. Empty plain-text string clip forwards "" before dismiss.
+            clipboard.setPrimaryClip(ClipData.newPlainText("empty", ""));
+            clearInvocations(harness.view);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("paste", null, null))));
+            callback = harness.captureStartedCallback();
+            mode = harness.plugin.getSystemContextMenuActionMode();
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.paste)));
+            List<MethodCall> emptyStringCalls = harness.capturedPlatformCalls(2);
+            assertSystemActionCall(emptyStringCalls.get(0), 21, "paste", "");
+            assertDismissCall(emptyStringCalls.get(1), 21);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_selectAllForwardsActionAndKeepsActionModeOpen() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(1, "abcdef", 2, 2);
+
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("selectAll", null, null),
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(
+                    mode, mode.getMenu().findItem(android.R.id.selectAll)));
+            assertSame(mode, harness.plugin.getSystemContextMenuActionMode());
+            assertEquals(2, Selection.getSelectionStart(harness.plugin.getEditable()));
+            assertEquals(2, Selection.getSelectionEnd(harness.plugin.getEditable()));
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(1);
+            assertSystemActionCall(calls.get(0), 1, "selectAll", null);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_cutForwardsSystemActionBeforeDismiss() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("initial", "UNCHANGED"));
+
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(4, "abcdef", 0, 6);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("cut", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.cut)));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            assertEquals("abcdef", harness.plugin.getEditable().toString());
+            assertEquals("UNCHANGED", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertSystemActionCall(calls.get(0), 4, "cut", null);
+            assertDismissCall(calls.get(1), 4);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_copyForwardsSystemActionBeforeDismiss() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("initial", "UNCHANGED"));
+
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(6, "abcdef", 0, 6);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(mode, mode.getMenu().findItem(android.R.id.copy)));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            assertEquals("UNCHANGED", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertSystemActionCall(calls.get(0), 6, "copy", null);
+            assertDismissCall(calls.get(1), 6);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_shareForwardsSystemActionBeforeDismiss() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(7, "Hello", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("share", "Share", null))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(
+                callback.onActionItemClicked(
+                    mode, mode.getMenu().findItem(android.R.id.shareText)));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertSystemActionCall(calls.get(0), 7, "share", null);
+            assertDismissCall(calls.get(1), 7);
+          });
+    }
+  }
+
+  @Test
+  public void onActionItemClicked_customItemForwardsCustomActionBeforeDismiss() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(9, "Hello", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem(
+                            "custom", "Custom Action", "cb-99"))));
+            ActionMode.Callback callback = harness.captureStartedCallback();
+            ActionMode mode = harness.plugin.getSystemContextMenuActionMode();
+
+            clearInvocations(harness.dartExecutor);
+            assertTrue(callback.onActionItemClicked(mode, mode.getMenu().getItem(0)));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(2);
+            assertCustomActionCall(calls.get(0), 9, "cb-99");
+            assertDismissCall(calls.get(1), 9);
+          });
+    }
+  }
+
+  @Test
+  public void hideSystemContextMenu_finishesActionModeWithoutDismissNotification() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(9, "Hello", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+
+            clearInvocations(harness.dartExecutor);
+            harness.plugin.hideSystemContextMenu();
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+            harness.verifyNoPlatformCalls();
+          });
+    }
+  }
+
+  @Test
+  public void setTextInputClient_dismissesActiveMenuWithPreviousOwningClientId() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(10, "Hello", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+
+            clearInvocations(harness.dartExecutor);
+            harness.plugin.setTextInputClient(11, createTextConfiguration(false, false));
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(1);
+            assertDismissCall(calls.get(0), 10);
+          });
+    }
+  }
+
+  @Test
+  public void setPlatformViewTextInputClient_dismissesActiveMenuWithOwningClientId() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(9, "Hello", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+
+            clearInvocations(harness.dartExecutor);
+            harness.plugin.setPlatformViewTextInputClient(42, false);
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(1);
+            assertDismissCall(calls.get(0), 9);
+          });
+    }
+  }
+
+  @Test
+  public void clearTextInputClient_dismissesActiveMenuWithOwningClientId() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(11, "World", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+
+            clearInvocations(harness.dartExecutor);
+            harness.plugin.clearTextInputClient();
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(1);
+            assertDismissCall(calls.get(0), 11);
+          });
+    }
+  }
+
+  @Test
+  public void onViewFocusLost_dismissesActiveMenuWithOwningClientId() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            harness.attachClient(14, "Focus", 0, 5);
+            assertTrue(
+                harness.plugin.showSystemContextMenu(
+                    createMenuRequest(
+                        0,
+                        0,
+                        10,
+                        10,
+                        new PlatformChannel.SystemContextMenuItem("copy", null, null))));
+            assertNotNull(harness.plugin.getSystemContextMenuActionMode());
+
+            clearInvocations(harness.dartExecutor);
+            harness.plugin.onViewFocusLost();
+            assertNull(harness.plugin.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(1);
+            assertDismissCall(calls.get(0), 14);
+          });
+    }
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void destroy_dismissesActiveMenuAndPreservesNewerPluginHandlerOwnership() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            SystemContextMenuHarness harness = new SystemContextMenuHarness(activity);
+            ArgumentCaptor<BinaryMessenger.BinaryMessageHandler> platformHandlerCaptor =
+                ArgumentCaptor.forClass(BinaryMessenger.BinaryMessageHandler.class);
+            verify(harness.dartExecutor)
+                .setMessageHandler(eq("flutter/platform"), platformHandlerCaptor.capture());
+
+            // Attaching pluginB before pluginA.destroy() preserves pluginB's handler on
+            // PlatformChannel, and pluginB.destroy() notifies with pluginB's owning clientId.
+            TextInputPlugin pluginB =
+                new TextInputPlugin(
+                    harness.view,
+                    harness.textInputChannel,
+                    harness.scribeChannel,
+                    mock(PlatformViewsController.class),
+                    mock(PlatformViewsController2.class),
+                    harness.platformChannel);
+            harness.plugin.destroy();
+
+            pluginB.setTextInputClient(12, createTextConfiguration(false, false));
+            pluginB.setTextInputEditingState(harness.view, new TextEditState("Keep", 0, 4, -1, -1));
+
+            JSONObject showArgs;
+            try {
+              JSONObject rectJson =
+                  new JSONObject().put("x", 0).put("y", 0).put("width", 10).put("height", 10);
+              JSONArray itemsJson = new JSONArray().put(new JSONObject().put("type", "copy"));
+              showArgs = new JSONObject().put("targetRect", rectJson).put("items", itemsJson);
+            } catch (JSONException e) {
+              throw new AssertionError(e);
+            }
+            ByteBuffer encodedShowCall =
+                JSONMethodCodec.INSTANCE.encodeMethodCall(
+                    new MethodCall("ContextMenu.showSystemContextMenu", showArgs));
+            encodedShowCall.rewind();
+            BinaryMessenger.BinaryReply binaryReply = mock(BinaryMessenger.BinaryReply.class);
+            platformHandlerCaptor.getValue().onMessage(encodedShowCall, binaryReply);
+            ArgumentCaptor<ByteBuffer> replyCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(binaryReply).reply(replyCaptor.capture());
+            ByteBuffer replyBuf = replyCaptor.getValue();
+            replyBuf.rewind();
+            assertEquals(Boolean.TRUE, JSONMethodCodec.INSTANCE.decodeEnvelope(replyBuf));
+            assertNotNull(pluginB.getSystemContextMenuActionMode());
+
+            clearInvocations(harness.dartExecutor);
+            pluginB.destroy();
+            assertNull(pluginB.getSystemContextMenuActionMode());
+
+            List<MethodCall> calls = harness.capturedPlatformCalls(1);
+            assertDismissCall(calls.get(0), 12);
+          });
+    }
   }
 
   interface EventHandler {

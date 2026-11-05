@@ -30,6 +30,8 @@ public class SettingsChannel {
   private static final String BRIEFLY_SHOW_PASSWORD = "brieflyShowPassword";
   private static final String ALWAYS_USE_24_HOUR_FORMAT = "alwaysUse24HourFormat";
   private static final String PLATFORM_BRIGHTNESS = "platformBrightness";
+  private static final String SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU =
+      "supportsShowingSystemContextMenu";
   private static final String CONFIGURATION_ID = "configurationId";
 
   // When hasNonlinearTextScalingSupport() returns false, this will not be initialized.
@@ -102,6 +104,23 @@ public class SettingsChannel {
       return this;
     }
 
+    /**
+     * Sets whether the host platform supports showing a system-rendered text selection context
+     * menu.
+     *
+     * <p>On Android 17+ (API 37+), floating text selection toolbars ({@link
+     * android.view.ActionMode#TYPE_FLOATING}) are rendered out-of-process by SystemUI's {@code
+     * SelectionToolbarRenderService}, which authorizes paste clipboard reads inside {@link
+     * android.view.ActionMode.Callback#onActionItemClicked} without triggering clipboard-access
+     * toast notifications.
+     */
+    @NonNull
+    public MessageBuilder setSupportsShowingSystemContextMenu(
+        boolean supportsShowingSystemContextMenu) {
+      message.put(SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU, supportsShowingSystemContextMenu);
+      return this;
+    }
+
     public void send() {
       Log.v(
           TAG,
@@ -113,7 +132,10 @@ public class SettingsChannel {
               + message.get(ALWAYS_USE_24_HOUR_FORMAT)
               + "\n"
               + "platformBrightness: "
-              + message.get(PLATFORM_BRIGHTNESS));
+              + message.get(PLATFORM_BRIGHTNESS)
+              + "\n"
+              + "supportsShowingSystemContextMenu: "
+              + message.get(SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU));
       final DisplayMetrics metrics = this.displayMetrics;
       if (!hasNonlinearTextScalingSupport() || metrics == null) {
         channel.send(message);

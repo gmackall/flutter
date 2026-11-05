@@ -1555,27 +1555,27 @@ void main() {
     expect(diagnosticsNodes[3].value, false);
   });
 
-  test('IOSSystemContextMenuItemDataLookUp debugFillProperties', () {
+  test('SystemContextMenuItemDataLookUp debugFillProperties', () {
     const title = 'my title';
-    const item = IOSSystemContextMenuItemDataLookUp(title: title);
+    const item = SystemContextMenuItemDataLookUp(title: title);
     final List<DiagnosticsNode> diagnosticsNodes = item.toDiagnosticsNode().getProperties();
     expect(diagnosticsNodes, hasLength(1));
     expect(diagnosticsNodes.first.name, 'title');
     expect(diagnosticsNodes.first.value, title);
   });
 
-  test('IOSSystemContextMenuItemDataSearchWeb debugFillProperties', () {
+  test('SystemContextMenuItemDataSearchWeb debugFillProperties', () {
     const title = 'my title';
-    const item = IOSSystemContextMenuItemDataSearchWeb(title: title);
+    const item = SystemContextMenuItemDataSearchWeb(title: title);
     final List<DiagnosticsNode> diagnosticsNodes = item.toDiagnosticsNode().getProperties();
     expect(diagnosticsNodes, hasLength(1));
     expect(diagnosticsNodes.first.name, 'title');
     expect(diagnosticsNodes.first.value, title);
   });
 
-  test('IOSSystemContextMenuItemDataShare debugFillProperties', () {
+  test('SystemContextMenuItemDataShare debugFillProperties', () {
     const title = 'my title';
-    const item = IOSSystemContextMenuItemDataShare(title: title);
+    const item = SystemContextMenuItemDataShare(title: title);
     final List<DiagnosticsNode> diagnosticsNodes = item.toDiagnosticsNode().getProperties();
     expect(diagnosticsNodes, hasLength(1));
     expect(diagnosticsNodes.first.name, 'title');

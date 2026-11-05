@@ -10,7 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'only shows the system context menu on iOS when MediaQuery says it is supported',
+    'only shows the system context menu on iOS and Android when MediaQuery says it is supported',
     (WidgetTester tester) async {
       await tester.pumpWidget(
         Builder(
@@ -18,9 +18,11 @@ void main() {
             final MediaQueryData mediaQueryData = MediaQuery.of(context);
             return MediaQuery(
               data: mediaQueryData.copyWith(
-                // Faking this value, which is usually set to true only on
-                // devices running iOS 16+.
-                supportsShowingSystemContextMenu: defaultTargetPlatform == .iOS,
+                // Faking this value, which is usually set to true on devices
+                // running iOS 16+ or Android 17+.
+                supportsShowingSystemContextMenu:
+                    defaultTargetPlatform == .iOS ||
+                    defaultTargetPlatform == .android,
               ),
               child: const example.SystemContextMenuExampleApp(),
             );
@@ -38,9 +40,9 @@ void main() {
 
       switch (defaultTargetPlatform) {
         case .iOS:
+        case .android:
           expect(find.byType(SystemContextMenu), findsOneWidget);
           expect(find.byType(AdaptiveTextSelectionToolbar), findsNothing);
-        case .android:
         case .fuchsia:
         case .linux:
         case .macOS:

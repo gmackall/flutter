@@ -414,27 +414,44 @@ mixin ServicesBinding on BindingBase, SchedulerBinding {
       // the user taps outside the menu. Not called when Flutter shows a new
       // system context menu while an old one is still visible.
       case 'ContextMenu.onDismissSystemContextMenu':
-        if (_systemContextMenuClient == null) {
-          assert(
-            false,
-            'Platform sent onDismissSystemContextMenu when no SystemContextMenuClient was registered.',
-          );
+        final Object? arguments = methodCall.arguments;
+        final Object? rawClientId = arguments is List<dynamic> && arguments.isNotEmpty
+            ? arguments[0]
+            : null;
+        final SystemContextMenuClient? client =
+            SystemContextMenuController.clientForPlatformCallback(
+              _systemContextMenuClient,
+              rawClientId,
+            );
+        if (client == null) {
           return;
         }
-        _systemContextMenuClient!.handleSystemHide();
-        _systemContextMenuClient = null;
+        if (_systemContextMenuClient == client) {
+          _systemContextMenuClient = null;
+        }
+        client.handleSystemHide();
       case 'ContextMenu.onPerformCustomAction':
-        if (_systemContextMenuClient == null) {
-          assert(
-            false,
-            'Platform sent onPerformCustomAction when no SystemContextMenuClient was registered. '
-            "ServicesBinding.systemContextMenuClient shouldn't be cleared unless the menu is hidden.",
-          );
-          return;
-        }
         final args = methodCall.arguments as List<dynamic>;
+        final Object? rawClientId = args.isNotEmpty ? args[0] : null;
         final callbackId = args[1] as String;
-        _systemContextMenuClient!.handleCustomContextMenuAction(callbackId);
+        SystemContextMenuController.clientForPlatformCallback(
+          _systemContextMenuClient,
+          rawClientId,
+        )?.handleCustomContextMenuAction(callbackId);
+      // Portable contract for platforms where Dart owns the editing buffer
+      // (such as Android and future platforms), forwarding built-in system
+      // menu selections to the framework rather than mutating a platform-side
+      // text buffer (in contrast with iOS, where UIEditMenuInteraction invokes
+      // UITextInput responder selectors directly).
+      case 'ContextMenu.onPerformSystemAction':
+        final args = methodCall.arguments as List<dynamic>;
+        final Object? rawClientId = args.isNotEmpty ? args[0] : null;
+        final action = args[1] as String;
+        final String? text = args.length > 2 ? args[2] as String? : null;
+        SystemContextMenuController.clientForPlatformCallback(
+          _systemContextMenuClient,
+          rawClientId,
+        )?.handleSystemContextMenuAction(action, text: text);
       case 'SystemChrome.systemUIChange':
         final args = methodCall.arguments as List<dynamic>;
         await _systemUiChangeCallback?.call(args[0] as bool);
@@ -598,6 +615,18 @@ mixin ServicesBinding on BindingBase, SchedulerBinding {
   static set systemContextMenuClient(SystemContextMenuClient? client) {
     instance._systemContextMenuClient = client;
   }
+
+  /// Unregisters [client] if it is currently registered as [systemContextMenuClient].
+  @internal
+  static void unregisterSystemContextMenuClient(SystemContextMenuClient client) {
+    if (instance._systemContextMenuClient == client) {
+      instance._systemContextMenuClient = null;
+    }
+  }
+
+  /// The currently registered [SystemContextMenuClient], if any.
+  @visibleForTesting
+  SystemContextMenuClient? get debugSystemContextMenuClient => _systemContextMenuClient;
 }
 
 /// Signature for listening to changes in the [SystemUiMode].
@@ -683,7 +712,7 @@ class _DefaultBinaryMessenger extends BinaryMessenger {
 /// An interface to receive calls related to the system context menu from the
 /// engine.
 ///
-/// Currently this is only supported on iOS 16+.
+/// Currently this is supported on iOS 16.0+ and Android 17+ (API level 37+).
 ///
 /// See also:
 ///  * [SystemContextMenuController], which uses this to provide a fully
@@ -704,4 +733,17 @@ mixin SystemContextMenuClient {
 
   /// Called when a custom context menu action is triggered.
   void handleCustomContextMenuAction(String actionId);
+
+  /// Called when a built-in system context menu action (such as `'cut'`,
+  /// `'copy'`, `'paste'`, `'selectAll'`, `'share'`, `'searchWeb'`, or
+  /// `'lookUp'`) is triggered via `ContextMenu.onPerformSystemAction`.
+  ///
+  /// This is the portable contract for platforms where Dart owns the editing
+  /// buffer (such as Android and future platforms), in contrast with iOS where
+  /// `UIEditMenuInteraction` invokes `UITextInput` responder selectors directly
+  /// on the native text input view.
+  ///
+  /// For `'paste'`, [text] carries the plain text read by the platform inside
+  /// the menu click callback when provided.
+  void handleSystemContextMenuAction(String action, {String? text}) {}
 }

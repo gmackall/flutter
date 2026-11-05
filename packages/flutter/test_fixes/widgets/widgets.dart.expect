@@ -286,4 +286,16 @@ void main() {
     bodyBuilder: (BuildContext context, Animation<double> animation) =>
         Container(),
   );
+
+  final List<SystemContextMenuItem> systemContextMenuItems = <SystemContextMenuItem>[
+    const SystemContextMenuItemCopy(),
+    const SystemContextMenuItemCut(),
+    const SystemContextMenuItemPaste(),
+    const SystemContextMenuItemSelectAll(),
+    const SystemContextMenuItemLookUp(title: 'Look Up'),
+    const SystemContextMenuItemSearchWeb(title: 'Search Web'),
+    const SystemContextMenuItemShare(title: 'Share'),
+    const SystemContextMenuItemLiveText(),
+    SystemContextMenuItemCustom(title: 'Custom', onPressed: () {}),
+  ];
 }

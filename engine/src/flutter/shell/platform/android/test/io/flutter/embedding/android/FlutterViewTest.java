@@ -6,12 +6,15 @@ package io.flutter.embedding.android;
 
 import static junit.framework.TestCase.assertEquals;
 import static junit.framework.TestCase.assertFalse;
+import static junit.framework.TestCase.assertNotNull;
 import static junit.framework.TestCase.assertNotSame;
 import static junit.framework.TestCase.assertNull;
 import static junit.framework.TestCase.assertSame;
 import static junit.framework.TestCase.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -57,17 +60,27 @@ import androidx.window.layout.WindowLayoutInfo;
 import io.flutter.Build.API_LEVELS;
 import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.embedding.engine.FlutterJNI;
+import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.loader.FlutterLoader;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
+import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.embedding.engine.systemchannels.SettingsChannel;
+import io.flutter.embedding.engine.systemchannels.TextInputChannel;
+import io.flutter.plugin.common.BinaryMessenger;
+import io.flutter.plugin.common.JSONMethodCodec;
+import io.flutter.plugin.common.MethodCall;
+import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.plugin.platform.PlatformViewsController;
 import io.flutter.plugin.platform.PlatformViewsController2;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -283,6 +296,12 @@ public class FlutterViewTest {
     SettingsChannel fakeSettingsChannel = mock(SettingsChannel.class);
     SettingsChannel.MessageBuilder fakeMessageBuilder = mock(SettingsChannel.MessageBuilder.class);
     when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setDisplayMetrics(any(DisplayMetrics.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1091,6 +1110,8 @@ public class FlutterViewTest {
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1283,6 +1304,8 @@ public class FlutterViewTest {
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1328,6 +1351,8 @@ public class FlutterViewTest {
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
@@ -1352,6 +1377,339 @@ public class FlutterViewTest {
 
     // Verify results.
     assertEquals(SettingsChannel.PlatformBrightness.light, reportedBrightness.get());
+  }
+
+  @Test
+  public void itSendsSupportsShowingSystemContextMenuToFrameworkOnAttach() {
+    AtomicReference<Boolean> reportedSupportsSystemContextMenu = new AtomicReference<>();
+
+    FlutterView flutterView = new FlutterView(ctx);
+    FlutterEngine flutterEngine = spy(new FlutterEngine(ctx, mockFlutterLoader, mockFlutterJni));
+
+    SettingsChannel fakeSettingsChannel = mock(SettingsChannel.class);
+    SettingsChannel.MessageBuilder fakeMessageBuilder = mock(SettingsChannel.MessageBuilder.class);
+    when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setDisplayMetrics(any(DisplayMetrics.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenAnswer(
+            invocation -> {
+              reportedSupportsSystemContextMenu.set((Boolean) invocation.getArguments()[0]);
+              return fakeMessageBuilder;
+            });
+    when(fakeSettingsChannel.startMessage()).thenReturn(fakeMessageBuilder);
+    when(flutterEngine.getSettingsChannel()).thenReturn(fakeSettingsChannel);
+
+    flutterView.attachToFlutterEngine(flutterEngine);
+
+    assertEquals(Boolean.TRUE, reportedSupportsSystemContextMenu.get());
+  }
+
+  private SettingsChannel mockSettingsChannelCapturingSystemContextMenuSupport(
+      AtomicReference<Boolean> reportedSupportsSystemContextMenu) {
+    SettingsChannel fakeSettingsChannel = mock(SettingsChannel.class);
+    SettingsChannel.MessageBuilder fakeMessageBuilder = mock(SettingsChannel.MessageBuilder.class);
+    when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setDisplayMetrics(any(DisplayMetrics.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setSupportsShowingSystemContextMenu(any(Boolean.class)))
+        .thenAnswer(
+            invocation -> {
+              reportedSupportsSystemContextMenu.set((Boolean) invocation.getArguments()[0]);
+              return fakeMessageBuilder;
+            });
+    when(fakeSettingsChannel.startMessage()).thenReturn(fakeMessageBuilder);
+    return fakeSettingsChannel;
+  }
+
+  @Test
+  @Config(sdk = API_LEVELS.API_36)
+  public void sendUserSettingsToFlutter_disablesSystemContextMenuOnApi36() {
+    AtomicReference<Boolean> reported = new AtomicReference<>();
+    SettingsChannel fakeSettingsChannel =
+        mockSettingsChannelCapturingSystemContextMenuSupport(reported);
+    FlutterView flutterView = new FlutterView(ctx);
+    FlutterEngine flutterEngine = spy(new FlutterEngine(ctx, mockFlutterLoader, mockFlutterJni));
+    when(flutterEngine.getSettingsChannel()).thenReturn(fakeSettingsChannel);
+
+    flutterView.attachToFlutterEngine(flutterEngine);
+
+    assertEquals(Boolean.FALSE, reported.get());
+  }
+
+  @Test
+  @Config(sdk = API_LEVELS.API_37)
+  public void sendUserSettingsToFlutter_enablesSystemContextMenuOnApi37() {
+    AtomicReference<Boolean> reported = new AtomicReference<>();
+    SettingsChannel fakeSettingsChannel =
+        mockSettingsChannelCapturingSystemContextMenuSupport(reported);
+    FlutterView flutterView = new FlutterView(ctx);
+    FlutterEngine flutterEngine = spy(new FlutterEngine(ctx, mockFlutterLoader, mockFlutterJni));
+    when(flutterEngine.getSettingsChannel()).thenReturn(fakeSettingsChannel);
+
+    flutterView.attachToFlutterEngine(flutterEngine);
+
+    assertEquals(Boolean.TRUE, reported.get());
+  }
+
+  @Test
+  @Config(sdk = API_LEVELS.API_37)
+  public void sendUserSettingsToFlutter_disablesSystemContextMenuForLegacyFiveArgTextInputPlugin() {
+    AtomicReference<Boolean> reported = new AtomicReference<>();
+    SettingsChannel fakeSettingsChannel =
+        mockSettingsChannelCapturingSystemContextMenuSupport(reported);
+    FlutterView flutterView = new FlutterView(ctx);
+    FlutterEngine flutterEngine = spy(new FlutterEngine(ctx, mockFlutterLoader, mockFlutterJni));
+    when(flutterEngine.getSettingsChannel()).thenReturn(fakeSettingsChannel);
+
+    flutterView.attachToFlutterEngine(flutterEngine);
+    flutterView.setTextInputPlugin(
+        new TextInputPlugin(
+            flutterView,
+            flutterEngine.getTextInputChannel(),
+            flutterEngine.getScribeChannel(),
+            flutterEngine.getPlatformViewsController(),
+            flutterEngine.getPlatformViewsController2()));
+    flutterView.sendUserSettingsToFlutter();
+    assertEquals(Boolean.FALSE, reported.get());
+
+    reported.set(null);
+    flutterView.setTextInputPlugin(null);
+    flutterView.sendUserSettingsToFlutter();
+    assertEquals(Boolean.FALSE, reported.get());
+  }
+
+  private static Object invokePlatformMethod(
+      BinaryMessenger.BinaryMessageHandler platformHandler, String method, Object args) {
+    ByteBuffer encoded = JSONMethodCodec.INSTANCE.encodeMethodCall(new MethodCall(method, args));
+    encoded.rewind();
+    AtomicReference<Object> decodedReply = new AtomicReference<>();
+    platformHandler.onMessage(
+        encoded,
+        reply -> {
+          assertNotNull(reply);
+          reply.rewind();
+          decodedReply.set(JSONMethodCodec.INSTANCE.decodeEnvelope(reply));
+        });
+    return decodedReply.get();
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void onFocusChanged_focusLossDismissesActiveSystemContextMenu() throws Exception {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            FrameLayout container = new FrameLayout(activity);
+            FlutterView flutterView = new FlutterView(activity);
+            View siblingView = new View(activity);
+            siblingView.setFocusable(true);
+            siblingView.setFocusableInTouchMode(true);
+            container.addView(flutterView);
+            container.addView(siblingView);
+            activity.setContentView(container);
+            flutterView.requestFocus();
+            assertTrue(flutterView.hasFocus());
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mockFlutterJni, activity.getApplicationContext().getAssets()));
+            dartExecutor.onAttachedToJNI();
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            ArgumentCaptor<BinaryMessenger.BinaryMessageHandler> platformHandlerCaptor =
+                ArgumentCaptor.forClass(BinaryMessenger.BinaryMessageHandler.class);
+            verify(dartExecutor)
+                .setMessageHandler(eq("flutter/platform"), platformHandlerCaptor.capture());
+
+            TextInputChannel textInputChannel = spy(new TextInputChannel(dartExecutor));
+            FlutterEngine flutterEngine =
+                spy(new FlutterEngine(activity, mockFlutterLoader, mockFlutterJni));
+            when(flutterEngine.getPlatformChannel()).thenReturn(platformChannel);
+            when(flutterEngine.getTextInputChannel()).thenReturn(textInputChannel);
+            flutterView.attachToFlutterEngine(flutterEngine);
+
+            ArgumentCaptor<TextInputChannel.TextInputMethodHandler> textInputHandlerCaptor =
+                ArgumentCaptor.forClass(TextInputChannel.TextInputMethodHandler.class);
+            verify(textInputChannel).setTextInputMethodHandler(textInputHandlerCaptor.capture());
+
+            TextInputChannel.Configuration textConfig =
+                new TextInputChannel.Configuration(
+                    false,
+                    true,
+                    true,
+                    true,
+                    false,
+                    TextInputChannel.TextCapitalization.NONE,
+                    new TextInputChannel.InputType(
+                        TextInputChannel.TextInputType.TEXT, false, false, false),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+            textInputHandlerCaptor.getValue().setClient(14, textConfig);
+            textInputHandlerCaptor
+                .getValue()
+                .setEditingState(new TextInputChannel.TextEditState("Hello", 0, 5, -1, -1));
+
+            JSONObject showArgs;
+            try {
+              showArgs =
+                  new JSONObject()
+                      .put(
+                          "targetRect",
+                          new JSONObject()
+                              .put("x", 0)
+                              .put("y", 0)
+                              .put("width", 10)
+                              .put("height", 10))
+                      .put("items", new JSONArray().put(new JSONObject().put("type", "copy")));
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+            assertEquals(
+                Boolean.TRUE,
+                invokePlatformMethod(
+                    platformHandlerCaptor.getValue(),
+                    "ContextMenu.showSystemContextMenu",
+                    showArgs));
+
+            clearInvocations(dartExecutor);
+            siblingView.requestFocus();
+            assertFalse(flutterView.hasFocus());
+
+            ArgumentCaptor<ByteBuffer> dismissCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor).send(eq("flutter/platform"), dismissCaptor.capture(), isNull());
+            ByteBuffer buf = dismissCaptor.getValue();
+            buf.rewind();
+            MethodCall call = JSONMethodCodec.INSTANCE.decodeMethodCall(buf);
+            assertEquals("ContextMenu.onDismissSystemContextMenu", call.method);
+            assertEquals(14, ((JSONArray) call.arguments).optInt(0));
+          });
+    }
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void detachAndReattachFlutterEngine_dismissesActiveSystemContextMenuAndRebindsHandler() {
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            FlutterView flutterView = new FlutterView(activity);
+            activity.setContentView(flutterView);
+
+            DartExecutor dartExecutor =
+                spy(new DartExecutor(mockFlutterJni, activity.getApplicationContext().getAssets()));
+            dartExecutor.onAttachedToJNI();
+            PlatformChannel platformChannel = new PlatformChannel(dartExecutor);
+            ArgumentCaptor<BinaryMessenger.BinaryMessageHandler> platformHandlerCaptor =
+                ArgumentCaptor.forClass(BinaryMessenger.BinaryMessageHandler.class);
+            verify(dartExecutor)
+                .setMessageHandler(eq("flutter/platform"), platformHandlerCaptor.capture());
+
+            TextInputChannel textInputChannel = spy(new TextInputChannel(dartExecutor));
+            FlutterEngine flutterEngine =
+                spy(new FlutterEngine(activity, mockFlutterLoader, mockFlutterJni));
+            when(flutterEngine.getPlatformChannel()).thenReturn(platformChannel);
+            when(flutterEngine.getTextInputChannel()).thenReturn(textInputChannel);
+            flutterView.attachToFlutterEngine(flutterEngine);
+
+            ArgumentCaptor<TextInputChannel.TextInputMethodHandler> textInputHandlerCaptor =
+                ArgumentCaptor.forClass(TextInputChannel.TextInputMethodHandler.class);
+            verify(textInputChannel).setTextInputMethodHandler(textInputHandlerCaptor.capture());
+
+            TextInputChannel.Configuration textConfig =
+                new TextInputChannel.Configuration(
+                    false,
+                    true,
+                    true,
+                    true,
+                    false,
+                    TextInputChannel.TextCapitalization.NONE,
+                    new TextInputChannel.InputType(
+                        TextInputChannel.TextInputType.TEXT, false, false, false),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+            textInputHandlerCaptor.getValue().setClient(21, textConfig);
+            textInputHandlerCaptor
+                .getValue()
+                .setEditingState(new TextInputChannel.TextEditState("Detach", 0, 6, -1, -1));
+
+            JSONObject showArgs;
+            try {
+              showArgs =
+                  new JSONObject()
+                      .put(
+                          "targetRect",
+                          new JSONObject()
+                              .put("x", 0)
+                              .put("y", 0)
+                              .put("width", 10)
+                              .put("height", 10))
+                      .put("items", new JSONArray().put(new JSONObject().put("type", "copy")));
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+            assertEquals(
+                Boolean.TRUE,
+                invokePlatformMethod(
+                    platformHandlerCaptor.getValue(),
+                    "ContextMenu.showSystemContextMenu",
+                    showArgs));
+
+            clearInvocations(dartExecutor);
+            flutterView.detachFromFlutterEngine();
+
+            ArgumentCaptor<ByteBuffer> dismissCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+            verify(dartExecutor).send(eq("flutter/platform"), dismissCaptor.capture(), isNull());
+            ByteBuffer buf = dismissCaptor.getValue();
+            buf.rewind();
+            MethodCall call = JSONMethodCodec.INSTANCE.decodeMethodCall(buf);
+            assertEquals("ContextMenu.onDismissSystemContextMenu", call.method);
+            assertEquals(21, ((JSONArray) call.arguments).optInt(0));
+
+            // While detached, showSystemContextMenu returns false without throwing.
+            assertEquals(
+                Boolean.FALSE,
+                invokePlatformMethod(
+                    platformHandlerCaptor.getValue(),
+                    "ContextMenu.showSystemContextMenu",
+                    showArgs));
+
+            // Re-attaching installs a fresh TextInputPlugin handler.
+            clearInvocations(textInputChannel);
+            flutterView.attachToFlutterEngine(flutterEngine);
+            verify(textInputChannel).setTextInputMethodHandler(textInputHandlerCaptor.capture());
+            textInputHandlerCaptor.getValue().setClient(22, textConfig);
+            textInputHandlerCaptor
+                .getValue()
+                .setEditingState(new TextInputChannel.TextEditState("Reattach", 0, 8, -1, -1));
+            assertEquals(
+                Boolean.TRUE,
+                invokePlatformMethod(
+                    platformHandlerCaptor.getValue(),
+                    "ContextMenu.showSystemContextMenu",
+                    showArgs));
+          });
+    }
   }
 
   @Test

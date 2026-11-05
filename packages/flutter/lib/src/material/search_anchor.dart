@@ -1632,7 +1632,11 @@ class SearchBar extends StatefulWidget {
     EditableTextState editableTextState,
   ) {
     if (SystemContextMenu.isSupportedByField(editableTextState)) {
-      return SystemContextMenu.editableText(editableTextState: editableTextState);
+      return SystemContextMenu.editableText(
+        editableTextState: editableTextState,
+        fallbackBuilder: (BuildContext context) =>
+            AdaptiveTextSelectionToolbar.editableText(editableTextState: editableTextState),
+      );
     }
     return AdaptiveTextSelectionToolbar.editableText(editableTextState: editableTextState);
   }

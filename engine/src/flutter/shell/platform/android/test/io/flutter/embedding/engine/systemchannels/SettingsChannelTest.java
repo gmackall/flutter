@@ -17,7 +17,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.systemchannels.SettingsChannel.ConfigurationQueue.SentConfiguration;
 import io.flutter.plugin.common.BasicMessageChannel;
+import io.flutter.plugin.common.JSONMessageCodec;
 import java.nio.ByteBuffer;
+import org.json.JSONException;
+import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -25,6 +28,24 @@ import org.robolectric.annotation.Config;
 
 @RunWith(AndroidJUnit4.class)
 public class SettingsChannelTest {
+  @Test
+  @SuppressWarnings("deprecation")
+  public void setSupportsShowingSystemContextMenuSerializesValue() throws JSONException {
+    final DartExecutor executor = mock(DartExecutor.class);
+    executor.onAttachedToJNI();
+    final SettingsChannel settingsChannel = new SettingsChannel(executor);
+
+    final ArgumentCaptor<ByteBuffer> messageCaptor = ArgumentCaptor.forClass(ByteBuffer.class);
+
+    settingsChannel.startMessage().setSupportsShowingSystemContextMenu(true).send();
+
+    verify(executor).send(eq("flutter/settings"), messageCaptor.capture(), isNull());
+    ByteBuffer encoded = messageCaptor.getValue();
+    encoded.rewind();
+    JSONObject decoded = (JSONObject) JSONMessageCodec.INSTANCE.decodeMessage(encoded);
+    assertEquals(true, decoded.getBoolean("supportsShowingSystemContextMenu"));
+  }
+
   @Test
   @TargetApi(API_LEVELS.API_33)
   @Config(sdk = API_LEVELS.API_33)

@@ -24,6 +24,96 @@
 #     * ListWheelScrollView: fix_list_wheel_scroll_view.yaml
 version: 1
 transforms:
+  - title: "Migrate to 'SystemContextMenuItem'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItem'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItem'
+
+  - title: "Migrate to 'SystemContextMenuItemCopy'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemCopy'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemCopy'
+
+  - title: "Migrate to 'SystemContextMenuItemCut'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemCut'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemCut'
+
+  - title: "Migrate to 'SystemContextMenuItemPaste'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemPaste'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemPaste'
+
+  - title: "Migrate to 'SystemContextMenuItemSelectAll'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemSelectAll'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemSelectAll'
+
+  - title: "Migrate to 'SystemContextMenuItemLookUp'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemLookUp'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemLookUp'
+
+  - title: "Migrate to 'SystemContextMenuItemSearchWeb'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemSearchWeb'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemSearchWeb'
+
+  - title: "Migrate to 'SystemContextMenuItemShare'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemShare'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemShare'
+
+  - title: "Migrate to 'SystemContextMenuItemLiveText'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemLiveText'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemLiveText'
+
+  - title: "Migrate to 'SystemContextMenuItemCustom'"
+    date: 2026-11-08
+    element:
+      uris: [ 'widgets.dart', 'material.dart', 'cupertino.dart' ]
+      class: 'IOSSystemContextMenuItemCustom'
+    changes:
+      - kind: 'rename'
+        newName: 'SystemContextMenuItemCustom'
+
   # Change made in https://github.com/flutter/flutter/pull/135218
   - title: "Migrate to 'scrollCacheExtent'"
     date: 2026-02-09

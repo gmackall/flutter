@@ -45,4 +45,16 @@ void main() {
 
   // Changes made in https://github.com/flutter/flutter/pull/161518
   const CopySelectionTextIntent.cut(SelectionChangedCause.scribble);
+
+  final List<IOSSystemContextMenuItemData> itemDatas = <IOSSystemContextMenuItemData>[
+    const IOSSystemContextMenuItemDataCopy(),
+    const IOSSystemContextMenuItemDataCut(),
+    const IOSSystemContextMenuItemDataPaste(),
+    const IOSSystemContextMenuItemDataSelectAll(),
+    const IOSSystemContextMenuItemDataLookUp(title: 'Look Up'),
+    const IOSSystemContextMenuItemDataSearchWeb(title: 'Search Web'),
+    const IOSSystemContextMenuItemDataShare(title: 'Share'),
+    const IOSSystemContextMenuItemDataLiveText(),
+    IOSSystemContextMenuItemDataCustom(title: 'Custom', onPressed: () {}),
+  ];
 }

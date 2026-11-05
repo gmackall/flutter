@@ -11,7 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'shows custom menu items in system context menu on iOS',
+    'shows custom menu items in system context menu on iOS and Android',
     (WidgetTester tester) async {
       final List<Map<String, dynamic>> itemsReceived = <Map<String, dynamic>>[];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -37,7 +37,9 @@ void main() {
             final MediaQueryData mediaQueryData = MediaQuery.of(context);
             return MediaQuery(
               data: mediaQueryData.copyWith(
-                supportsShowingSystemContextMenu: defaultTargetPlatform == .iOS,
+                supportsShowingSystemContextMenu:
+                    defaultTargetPlatform == .iOS ||
+                    defaultTargetPlatform == .android,
               ),
               child: const example.SystemContextMenuExampleApp(),
             );
@@ -50,7 +52,7 @@ void main() {
       tester.state<EditableTextState>(textFinder).showToolbar();
       await tester.pumpAndSettle();
 
-      if (defaultTargetPlatform == .iOS) {
+      if (defaultTargetPlatform == .iOS || defaultTargetPlatform == .android) {
         expect(find.byType(SystemContextMenu), findsOneWidget);
         expect(find.byType(AdaptiveTextSelectionToolbar), findsNothing);
         expect(itemsReceived.length, greaterThanOrEqualTo(3));
@@ -103,11 +105,11 @@ void main() {
       final SystemContextMenu contextMenu = tester.widget<SystemContextMenu>(
         find.byType(SystemContextMenu),
       );
-      final List<IOSSystemContextMenuItem> items = contextMenu.items;
-      final IOSSystemContextMenuItemCustom clearItem = items
-          .whereType<IOSSystemContextMenuItemCustom>()
+      final List<SystemContextMenuItem> items = contextMenu.items;
+      final SystemContextMenuItemCustom clearItem = items
+          .whereType<SystemContextMenuItemCustom>()
           .firstWhere(
-            (IOSSystemContextMenuItemCustom item) => item.title == 'Clear Text',
+            (SystemContextMenuItemCustom item) => item.title == 'Clear Text',
           );
 
       clearItem.onPressed();
@@ -127,7 +129,7 @@ void main() {
 
       expect(find.byType(SystemContextMenu), findsNothing);
     },
-    variant: TargetPlatformVariant.only(.iOS),
+    variant: const TargetPlatformVariant(<TargetPlatform>{.iOS, .android}),
     skip: kIsWeb, // [intended]
   );
 }

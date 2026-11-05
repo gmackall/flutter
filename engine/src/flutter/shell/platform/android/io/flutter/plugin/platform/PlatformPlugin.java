@@ -8,13 +8,7 @@ import static io.flutter.Build.API_LEVELS;
 
 import android.app.Activity;
 import android.app.ActivityManager.TaskDescription;
-import android.content.ClipData;
-import android.content.ClipDescription;
-import android.content.ClipboardManager;
-import android.content.Context;
 import android.content.Intent;
-import android.content.res.AssetFileDescriptor;
-import android.net.Uri;
 import android.os.Build;
 import android.view.HapticFeedbackConstants;
 import android.view.SoundEffectConstants;
@@ -27,10 +21,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
-import io.flutter.Log;
 import io.flutter.embedding.engine.systemchannels.PlatformChannel;
-import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.util.List;
 
 /** Android implementation of the platform plugin. */
@@ -44,7 +35,6 @@ public class PlatformPlugin {
   private PlatformChannel.SystemChromeStyle currentTheme;
   private int mEnabledOverlays;
   private boolean isEdgeToEdge = false;
-  private static final String TAG = "PlatformPlugin";
 
   /**
    * The {@link PlatformPlugin} generally has default behaviors implemented for platform
@@ -625,92 +615,15 @@ public class PlatformPlugin {
   }
 
   private CharSequence getClipboardData(PlatformChannel.ClipboardContentFormat format) {
-    ClipboardManager clipboard =
-        (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-
-    if (!clipboard.hasPrimaryClip()) return null;
-
-    CharSequence itemText = null;
-    try {
-      ClipData clip = clipboard.getPrimaryClip();
-      if (clip == null) return null;
-      if (format == null || format == PlatformChannel.ClipboardContentFormat.PLAIN_TEXT) {
-        ClipData.Item item = clip.getItemAt(0);
-        // First, try getting clipboard data as text; no further processing
-        // required if so.
-        itemText = item.getText();
-        if (itemText == null) {
-          // Clipboard data does not contain text, so check whether or not it
-          // contains a URI to extract text from.
-          Uri itemUri = item.getUri();
-
-          if (itemUri == null) {
-            Log.w(
-                TAG, "Clipboard item contained no textual content nor a URI to retrieve it from.");
-            return null;
-          }
-
-          // Will only try to extract text from URI if it has the content scheme.
-          String uriScheme = itemUri.getScheme();
-
-          if (!uriScheme.equals("content")) {
-            Log.w(
-                TAG,
-                "Clipboard item contains a Uri with scheme '" + uriScheme + "'that is unhandled.");
-            return null;
-          }
-
-          AssetFileDescriptor assetFileDescriptor =
-              activity.getContentResolver().openTypedAssetFileDescriptor(itemUri, "text/*", null);
-
-          // Safely return clipboard data coerced into text; will return either
-          // itemText or text retrieved from its URI.
-          itemText = item.coerceToText(activity);
-          if (assetFileDescriptor != null) assetFileDescriptor.close();
-        }
-
-        return itemText;
-      }
-    } catch (SecurityException e) {
-      Log.w(
-          TAG,
-          "Attempted to get clipboard data that requires additional permission(s).\n"
-              + "See the exception details for which permission(s) are required, and consider adding them to your Android Manifest as described in:\n"
-              + "https://developer.android.com/guide/topics/permissions/overview",
-          e);
-      return null;
-    } catch (FileNotFoundException e) {
-      Log.w(TAG, "Clipboard text was unable to be received from content URI.");
-      return null;
-    } catch (IOException e) {
-      Log.w(TAG, "Failed to close AssetFileDescriptor while trying to read text from URI.", e);
-      return itemText;
-    }
-
-    return null;
+    return ClipboardUtils.getClipboardData(activity, format);
   }
 
   private void setClipboardData(String text) {
-    ClipboardManager clipboard =
-        (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-    ClipData clip = ClipData.newPlainText("text label?", text);
-    clipboard.setPrimaryClip(clip);
+    ClipboardUtils.setClipboardData(activity, text);
   }
 
   private boolean clipboardHasStrings() {
-    ClipboardManager clipboard =
-        (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-    // Android 12 introduces a toast message that appears when an app reads the clipboard. To avoid
-    // unintended access, call the appropriate APIs to receive information about the current content
-    // that's on the clipboard (rather than the actual content itself).
-    if (!clipboard.hasPrimaryClip()) {
-      return false;
-    }
-    ClipDescription description = clipboard.getPrimaryClipDescription();
-    if (description == null) {
-      return false;
-    }
-    return description.hasMimeType("text/*");
+    return ClipboardUtils.clipboardHasStrings(activity);
   }
 
   private void share(@NonNull String text) {

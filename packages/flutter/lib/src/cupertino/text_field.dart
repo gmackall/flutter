@@ -820,7 +820,13 @@ class CupertinoTextField extends StatefulWidget {
     EditableTextState editableTextState,
   ) {
     if (SystemContextMenu.isSupportedByField(editableTextState)) {
-      return SystemContextMenu.editableText(editableTextState: editableTextState);
+      return SystemContextMenu.editableText(
+        editableTextState: editableTextState,
+        fallbackBuilder: (BuildContext context) =>
+            CupertinoAdaptiveTextSelectionToolbar.editableText(
+              editableTextState: editableTextState,
+            ),
+      );
     }
     return CupertinoAdaptiveTextSelectionToolbar.editableText(editableTextState: editableTextState);
   }

@@ -72,6 +72,7 @@ typedef PlatformViewCreatedCallback = void Function(int id);
 class PlatformViewsService {
   PlatformViewsService._() {
     SystemChannels.platform_views.setMethodCallHandler(_onMethodCall);
+    SystemChannels.platform_views_2.setMethodCallHandler(_onMethodCall);
   }
 
   static final PlatformViewsService _instance = PlatformViewsService._();

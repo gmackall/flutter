@@ -3326,6 +3326,7 @@ class EditableTextState extends State<EditableText>
     for (final ProcessTextAction action in _processTextActions) {
       buttonItems.add(
         ContextMenuButtonItem(
+          id: action.id,
           label: action.label,
           onPressed: () async {
             final String selectedText = selection.textInside(textEditingValue.text);
@@ -3335,6 +3336,9 @@ class EditableTextState extends State<EditableText>
                 selectedText,
                 widget.readOnly,
               );
+              if (!mounted) {
+                return;
+              }
               // If an activity does not return a modified version, just hide the toolbar.
               // Otherwise use the result to replace the selected text.
               if (processedText != null && _allowPaste) {
@@ -5394,6 +5398,32 @@ class EditableTextState extends State<EditableText>
       if (primaryContext != null) {
         Actions.invoke(primaryContext, intent);
       }
+    }
+  }
+
+  /// Dispatches a built-in editing action triggered from the system context
+  /// menu with [SelectionChangedCause.toolbar].
+  @internal
+  void handleSystemContextMenuAction(String action, {String? text}) {
+    switch (action) {
+      case 'cut':
+        cutSelection(SelectionChangedCause.toolbar);
+      case 'copy':
+        copySelection(SelectionChangedCause.toolbar);
+      case 'paste':
+        if (text != null) {
+          _pasteText(SelectionChangedCause.toolbar, text);
+        } else {
+          _pasteTextWithReporting(SelectionChangedCause.toolbar);
+        }
+      case 'selectAll':
+        selectAll(SelectionChangedCause.toolbar);
+      case 'share':
+        shareSelection(SelectionChangedCause.toolbar);
+      case 'searchWeb':
+        searchWebForSelection(SelectionChangedCause.toolbar);
+      case 'lookUp':
+        lookUpSelection(SelectionChangedCause.toolbar);
     }
   }
 
