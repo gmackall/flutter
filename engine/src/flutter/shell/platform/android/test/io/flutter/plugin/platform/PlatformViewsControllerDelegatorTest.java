@@ -5,6 +5,7 @@
 package io.flutter.plugin.platform;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -137,5 +138,62 @@ public class PlatformViewsControllerDelegatorTest {
     delegator.onRejectGesture(0, 12345L);
 
     verify(pvcHandler).onRejectGesture(0, 12345L);
+  }
+
+  @Test
+  public void resize_repliesImmediatelyWithRequestedSizeWhenInPVC2() {
+    PlatformViewsController platformViewsController = mock(PlatformViewsController.class);
+    PlatformViewsController2 platformViewsController2 = mock(PlatformViewsController2.class);
+    PlatformViewsChannel.PlatformViewsHandler pvcHandler =
+        mock(PlatformViewsChannel.PlatformViewsHandler.class);
+    PlatformViewsChannel2.PlatformViewsHandler pvc2Handler =
+        mock(PlatformViewsChannel2.PlatformViewsHandler.class);
+    when(platformViewsController2.getPlatformViewById(7)).thenReturn(mock(View.class));
+
+    PlatformViewsControllerDelegator delegator =
+        new PlatformViewsControllerDelegator(
+            platformViewsController, platformViewsController2, pvcHandler, pvc2Handler);
+
+    final PlatformViewsChannel.PlatformViewBufferSize[] reported =
+        new PlatformViewsChannel.PlatformViewBufferSize[1];
+    PlatformViewsChannel.PlatformViewResizeRequest request =
+        new PlatformViewsChannel.PlatformViewResizeRequest(7, 240.5, 135.25);
+    delegator.resize(request, size -> reported[0] = size);
+
+    Assert.assertNotNull(reported[0]);
+    Assert.assertEquals(240.5, reported[0].width, 1e-9);
+    Assert.assertEquals(135.25, reported[0].height, 1e-9);
+    verify(pvcHandler, never()).resize(request, size -> {});
+  }
+
+  @Test
+  public void dispose_delegatesToPVC2ifPresent() {
+    PlatformViewsController platformViewsController = mock(PlatformViewsController.class);
+    PlatformViewsController2 platformViewsController2 = mock(PlatformViewsController2.class);
+    PlatformViewsChannel.PlatformViewsHandler pvcHandler =
+        mock(PlatformViewsChannel.PlatformViewsHandler.class);
+    PlatformViewsChannel2.PlatformViewsHandler pvc2Handler =
+        mock(PlatformViewsChannel2.PlatformViewsHandler.class);
+    when(platformViewsController2.getPlatformViewById(9)).thenReturn(mock(View.class));
+
+    PlatformViewsControllerDelegator delegator =
+        new PlatformViewsControllerDelegator(
+            platformViewsController, platformViewsController2, pvcHandler, pvc2Handler);
+    delegator.dispose(9);
+
+    verify(pvc2Handler).dispose(9);
+    verify(pvcHandler, never()).dispose(9);
+  }
+
+  @Test
+  public void shouldUpgradeAllViewsToHcpp_delegatesToPVC2() {
+    PlatformViewsController platformViewsController = mock(PlatformViewsController.class);
+    PlatformViewsController2 platformViewsController2 = mock(PlatformViewsController2.class);
+    when(platformViewsController2.shouldUpgradeAllViewsToHcpp()).thenReturn(true);
+
+    PlatformViewsControllerDelegator delegator =
+        new PlatformViewsControllerDelegator(platformViewsController, platformViewsController2);
+
+    Assert.assertTrue(delegator.shouldUpgradeAllViewsToHcpp());
   }
 }

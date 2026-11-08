@@ -176,23 +176,11 @@ bool TextureContents::Render(const ContentContext& renderer,
   pass.SetVertexBuffer(vertex_buffer);
   VS::BindFrameInfo(pass, data_host_buffer.EmplaceUniform(frame_info));
 
-  if (strict_source_rect_enabled_) {
-    // For a strict source rect, shrink the texture coordinate range by half a
-    // texel to ensure that linear filtering does not sample anything outside
-    // the source rect bounds.
-    auto strict_texture_coords =
-        Rect::MakeSize(texture_->GetSize()).Project(source_rect_.Expand(-0.5));
-
-    FSStrict::FragInfo frag_info;
-    frag_info.source_rect = Vector4(strict_texture_coords.GetLTRB());
-    frag_info.alpha = GetOpacity();
-    FSStrict::BindFragInfo(pass, data_host_buffer.EmplaceUniform((frag_info)));
-    FSStrict::BindTextureSampler(
-        pass, texture_,
-        renderer.GetContext()->GetSamplerLibrary()->GetSampler(
-            sampler_descriptor_));
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
-  } else if (is_external_texture) {
+  if (is_external_texture) {
+    // External OES textures always select GetTiledTextureExternalPipeline
+    // above, so bind FSExternal uniforms and SAMPLEREXTERNALOES directly
+    // (strict source-rect clamping is not supported on SAMPLEREXTERNALOES).
     FSExternal::FragInfo frag_info{};
     frag_info.x_tile_mode =
         static_cast<Scalar>(sampler_descriptor_.width_address_mode);
@@ -214,7 +202,25 @@ bool TextureContents::Render(const ContentContext& renderer,
     FSExternal::BindSAMPLEREXTERNALOESTextureSampler(
         pass, texture_,
         renderer.GetContext()->GetSamplerLibrary()->GetSampler(sampler_desc));
+    return pass.Draw().ok();
+  }
 #endif  //  IMPELLER_ENABLE_OPENGLES
+
+  if (strict_source_rect_enabled_) {
+    // For a strict source rect, shrink the texture coordinate range by half a
+    // texel to ensure that linear filtering does not sample anything outside
+    // the source rect bounds.
+    auto strict_texture_coords =
+        Rect::MakeSize(texture_->GetSize()).Project(source_rect_.Expand(-0.5));
+
+    FSStrict::FragInfo frag_info;
+    frag_info.source_rect = Vector4(strict_texture_coords.GetLTRB());
+    frag_info.alpha = GetOpacity();
+    FSStrict::BindFragInfo(pass, data_host_buffer.EmplaceUniform((frag_info)));
+    FSStrict::BindTextureSampler(
+        pass, texture_,
+        renderer.GetContext()->GetSamplerLibrary()->GetSampler(
+            sampler_descriptor_));
   } else {
     FS::FragInfo frag_info{};
     frag_info.alpha = GetOpacity();

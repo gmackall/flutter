@@ -157,7 +157,7 @@ void main() {
       expect(controller.requiresViewComposition, false);
     });
 
-    test('default view does not use view composition in fallback mode', () async {
+    test('default view uses view composition in fallback mode', () async {
       viewsController.registerViewType('webview');
       viewsController.allowTextureLayerMode = false;
       final AndroidViewController controller = PlatformViewsService.initAndroidView(
@@ -167,7 +167,9 @@ void main() {
       );
       await controller.create(size: const Size(100.0, 100.0));
       viewsController.allowTextureLayerMode = true;
-      expect(controller.requiresViewComposition, false);
+      expect(controller.requiresViewComposition, true);
+      expect(controller.textureId, isNull);
+      await controller.dispose();
     });
 
     test('surface view does not use view composition by default', () async {
@@ -854,4 +856,97 @@ void main() {
       expect(calls.first.arguments, <String, dynamic>{'id': 45});
     },
   );
+
+  group('Android dynamic composition hot-swap and buffer resize', () {
+    late FakeAndroidPlatformViewsController viewsController;
+    setUp(() {
+      viewsController = FakeAndroidPlatformViewsController();
+    });
+
+    test('viewCompositionChanged upgrades live controller and cancels active gesture', () async {
+      viewsController.registerViewType('webview');
+      final AndroidViewController controller = PlatformViewsService.initAndroidView(
+        id: 50,
+        viewType: 'webview',
+        layoutDirection: TextDirection.ltr,
+      );
+      controller.pointTransformer = (Offset global) => global;
+
+      var modeChangeCount = 0;
+      controller.addOnCompositionModeChangedListener(() {
+        modeChangeCount++;
+      });
+
+      await controller.create(size: const Size(120.0, 80.0));
+      expect(controller.requiresViewComposition, isFalse);
+      expect(controller.textureId, isNotNull);
+
+      await controller.dispatchPointerEvent(
+        const PointerDownEvent(
+          pointer: 1,
+          position: Offset(10, 20),
+          timeStamp: Duration(milliseconds: 50),
+        ),
+      );
+
+      viewsController.invokeViewCompositionChanged(50);
+      expect(controller.requiresViewComposition, isTrue);
+      expect(controller.textureId, isNull);
+      expect(modeChangeCount, 1);
+      expect(viewsController.motionEvents[50]!.last.action, AndroidViewController.kActionCancel);
+
+      // Duplicate viewCompositionChanged is a sticky no-op.
+      viewsController.invokeViewCompositionChanged(50);
+      expect(modeChangeCount, 1);
+
+      await controller.dispose();
+    });
+
+    test('viewFocused on platform_views_2 invokes registered focus callback once', () async {
+      var focusCount = 0;
+      viewsController.registerViewType('webview');
+      final AndroidViewController controller = PlatformViewsService.initAndroidView(
+        id: 51,
+        viewType: 'webview',
+        layoutDirection: TextDirection.ltr,
+        onFocus: () {
+          focusCount++;
+        },
+      );
+      await controller.create(size: const Size(100.0, 100.0));
+      viewsController.invokeViewCompositionChanged(51);
+
+      viewsController.invokeViewFocused2(51);
+      expect(focusCount, 1);
+
+      await controller.dispose();
+      viewsController.invokeViewFocused2(51);
+      expect(focusCount, 1);
+    });
+
+    test(
+      'viewBufferResized notifies registered buffer size listeners while in texture mode',
+      () async {
+        viewsController.registerViewType('webview');
+        final AndroidViewController controller = PlatformViewsService.initAndroidView(
+          id: 52,
+          viewType: 'webview',
+          layoutDirection: TextDirection.ltr,
+        );
+        final reportedSizes = <Size>[];
+        controller.addOnBufferSizeChangedListener(reportedSizes.add);
+
+        await controller.create(size: const Size(400.0, 400.0));
+        viewsController.invokeViewBufferResized(52, const Size(180.0, 140.0));
+        expect(reportedSizes, <Size>[const Size(180.0, 140.0)]);
+
+        // After upgrading to native view composition, buffer size notifications are ignored.
+        viewsController.invokeViewCompositionChanged(52);
+        viewsController.invokeViewBufferResized(52, const Size(90.0, 70.0));
+        expect(reportedSizes, <Size>[const Size(180.0, 140.0)]);
+
+        await controller.dispose();
+      },
+    );
+  });
 }

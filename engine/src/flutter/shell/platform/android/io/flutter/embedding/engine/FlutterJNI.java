@@ -1416,6 +1416,24 @@ public class FlutterJNI {
 
   @SuppressWarnings("unused")
   @SuppressLint("NewApi")
+  public boolean areTransactionsPending2() {
+    if (platformViewsController2 == null) {
+      return false;
+    }
+    return platformViewsController2.hasPendingTransactions();
+  }
+
+  @SuppressWarnings("unused")
+  @SuppressLint("NewApi")
+  public boolean waitForPendingTransactions2(long timeoutMs) {
+    if (platformViewsController2 == null) {
+      return true;
+    }
+    return platformViewsController2.waitForPendingTransactions(timeoutMs);
+  }
+
+  @SuppressWarnings("unused")
+  @SuppressLint("NewApi")
   @UiThread
   public FlutterOverlaySurface createOverlaySurface2() {
     if (platformViewsController2 == null) {

@@ -461,6 +461,11 @@ public class FlutterRenderer implements TextureRegistry {
     private static final int MAX_DEQUEUED_IMAGES = 2;
     private static final int MAX_IMAGES = 5 + MAX_DEQUEUED_IMAGES;
 
+    // Configurable per-producer cap (defaults to MAX_IMAGES for video/camera producers; TLHC
+    // PlatformViews trim this to 4 since lockHardwareCanvas() only needs double buffering + 2
+    // in-flight Vulkan frames).
+    private int maxImages = MAX_IMAGES;
+
     // Flip when debugging to see verbose logs.
     private static final boolean VERBOSE_LOGS = false;
 
@@ -893,6 +898,16 @@ public class FlutterRenderer implements TextureRegistry {
     }
 
     @Override
+    public void setMaxImages(int maxImages) {
+      this.maxImages = Math.max(1, maxImages);
+    }
+
+    @VisibleForTesting
+    public int getMaxImages() {
+      return this.maxImages;
+    }
+
+    @Override
     @RequiresApi(API_LEVELS.API_29)
     public Image acquireLatestImage() {
       PerImage r = dequeueImage();
@@ -942,7 +957,7 @@ public class FlutterRenderer implements TextureRegistry {
     private ImageReader createImageReader33() {
       final ImageReader.Builder builder = new ImageReader.Builder(requestedWidth, requestedHeight);
       // Allow for double buffering.
-      builder.setMaxImages(MAX_IMAGES);
+      builder.setMaxImages(this.maxImages);
       // Use PRIVATE image format so that we can support video decoding.
       // TODO(johnmccutchan): Should we always use PRIVATE here? It may impact our ability to
       // read back texture data. If we don't always want to use it, how do we decide when to
@@ -961,7 +976,7 @@ public class FlutterRenderer implements TextureRegistry {
           requestedWidth,
           requestedHeight,
           ImageFormat.PRIVATE,
-          MAX_IMAGES,
+          this.maxImages,
           HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE);
     }
 

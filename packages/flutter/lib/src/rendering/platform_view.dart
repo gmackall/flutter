@@ -90,6 +90,8 @@ class RenderAndroidView extends PlatformViewRenderBox {
     _viewController.pointTransformer = (Offset offset) => globalToLocal(offset);
     updateGestureRecognizers(gestureRecognizers);
     _viewController.addOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.addOnCompositionModeChangedListener(_onCompositionModeChanged);
+    _viewController.addOnBufferSizeChangedListener(_onBufferSizeChanged);
     this.hitTestBehavior = hitTestBehavior;
     _setOffset();
   }
@@ -114,6 +116,8 @@ class RenderAndroidView extends PlatformViewRenderBox {
       return;
     }
     _viewController.removeOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.removeOnCompositionModeChangedListener(_onCompositionModeChanged);
+    _viewController.removeOnBufferSizeChangedListener(_onBufferSizeChanged);
     super.controller = controller;
     _viewController = controller;
     _viewController.pointTransformer = (Offset offset) => globalToLocal(offset);
@@ -122,6 +126,8 @@ class RenderAndroidView extends PlatformViewRenderBox {
       markNeedsSemanticsUpdate();
     }
     _viewController.addOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.addOnCompositionModeChangedListener(_onCompositionModeChanged);
+    _viewController.addOnBufferSizeChangedListener(_onBufferSizeChanged);
   }
 
   /// {@macro flutter.material.Material.clipBehavior}
@@ -140,6 +146,27 @@ class RenderAndroidView extends PlatformViewRenderBox {
   void _onPlatformViewCreated(int id) {
     assert(!_isDisposed);
     markNeedsSemanticsUpdate();
+  }
+
+  void _onCompositionModeChanged() {
+    if (_isDisposed) {
+      return;
+    }
+    _gestureRecognizer?.reset();
+    _clipRectLayer.layer = null;
+    markNeedsPaint();
+    markNeedsSemanticsUpdate();
+  }
+
+  void _onBufferSizeChanged(Size bufferSize) {
+    if (_isDisposed || _viewController.requiresViewComposition) {
+      return;
+    }
+    if (_currentTextureSize == bufferSize) {
+      return;
+    }
+    _currentTextureSize = bufferSize;
+    markNeedsPaint();
   }
 
   @override
@@ -222,8 +249,15 @@ class RenderAndroidView extends PlatformViewRenderBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    if ((_viewController.textureId == null && !_viewController.requiresViewComposition) ||
-        _currentTextureSize == null) {
+    if (_viewController.requiresViewComposition) {
+      if (!_viewController.isCreated && _currentTextureSize == null) {
+        return;
+      }
+      _clipRectLayer.layer = null;
+      context.addLayer(PlatformViewLayer(rect: offset & size, viewId: _viewController.viewId));
+      return;
+    }
+    if (_viewController.textureId == null || _currentTextureSize == null) {
       return;
     }
 
@@ -259,6 +293,8 @@ class RenderAndroidView extends PlatformViewRenderBox {
     _isDisposed = true;
     _clipRectLayer.layer = null;
     _viewController.removeOnPlatformViewCreatedListener(_onPlatformViewCreated);
+    _viewController.removeOnCompositionModeChangedListener(_onCompositionModeChanged);
+    _viewController.removeOnBufferSizeChangedListener(_onBufferSizeChanged);
     super.dispose();
   }
 
@@ -268,9 +304,7 @@ class RenderAndroidView extends PlatformViewRenderBox {
     }
 
     if (_viewController.requiresViewComposition) {
-      context.addLayer(
-        PlatformViewLayer(rect: offset & _currentTextureSize!, viewId: _viewController.viewId),
-      );
+      context.addLayer(PlatformViewLayer(rect: offset & size, viewId: _viewController.viewId));
       return;
     }
 

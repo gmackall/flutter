@@ -35,6 +35,35 @@ public class PlatformViewsChannel {
     channel.invokeMethod("viewFocused", viewId);
   }
 
+  /**
+   * Notifies the Flutter framework that a platform view dynamically upgraded from texture
+   * composition (TLHC) to native view composition ({@code "hcpp"} or {@code "hc"}).
+   */
+  public void invokeViewCompositionChanged(int viewId, @NonNull String mode) {
+    if (channel == null) {
+      return;
+    }
+    final Map<String, Object> args = new HashMap<>();
+    args.put("id", viewId);
+    args.put("mode", mode);
+    channel.invokeMethod("viewCompositionChanged", args);
+  }
+
+  /**
+   * Notifies the Flutter framework that a TLHC platform view's backing render target buffer size
+   * changed asynchronously (for example, after a debounced downsize reclaims oversized buffers).
+   */
+  public void invokeViewBufferResized(int viewId, double width, double height) {
+    if (channel == null) {
+      return;
+    }
+    final Map<String, Object> args = new HashMap<>();
+    args.put("id", viewId);
+    args.put("width", width);
+    args.put("height", height);
+    channel.invokeMethod("viewBufferResized", args);
+  }
+
   private static String detailedExceptionString(Exception exception) {
     return Log.getStackTraceString(exception);
   }
@@ -89,14 +118,40 @@ public class PlatformViewsChannel {
           // TODO(egarciad): Remove the "hybrid" case.
           final boolean usesPlatformViewLayer =
               createArgs.containsKey("hybrid") && (boolean) createArgs.get("hybrid");
+          final boolean preferTexture =
+              createArgs.containsKey("preferTexture")
+                  && Boolean.TRUE.equals(createArgs.get("preferTexture"));
           final ByteBuffer additionalParams =
               createArgs.containsKey("params")
                   ? ByteBuffer.wrap((byte[]) createArgs.get("params"))
                   : null;
 
           try {
-            if (handler.isHcppEnabled()) {
-              Log.i(TAG, "Using HCPP platform view rendering strategy.");
+            if (usesPlatformViewLayer) {
+              if (handler.isHcppEnabled()) {
+                Log.i(TAG, "Using HCPP platform view rendering strategy for hybrid request.");
+                final PlatformViewCreationRequest request =
+                    PlatformViewCreationRequest.createHCPPRequest(
+                        (int) createArgs.get("id"),
+                        (String) createArgs.get("viewType"),
+                        (int) createArgs.get("direction"),
+                        additionalParams);
+                handler.createPlatformViewHcpp(request);
+              } else {
+                Log.i(TAG, "Using legacy hybrid platform view rendering strategy.");
+                final PlatformViewCreationRequest request =
+                    PlatformViewCreationRequest.createHybridCompositionRequest(
+                        (int) createArgs.get("id"),
+                        (String) createArgs.get("viewType"),
+                        (int) createArgs.get("direction"),
+                        additionalParams);
+                handler.createForPlatformViewLayer(request);
+              }
+              result.success(null);
+            } else if (handler.isHcppEnabled()
+                && handler.shouldUpgradeAllViewsToHcpp()
+                && !preferTexture) {
+              Log.i(TAG, "Upgrading platform view to HCPP via HcppUpgradeAllViews opt-in.");
               final PlatformViewCreationRequest request =
                   PlatformViewCreationRequest.createHCPPRequest(
                       (int) createArgs.get("id"),
@@ -104,18 +159,6 @@ public class PlatformViewsChannel {
                       (int) createArgs.get("direction"),
                       additionalParams);
               handler.createPlatformViewHcpp(request);
-              result.success(null);
-              return;
-            }
-            Log.i(TAG, "Using legacy platform view rendering strategy.");
-            if (usesPlatformViewLayer) {
-              final PlatformViewCreationRequest request =
-                  PlatformViewCreationRequest.createHybridCompositionRequest(
-                      (int) createArgs.get("id"),
-                      (String) createArgs.get("viewType"),
-                      (int) createArgs.get("direction"),
-                      additionalParams);
-              handler.createForPlatformViewLayer(request);
               result.success(null);
             } else {
               final boolean hybridFallback =
@@ -131,14 +174,12 @@ public class PlatformViewsChannel {
                       (double) createArgs.get("height"),
                       (int) createArgs.get("direction"),
                       hybridFallback,
+                      preferTexture,
                       additionalParams);
               long textureId = handler.createForTextureLayer(request);
               if (textureId == PlatformViewsHandler.NON_TEXTURE_FALLBACK) {
-                if (!hybridFallback) {
-                  throw new AssertionError(
-                      "Platform view attempted to fall back to hybrid mode when not requested.");
-                }
-                // A fallback to hybrid mode is indicated with a null texture ID.
+                // A fallback to native composition (HCPP or Hybrid Composition) is indicated with
+                // a null texture ID.
                 result.success(null);
               } else {
                 result.success(textureId);
@@ -328,6 +369,14 @@ public class PlatformViewsChannel {
 
     /** Returns true if creation of HC++ platform views is currently supported. */
     boolean isHcppEnabled();
+
+    /**
+     * Returns true if the engine-level {@code HcppUpgradeAllViews} opt-in is enabled, routing even
+     * un-hinted, non-SurfaceView platform views directly to HCPP at creation.
+     */
+    default boolean shouldUpgradeAllViewsToHcpp() {
+      return false;
+    }
 
     void createPlatformViewHcpp(@NonNull PlatformViewCreationRequest request);
 

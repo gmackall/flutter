@@ -42,6 +42,7 @@ import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
 import io.flutter.embedding.engine.systemchannels.PlatformViewCreationRequest;
 import io.flutter.embedding.engine.systemchannels.PlatformViewTouch;
+import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel;
 import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.SettingsChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
@@ -55,6 +56,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -1125,9 +1127,13 @@ public class PlatformViewsControllerTest {
     platformViewsController.setFlutterJNI(jni);
     attach(jni, platformViewsController);
 
-    // Simulate create call from the framework.
-    createPlatformView(
-        jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ false);
+    // Populate Virtual Display directly (since createForTextureLayer retires Virtual Display in
+    // favor of Hybrid Composition / HCPP).
+    PlatformViewCreationRequest request =
+        PlatformViewCreationRequest.createTLHCWithFallbackRequest(
+            platformViewId, "testType", 0, 0, 1.0, 1.0, View.LAYOUT_DIRECTION_LTR, false, null);
+    PlatformView created = platformViewsController.createPlatformView(request, true);
+    platformViewsController.configureForVirtualDisplay(created, request);
 
     assertFalse(platformViewsController.contextToEmbeddedView.isEmpty());
     platformViewsController.onDetachedFromJNI();
@@ -1158,12 +1164,14 @@ public class PlatformViewsControllerTest {
     platformViewsController.setFlutterJNI(jni);
     attach(jni, platformViewsController);
 
-    // Simulate create call from the framework.
-    createPlatformView(
-        jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ false);
+    PlatformViewCreationRequest request =
+        PlatformViewCreationRequest.createTLHCWithFallbackRequest(
+            platformViewId, "testType", 0, 0, 1.0, 1.0, View.LAYOUT_DIRECTION_LTR, false, null);
+    PlatformView created = platformViewsController.createPlatformView(request, true);
+    platformViewsController.configureForVirtualDisplay(created, request);
 
     assertFalse(platformViewsController.contextToEmbeddedView.isEmpty());
-    platformViewsController.onDetachedFromJNI();
+    platformViewsController.onPreEngineRestart();
     assertTrue(platformViewsController.contextToEmbeddedView.isEmpty());
   }
 
@@ -1345,10 +1353,10 @@ public class PlatformViewsControllerTest {
     assertEquals(logicalSize, (double) bufferSize.get("height"), 1e-9);
   }
 
-  // The render target is only ever grown, never shrunk, so that a smooth keyboard animation does
-  // not resize the texture on every frame. That means the buffer can be larger than the view, and
-  // the framework needs to be told the real size: it sizes the texture with it and clips the
-  // texture to the widget, rather than scaling the buffer down onto the widget.
+  // The render target is grown immediately and shrunk lazily (after a debounce delay and only on
+  // large area reductions) so that a smooth keyboard animation does not reallocate the texture on
+  // every frame. While unshrunk, the buffer is larger than the view and the framework needs to be
+  // told the real buffer size synchronously so it clips rather than scales the texture.
   @Test
   @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
   public void resizeAndroidView_reportsUnshrunkBufferSize() {
@@ -1376,11 +1384,99 @@ public class PlatformViewsControllerTest {
     resize(jni, platformViewsController, platformViewId, 400.0, 400.0);
     assertEquals(400.0, (double) lastResponse().get("width"), 1e-9);
 
-    // Shrinking the view leaves the render target alone, so the reported buffer stays at 400.
+    // Shrinking the view leaves the render target unshrunk synchronously and reports the buffer's
+    // current 400x400 size so per-frame animations do not thrash ImageReader buffers.
     resize(jni, platformViewsController, platformViewId, 200.0, 200.0);
     final Map<String, Object> bufferSize = lastResponse();
     assertEquals(400.0, (double) bufferSize.get("width"), 1e-9);
     assertEquals(400.0, (double) bufferSize.get("height"), 1e-9);
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void resizeAndroidView_debouncesShrinkDuringAnimationAndReclaimsAfterIdle() {
+    PlatformViewsController platformViewsController = new PlatformViewsController();
+
+    int platformViewId = 0;
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+    final View androidView = mock(View.class);
+    when(platformView.getView()).thenReturn(androidView);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    platformViewsController.setFlutterJNI(jni);
+    attach(jni, platformViewsController);
+
+    createPlatformView(
+        jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ false);
+    reset(androidView);
+    when(androidView.getLayoutParams()).thenReturn(new FrameLayout.LayoutParams(0, 0));
+
+    resize(jni, platformViewsController, platformViewId, 400.0, 400.0);
+    final PlatformViewWrapper wrapper = platformViewsController.getViewWrapper(platformViewId);
+    assertEquals(400, wrapper.getRenderTargetWidth());
+    assertEquals(400, wrapper.getRenderTargetHeight());
+
+    // Small shrink (> 50% area: 350x350 = 76.5% of 400x400) never reallocates even after idle.
+    resize(jni, platformViewsController, platformViewId, 350.0, 350.0);
+    shadowMainLooper().idleFor(200, TimeUnit.MILLISECONDS);
+    assertEquals(400, wrapper.getRenderTargetWidth());
+    assertEquals(400, wrapper.getRenderTargetHeight());
+
+    // Large shrink (<= 50% area: 200x200 = 25% of 400x400) stays unshrunk before 150ms, and
+    // cancels if grown back before the debounce window expires.
+    resize(jni, platformViewsController, platformViewId, 200.0, 200.0);
+    shadowMainLooper().idleFor(100, TimeUnit.MILLISECONDS);
+    assertEquals(400, wrapper.getRenderTargetWidth());
+    resize(jni, platformViewsController, platformViewId, 380.0, 380.0);
+    shadowMainLooper().idleFor(200, TimeUnit.MILLISECONDS);
+    assertEquals(400, wrapper.getRenderTargetWidth());
+
+    // Large shrink that remains idle past the 150ms debounce reclaims the oversized buffer.
+    resize(jni, platformViewsController, platformViewId, 200.0, 200.0);
+    assertEquals(400, wrapper.getRenderTargetWidth());
+    shadowMainLooper().idleFor(150, TimeUnit.MILLISECONDS);
+    assertEquals(200, wrapper.getRenderTargetWidth());
+    assertEquals(200, wrapper.getRenderTargetHeight());
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void createForTextureLayer_withSurfaceView_fallsBackToHybridInsteadOfVirtualDisplay() {
+    PlatformViewsController platformViewsController = new PlatformViewsController();
+    FlutterJNI jni = new FlutterJNI();
+    jni.attachToNative();
+    platformViewsController.setFlutterJNI(jni);
+    attach(jni, platformViewsController);
+
+    platformViewsController
+        .getRegistry()
+        .registerViewFactory(
+            CountingPlatformView.VIEW_TYPE_ID,
+            new PlatformViewFactory(StandardMessageCodec.INSTANCE) {
+              @Override
+              public PlatformView create(Context context, int viewId, Object args) {
+                return new CountingPlatformView(context);
+              }
+            });
+
+    PlatformViewCreationRequest request =
+        PlatformViewCreationRequest.createTLHCWithFallbackRequest(
+            0,
+            CountingPlatformView.VIEW_TYPE_ID,
+            0,
+            0,
+            100.0,
+            100.0,
+            View.LAYOUT_DIRECTION_LTR,
+            false,
+            null);
+    long result = platformViewsController.channelHandler.createForTextureLayer(request);
+    assertEquals(PlatformViewsChannel.PlatformViewsHandler.NON_TEXTURE_FALLBACK, result);
+    assertTrue(platformViewsController.vdControllers.isEmpty());
+    assertNotNull(platformViewsController.getPlatformViewById(0));
   }
 
   @Test

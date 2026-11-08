@@ -250,6 +250,12 @@ public interface TextureRegistry {
     void scheduleFrame();
 
     /**
+     * Configures the maximum number of images buffered by the underlying {@link
+     * android.media.ImageReader} before its surface is first requested.
+     */
+    default void setMaxImages(int maxImages) {}
+
+    /**
      * Returns whether the current rendering path handles crop and rotation metadata.
      *
      * <p>On most newer Android devices (API 29+), a {@link android.media.ImageReader} backend is

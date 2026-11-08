@@ -13,10 +13,18 @@ import io.flutter.view.TextureRegistry.SurfaceProducer;
 @RequiresApi(API_LEVELS.API_29)
 public class SurfaceProducerPlatformViewRenderTarget implements PlatformViewRenderTarget {
   private static final String TAG = "SurfaceProducerRenderTarget";
+  /**
+   * Maximum buffered images for TLHC platform views: 2 for double-buffered {@code
+   * lockHardwareCanvas()}, 2 for Impeller Vulkan frames in flight, plus 1 headroom buffer during
+   * 120Hz frame pacing spikes (trimmed from the 7-buffer video/camera default).
+   */
+  public static final int MAX_IMAGES = 5;
+
   private SurfaceProducer producer;
 
   public SurfaceProducerPlatformViewRenderTarget(SurfaceProducer producer) {
     this.producer = producer;
+    this.producer.setMaxImages(MAX_IMAGES);
   }
 
   // Called when the render target should be resized.

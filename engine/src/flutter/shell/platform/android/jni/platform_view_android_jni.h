@@ -5,6 +5,7 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_JNI_PLATFORM_VIEW_ANDROID_JNI_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_JNI_PLATFORM_VIEW_ANDROID_JNI_H_
 
+#include <atomic>
 #include <functional>
 #include <utility>
 
@@ -269,6 +270,22 @@ class PlatformViewAndroidJNI {
 
   virtual void onEndFrame2() = 0;
 
+  //----------------------------------------------------------------------------
+  /// @brief      Returns true if `PlatformViewsController2` still has any
+  ///             sealed or Choreographer-staged synced transaction in flight
+  ///             that has not yet completed traversal.
+  ///
+  virtual bool areTransactionsPending2() { return false; }
+
+  //----------------------------------------------------------------------------
+  /// @brief      Waits up to `timeout_ms` for `PlatformViewsController2` to
+  ///             drain any sealed or Choreographer-staged synced transactions,
+  ///             returning true if all pending transactions drained.
+  ///
+  virtual bool waitForPendingTransactions2(int64_t timeout_ms) {
+    return !areTransactionsPending2();
+  }
+
   virtual void onDisplayPlatformView2(int32_t view_id,
                                       int32_t x,
                                       int32_t y,
@@ -305,6 +322,22 @@ class PlatformViewAndroidJNI {
                                               int configuration_id) const = 0;
 
   virtual void MaybeResizeSurfaceView(int32_t width, int32_t height) const = 0;
+
+  // Mutated by `AndroidExternalViewEmbedder2` on the raster thread immediately
+  // around synchronous `SurfaceFrame::Submit()` calls and read synchronously on
+  // the same raster thread inside `AndroidSurfaceVkImpeller` presentation.
+  void SetTransactionsSyncedWithPlatformViews(bool synced) {
+    sync_transaction_with_platform_views_.store(synced,
+                                                std::memory_order_relaxed);
+  }
+
+  bool ShouldSyncTransactionWithPlatformViews() const {
+    return sync_transaction_with_platform_views_.load(
+        std::memory_order_relaxed);
+  }
+
+ private:
+  std::atomic_bool sync_transaction_with_platform_views_{false};
 };
 
 }  // namespace flutter

@@ -41,6 +41,7 @@ executable("android_external_view_embedder_unittests") {
   testonly = true
 
   sources = [
+    "external_view_embedder_2_unittests.cc",
     "external_view_embedder_unittests.cc",
     "surface_pool_unittests.cc",
   ]
@@ -48,10 +49,15 @@ executable("android_external_view_embedder_unittests") {
   deps = [
     ":external_view_embedder",
     ":external_view_embedder_fixtures",
+    "//flutter/common",
+    "//flutter/display_list",
     "//flutter/flow",
+    "//flutter/fml",
     "//flutter/shell/gpu:gpu_surface_gl",
+    "//flutter/shell/platform/android/context",
     "//flutter/shell/platform/android/jni:jni_mock",
     "//flutter/shell/platform/android/surface",
+    "//flutter/shell/platform/android/surface:native_window",
     "//flutter/shell/platform/android/surface:surface_mock",
     "//flutter/testing",
     "//flutter/testing:dart",

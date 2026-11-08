@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.view.Surface;
 import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
 import io.flutter.view.TextureRegistry.ImageTextureEntry;
 
@@ -23,7 +24,7 @@ public class ImageReaderPlatformViewRenderTarget implements PlatformViewRenderTa
   private int bufferWidth = 0;
   private int bufferHeight = 0;
   private static final String TAG = "ImageReaderPlatformViewRenderTarget";
-  private static final int MAX_IMAGES = 4;
+  @VisibleForTesting static final int MAX_IMAGES = 5;
 
   private void closeReader() {
     if (this.reader != null) {
@@ -104,6 +105,8 @@ public class ImageReaderPlatformViewRenderTarget implements PlatformViewRenderTa
   }
 
   public void resize(int width, int height) {
+    width = Math.max(1, width);
+    height = Math.max(1, height);
     if (this.reader != null && bufferWidth == width && bufferHeight == height) {
       // No size change.
       return;

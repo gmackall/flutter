@@ -72,6 +72,7 @@ typedef PlatformViewCreatedCallback = void Function(int id);
 class PlatformViewsService {
   PlatformViewsService._() {
     SystemChannels.platform_views.setMethodCallHandler(_onMethodCall);
+    SystemChannels.platform_views_2.setMethodCallHandler(_onMethodCall);
   }
 
   static final PlatformViewsService _instance = PlatformViewsService._();
@@ -83,6 +84,16 @@ class PlatformViewsService {
         if (_focusCallbacks.containsKey(id)) {
           _focusCallbacks[id]!();
         }
+      case 'viewCompositionChanged':
+        final args = call.arguments as Map<Object?, Object?>;
+        final id = args['id']! as int;
+        _activeControllers[id]?._handleViewCompositionChanged();
+      case 'viewBufferResized':
+        final args = call.arguments as Map<Object?, Object?>;
+        final id = args['id']! as int;
+        final double width = (args['width']! as num).toDouble();
+        final double height = (args['height']! as num).toDouble();
+        _activeControllers[id]?._handleViewBufferResized(Size(width, height));
       default:
         throw UnimplementedError(
           "${call.method} was invoked but isn't implemented by PlatformViewsService",
@@ -95,6 +106,8 @@ class PlatformViewsService {
   ///
   /// The callbacks are invoked when the platform view asks to be focused.
   final Map<int, VoidCallback> _focusCallbacks = <int, VoidCallback>{};
+
+  final Map<int, AndroidViewController> _activeControllers = <int, AndroidViewController>{};
 
   /// {@template flutter.services.PlatformViewsService.initAndroidView}
   /// Creates a controller for a new Android view.
@@ -129,8 +142,11 @@ class PlatformViewsService {
   /// {@endtemplate}
   ///
   /// This attempts to use the TLHC implementation when possible.
-  /// In cases where that is not supported, it falls back to using
-  /// Virtual Display.
+  /// In cases where a `SurfaceView` is present or the plugin hints native
+  /// composition, it upgrades to HCPP (when supported) or Hybrid Composition.
+  ///
+  /// If `preferTexture` is true, texture layer composition is preferred unless
+  /// an actual `SurfaceView` is present in the platform view hierarchy.
   static AndroidViewController initAndroidView({
     required int id,
     required String viewType,
@@ -138,6 +154,7 @@ class PlatformViewsService {
     dynamic creationParams,
     MessageCodec<dynamic>? creationParamsCodec,
     VoidCallback? onFocus,
+    bool preferTexture = false,
   }) {
     assert(creationParams == null || creationParamsCodec != null);
 
@@ -147,9 +164,11 @@ class PlatformViewsService {
       layoutDirection: layoutDirection,
       creationParams: creationParams,
       creationParamsCodec: creationParamsCodec,
+      preferTexture: preferTexture,
     );
 
     _instance._focusCallbacks[id] = onFocus ?? () {};
+    _instance._activeControllers[id] = controller;
     return controller;
   }
 
@@ -157,9 +176,12 @@ class PlatformViewsService {
   ///
   /// This attempts to use the "Texture Layer Hybrid Composition (TLHC)" platform view
   /// implementation when possible. In cases where that is not supported, it
-  /// falls back to using "Hybrid Composition", which is the mode used by
+  /// falls back to using HCPP (when supported) or "Hybrid Composition", which is the mode used by
   /// [initExpensiveAndroidView].
-  // Fallback logic for TLHC or HC lives in
+  ///
+  /// If `preferTexture` is true, texture layer composition is preferred unless
+  /// an actual `SurfaceView` is present in the platform view hierarchy.
+  // Fallback logic for TLHC, HCPP, or HC lives in
   // engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewsController.java
   static SurfaceAndroidViewController initSurfaceAndroidView({
     required int id,
@@ -168,6 +190,7 @@ class PlatformViewsService {
     dynamic creationParams,
     MessageCodec<dynamic>? creationParamsCodec,
     VoidCallback? onFocus,
+    bool preferTexture = false,
   }) {
     assert(creationParams == null || creationParamsCodec != null);
 
@@ -177,8 +200,10 @@ class PlatformViewsService {
       layoutDirection: layoutDirection,
       creationParams: creationParams,
       creationParamsCodec: creationParamsCodec,
+      preferTexture: preferTexture,
     );
     _instance._focusCallbacks[id] = onFocus ?? () {};
+    _instance._activeControllers[id] = controller;
     return controller;
   }
 
@@ -190,7 +215,7 @@ class PlatformViewsService {
   /// Using this method has a performance cost on devices running Android 9 (api 28)
   /// or earlier, or on underpowered devices. In most situations, you should use
   /// [initAndroidView] or [initSurfaceAndroidView] instead.
-  /// Always creates a "Hybrid Composition (HC)" view.
+  /// Always creates a native view composition ("HCPP" when supported, otherwise "Hybrid Composition (HC)") view.
   static ExpensiveAndroidViewController initExpensiveAndroidView({
     required int id,
     required String viewType,
@@ -208,6 +233,7 @@ class PlatformViewsService {
     );
 
     _instance._focusCallbacks[id] = onFocus ?? () {};
+    _instance._activeControllers[id] = controller;
     return controller;
   }
 
@@ -236,6 +262,7 @@ class PlatformViewsService {
     );
 
     _instance._focusCallbacks[id] = onFocus ?? () {};
+    _instance._activeControllers[id] = controller;
     return controller;
   }
 
@@ -739,9 +766,17 @@ class _CreationParams {
   final MessageCodec<dynamic> codec;
 }
 
-/// Controls an Android view that is composed using a GL texture.
+/// Controls an Android platform view.
 ///
-/// Typically created with [PlatformViewsService.initAndroidView].
+/// Typically created with [PlatformViewsService.initAndroidView] or
+/// [PlatformViewsService.initSurfaceAndroidView].
+///
+/// Depending on the platform view's contents and engine configuration, the view
+/// may render into a backing texture ([textureId]) or use native view
+/// composition ([requiresViewComposition]). This composition mode can upgrade
+/// dynamically after [create] (for example, when a `SurfaceView` is added to
+/// the view hierarchy); register a listener with
+/// [addOnCompositionModeChangedListener] to rebuild when the mode changes.
 // TODO(bparrishMines): Remove abstract methods that are not required by all subclasses.
 abstract class AndroidViewController extends PlatformViewController {
   AndroidViewController._({
@@ -823,6 +858,10 @@ abstract class AndroidViewController extends PlatformViewController {
 
   final List<PlatformViewCreatedCallback> _platformViewCreatedCallbacks =
       <PlatformViewCreatedCallback>[];
+
+  final List<VoidCallback> _compositionModeChangedCallbacks = <VoidCallback>[];
+
+  final List<ValueChanged<Size>> _bufferSizeChangedCallbacks = <ValueChanged<Size>>[];
 
   static int _getAndroidDirection(TextDirection direction) {
     return switch (direction) {
@@ -919,8 +958,9 @@ abstract class AndroidViewController extends PlatformViewController {
   /// True if the view requires native view composition rather than using a
   /// texture to render.
   ///
-  /// This value may change during [create], but will not change after that
-  /// call's future has completed.
+  /// This value may change during [create], or dynamically afterwards if the
+  /// platform view upgrades from texture layer composition to native view
+  /// composition (for example, when a `SurfaceView` is added to its hierarchy).
   bool get requiresViewComposition => false;
 
   /// Sends an Android [MotionEvent](https://developer.android.com/reference/android/view/MotionEvent)
@@ -961,6 +1001,101 @@ abstract class AndroidViewController extends PlatformViewController {
     assert(_state != _AndroidViewState.disposed);
     _platformViewCreatedCallbacks.remove(listener);
   }
+
+  /// Adds a callback invoked when this controller dynamically transitions its
+  /// composition mode (for example, upgrading from texture layer composition to
+  /// native view composition).
+  void addOnCompositionModeChangedListener(VoidCallback listener) {
+    assert(_state != _AndroidViewState.disposed);
+    _compositionModeChangedCallbacks.add(listener);
+  }
+
+  /// Removes a callback added with [addOnCompositionModeChangedListener].
+  void removeOnCompositionModeChangedListener(VoidCallback listener) {
+    _compositionModeChangedCallbacks.remove(listener);
+  }
+
+  void _notifyCompositionModeChanged() {
+    if (_compositionModeChangedCallbacks.isEmpty) {
+      return;
+    }
+    for (final callback in List<VoidCallback>.of(_compositionModeChangedCallbacks)) {
+      callback();
+    }
+  }
+
+  /// Adds a callback invoked when this controller's backing texture buffer is
+  /// resized asynchronously by the platform (for example, after a debounced
+  /// render target shrink).
+  void addOnBufferSizeChangedListener(ValueChanged<Size> listener) {
+    assert(_state != _AndroidViewState.disposed);
+    _bufferSizeChangedCallbacks.add(listener);
+  }
+
+  /// Removes a callback added with [addOnBufferSizeChangedListener].
+  void removeOnBufferSizeChangedListener(ValueChanged<Size> listener) {
+    _bufferSizeChangedCallbacks.remove(listener);
+  }
+
+  void _notifyBufferSizeChanged(Size bufferSize) {
+    if (_bufferSizeChangedCallbacks.isEmpty) {
+      return;
+    }
+    for (final callback in List<ValueChanged<Size>>.of(_bufferSizeChangedCallbacks)) {
+      callback(bufferSize);
+    }
+  }
+
+  void _handleViewBufferResized(Size bufferSize) {
+    if (_state == _AndroidViewState.disposed || requiresViewComposition) {
+      return;
+    }
+    _notifyBufferSizeChanged(bufferSize);
+  }
+
+  void _cancelActivePointersForCompositionChange() {
+    if (_motionEventConverter.pointerProperties.isEmpty ||
+        _motionEventConverter.downTimeMillis == null) {
+      return;
+    }
+    final List<int> pointers = _motionEventConverter.pointerPositions.keys.toList()
+      ..sort(
+        (int a, int b) => _motionEventConverter.pointerProperties[a]!.id.compareTo(
+          _motionEventConverter.pointerProperties[b]!.id,
+        ),
+      );
+    if (pointers.isNotEmpty) {
+      final int downTime = _motionEventConverter.downTimeMillis!;
+      final cancelEvent = AndroidMotionEvent(
+        downTime: downTime,
+        eventTime: downTime,
+        action: kActionCancel,
+        pointerCount: pointers.length,
+        pointerProperties: pointers
+            .map<AndroidPointerProperties>((int i) => _motionEventConverter.pointerProperties[i]!)
+            .toList(),
+        pointerCoords: pointers
+            .map<AndroidPointerCoords>((int i) => _motionEventConverter.pointerPositions[i]!)
+            .toList(),
+        metaState: 0,
+        buttonState: 0,
+        xPrecision: 1.0,
+        yPrecision: 1.0,
+        deviceId: 0,
+        edgeFlags: 0,
+        source: kInputDeviceSourceTouchScreen,
+        flags: 0,
+        motionEventId: 0,
+      );
+      unawaited(sendMotionEvent(cancelEvent));
+    }
+    _motionEventConverter.pointerPositions.clear();
+    _motionEventConverter.pointerProperties.clear();
+    _motionEventConverter.usedAndroidPointerIds.clear();
+    _motionEventConverter.downTimeMillis = null;
+  }
+
+  void _handleViewCompositionChanged() {}
 
   /// The created callbacks that are invoked after the platform view has been
   /// created.
@@ -1011,6 +1146,8 @@ abstract class AndroidViewController extends PlatformViewController {
 
     if (event is PointerDownEvent) {
       _motionEventConverter.handlePointerDownEvent(event);
+    } else if (!_motionEventConverter.pointerProperties.containsKey(event.pointer)) {
+      return;
     }
 
     _motionEventConverter.updatePointerPositions(event);
@@ -1047,7 +1184,10 @@ abstract class AndroidViewController extends PlatformViewController {
     final _AndroidViewState state = _state;
     _state = _AndroidViewState.disposed;
     _platformViewCreatedCallbacks.clear();
+    _compositionModeChangedCallbacks.clear();
+    _bufferSizeChangedCallbacks.clear();
     PlatformViewsService._instance._focusCallbacks.remove(viewId);
+    PlatformViewsService._instance._activeControllers.remove(viewId);
     if (state == _AndroidViewState.creating || state == _AndroidViewState.created) {
       await _sendDisposeMessage();
     }
@@ -1064,7 +1204,10 @@ class SurfaceAndroidViewController extends AndroidViewController {
     required super.layoutDirection,
     super.creationParams,
     super.creationParamsCodec,
+    this._preferTexture = false,
   }) : super._();
+
+  final bool _preferTexture;
 
   // By default, assume the implementation will be texture-based.
   _AndroidViewControllerInternals _internals = _TextureAndroidViewControllerInternals();
@@ -1084,15 +1227,18 @@ class SurfaceAndroidViewController extends AndroidViewController {
       viewType: _viewType,
       hybrid: false,
       hybridFallback: true,
+      preferTexture: _preferTexture,
       layoutDirection: _layoutDirection,
       creationParams: _creationParams,
       size: size,
       position: position,
     );
     if (response is int) {
-      (_internals as _TextureAndroidViewControllerInternals).textureId = response;
+      if (_internals is _TextureAndroidViewControllerInternals) {
+        (_internals as _TextureAndroidViewControllerInternals).textureId = response;
+      }
     } else {
-      // A null response indicates fallback to Hybrid Composition, so swap out
+      // A null response indicates fallback to HCPP or Hybrid Composition, so swap out
       // the implementation.
       _internals = _HybridAndroidViewControllerInternals();
     }
@@ -1100,7 +1246,20 @@ class SurfaceAndroidViewController extends AndroidViewController {
   }
 
   @override
+  void _handleViewCompositionChanged() {
+    if (_state == _AndroidViewState.disposed || _internals.requiresViewComposition) {
+      return;
+    }
+    _cancelActivePointersForCompositionChange();
+    _internals = _HybridAndroidViewControllerInternals();
+    _notifyCompositionModeChanged();
+  }
+
+  @override
   int? get textureId {
+    if (_internals.requiresViewComposition) {
+      return null;
+    }
     return _internals.textureId;
   }
 
@@ -1116,11 +1275,17 @@ class SurfaceAndroidViewController extends AndroidViewController {
 
   @override
   Future<Size> _sendResizeMessage(Size size) {
+    if (_internals.requiresViewComposition) {
+      return Future<Size>.value(size);
+    }
     return _internals.setSize(size, viewId: viewId, viewState: _state);
   }
 
   @override
   Future<void> setOffset(Offset off) {
+    if (_internals.requiresViewComposition) {
+      return Future<void>.value();
+    }
     return _internals.setOffset(off, viewId: viewId, viewState: _state);
   }
 
@@ -1275,7 +1440,10 @@ class TextureAndroidViewController extends AndroidViewController {
     required super.layoutDirection,
     super.creationParams,
     super.creationParamsCodec,
+    this._preferTexture = false,
   }) : super._();
+
+  final bool _preferTexture;
 
   _AndroidViewControllerInternals _internals = _TextureAndroidViewControllerInternals();
 
@@ -1293,16 +1461,29 @@ class TextureAndroidViewController extends AndroidViewController {
       viewId: viewId,
       viewType: _viewType,
       hybrid: false,
+      preferTexture: _preferTexture,
       layoutDirection: _layoutDirection,
       creationParams: _creationParams,
       size: size,
       position: position,
     );
     if (response is int) {
-      (_internals as _TextureAndroidViewControllerInternals).textureId = response;
+      if (_internals is _TextureAndroidViewControllerInternals) {
+        (_internals as _TextureAndroidViewControllerInternals).textureId = response;
+      }
     } else {
-      _internals = _Hybrid2AndroidViewControllerInternals();
+      _internals = _HybridAndroidViewControllerInternals();
     }
+  }
+
+  @override
+  void _handleViewCompositionChanged() {
+    if (_state == _AndroidViewState.disposed || _internals.requiresViewComposition) {
+      return;
+    }
+    _cancelActivePointersForCompositionChange();
+    _internals = _HybridAndroidViewControllerInternals();
+    _notifyCompositionModeChanged();
   }
 
   @override
@@ -1362,6 +1543,7 @@ abstract class _AndroidViewControllerInternals {
     required TextDirection layoutDirection,
     required bool hybrid,
     bool hybridFallback = false,
+    bool preferTexture = false,
     bool useNewController = false,
     _CreationParams? creationParams,
     Size? size,
@@ -1375,6 +1557,7 @@ abstract class _AndroidViewControllerInternals {
       'width': ?size?.width,
       'height': ?size?.height,
       if (hybridFallback) 'hybridFallback': hybridFallback,
+      if (preferTexture) 'preferTexture': preferTexture,
       'left': ?position?.dx,
       'top': ?position?.dy,
     };
@@ -1491,9 +1674,7 @@ class _TextureAndroidViewControllerInternals extends _AndroidViewControllerInter
 // This is used for Hybrid Composition.
 class _HybridAndroidViewControllerInternals extends _AndroidViewControllerInternals {
   @override
-  int get textureId {
-    throw UnimplementedError('Not supported for hybrid composition.');
-  }
+  int? get textureId => null;
 
   @override
   bool get requiresViewComposition => true;
@@ -1534,9 +1715,7 @@ class _Hybrid2AndroidViewControllerInternals extends _AndroidViewControllerInter
   }
 
   @override
-  int get textureId {
-    throw UnimplementedError('Not supported for hybrid composition.');
-  }
+  int? get textureId => null;
 
   @override
   bool get requiresViewComposition => true;

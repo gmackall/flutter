@@ -78,4 +78,19 @@ public interface PlatformView {
    */
   @SuppressLint("NewApi")
   default void onInputConnectionUnlocked() {}
+
+  /**
+   * Returns {@code true} if this platform view should be composed natively in the window surface
+   * hierarchy (HCPP on API 34+ with SurfaceControl swapchain, or Hybrid Composition otherwise) from
+   * creation rather than captured into an offscreen texture via Texture Layer Hybrid Composition
+   * (TLHC).
+   *
+   * <p>Plugins that embed heavy RenderThread producers, WebViews, maps, video, or DRM/secure
+   * content can override this to return {@code true} without needing to eagerly attach a dummy
+   * {@link android.view.SurfaceView}.
+   */
+  @SuppressLint("NewApi")
+  default boolean requiresNativeComposition() {
+    return false;
+  }
 }

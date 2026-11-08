@@ -11,6 +11,7 @@ import static org.mockito.Mockito.*;
 import android.app.Presentation;
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.media.Image;
 import android.util.SparseArray;
@@ -1167,6 +1168,94 @@ public class PlatformViewsController2Test {
     assertEquals(Arrays.asList(rasterTx2), ShadowRecordingTransaction.merged);
 
     ShadowLooper.idleMainLooper();
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void hasPendingTransactions_tracksSealedSwappedDeferredAndCommittedFrames() {
+    final List<Runnable> commitCallbacks = new ArrayList<>();
+    PlatformViewsController2 controller =
+        new PlatformViewsController2() {
+          @Override
+          boolean shouldDeferUntilNextTraversal() {
+            return true;
+          }
+
+          @Override
+          boolean registerTransactionCommittedCallback(
+              @NonNull SurfaceControl.Transaction tx, @NonNull Runnable onCommitted) {
+            commitCallbacks.add(onCommitted);
+            return true;
+          }
+        };
+    controller.setRegistry(new PlatformViewRegistryImpl());
+    FlutterView flutterView = mock(FlutterView.class);
+    AttachedSurfaceControl rootSurfaceControl = mock(AttachedSurfaceControl.class);
+    when(rootSurfaceControl.applyTransactionOnDraw(any())).thenReturn(true);
+    when(flutterView.getRootSurfaceControl()).thenReturn(rootSurfaceControl);
+    controller.attachToView(flutterView);
+
+    assertFalse(controller.hasPendingTransactions());
+
+    // Raster frame 1 seals a transaction -> pending until onEndFrame consumes it.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    assertTrue(controller.hasPendingTransactions());
+
+    controller.swapTransactions();
+    assertTrue(controller.hasPendingTransactions());
+
+    // Frame 1 stages for Choreographer traversal -> remains pending until SurfaceFlinger commits!
+    controller.onEndFrame();
+    assertTrue(controller.hasPendingTransactions());
+    assertEquals(1, commitCallbacks.size());
+
+    // Frame 2 arrives before Choreographer traversal completes -> deferred in queuedFrame.
+    createAndPublishRasterTransaction(controller);
+    controller.sealFrameTransactions();
+    controller.swapTransactions();
+    controller.onEndFrame();
+    assertTrue(controller.hasPendingTransactions());
+
+    // Choreographer traversal completes for both frames, but RenderThread/SurfaceFlinger has NOT
+    // committed either transaction yet -> hasPendingTransactions() MUST remain true and
+    // waitForPendingTransactions MUST time out!
+    ShadowLooper.idleMainLooper();
+    ShadowLooper.idleMainLooper();
+    assertEquals(2, commitCallbacks.size());
+    assertTrue(controller.hasPendingTransactions());
+    assertFalse(controller.waitForPendingTransactions(10));
+
+    // First commit fires -> Frame 2's commit is still in flight, so still pending.
+    commitCallbacks.get(0).run();
+    assertTrue(controller.hasPendingTransactions());
+
+    // Second commit fires -> all synced transactions have reached SurfaceFlinger!
+    commitCallbacks.get(1).run();
+    assertFalse(controller.hasPendingTransactions());
+    assertTrue(controller.waitForPendingTransactions(10));
+  }
+
+  @Test
+  public void computeLocalSurfaceViewCrop_subtractsAncestorScrollOffsets() {
+    Context context = ApplicationProvider.getApplicationContext();
+    FrameLayout scrollableRoot = new FrameLayout(context);
+    scrollableRoot.layout(0, 0, 300, 300);
+    scrollableRoot.scrollTo(40, 60);
+
+    SurfaceView sv = new SurfaceView(context);
+    sv.layout(50, 80, 250, 280);
+    scrollableRoot.addView(sv);
+
+    // After scrolling root by (40, 60), sv's visual position inside root is (10, 20)..(210, 220).
+    // With platform view at (100, 100), sv's screen rect is (110, 120)..(310, 320).
+    FlutterMutatorsStack stack = new FlutterMutatorsStack();
+    stack.pushClipRect(150, 170, 270, 290);
+
+    Rect crop =
+        PlatformViewsController2.computeLocalSurfaceViewCrop(
+            sv, scrollableRoot, 100, 100, 300, 300, stack);
+    assertEquals(new Rect(40, 50, 160, 170), crop);
   }
 
   private static ByteBuffer encodeMethodCall(MethodCall call) {

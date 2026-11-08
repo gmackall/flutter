@@ -731,6 +731,93 @@ void main() {
 
     expect(viewController.rejectGestureCount, 0);
   });
+
+  test(
+    'RenderAndroidView switches from TextureLayer to PlatformViewLayer on composition mode change',
+    () async {
+      final viewController = FakeAndroidViewController(7)..created = true;
+      final renderBox = RenderAndroidView(
+        viewController: viewController,
+        hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+        gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{},
+      );
+
+      layout(renderBox, constraints: const BoxConstraints.tightFor(width: 200, height: 120));
+      await null;
+      pumpFrame(phase: EnginePhase.paint);
+
+      expect(renderBox.debugLayer!.firstChild, isA<TextureLayer>());
+
+      viewController.simulateCompositionModeChanged();
+      expect(renderBox.debugNeedsPaint, isTrue);
+
+      pumpFrame(phase: EnginePhase.paint);
+      expect(renderBox.debugLayer!.firstChild, isA<PlatformViewLayer>());
+
+      renderBox.dispose();
+    },
+  );
+
+  test('RenderAndroidView updates TextureLayer rect when debounced buffer shrink completes', () async {
+    final viewController = _UnshrunkResizeAndroidViewController(8)..created = true;
+    final renderBox = RenderAndroidView(
+      viewController: viewController,
+      hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+      gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{},
+    );
+    final constrained = RenderConstrainedBox(
+      additionalConstraints: const BoxConstraints.tightFor(width: 400, height: 400),
+      child: renderBox,
+    );
+
+    layout(RenderPositionedBox(child: constrained));
+    await null;
+    pumpFrame(phase: EnginePhase.paint);
+    expect(
+      (renderBox.debugLayer!.firstChild! as TextureLayer).rect,
+      const Rect.fromLTWH(0, 0, 400, 400),
+    );
+
+    // Shrink layout to 200x200 while setSize synchronously reports unshrunk 400x400 buffer:
+    // RenderAndroidView clips the 400x400 TextureLayer to 200x200.
+    constrained.additionalConstraints = const BoxConstraints.tightFor(width: 200, height: 200);
+    pumpFrame();
+    await null;
+    pumpFrame(phase: EnginePhase.paint);
+    expect(renderBox.debugLayer!.firstChild, isA<ClipRectLayer>());
+    final clippedTexture =
+        (renderBox.debugLayer!.firstChild! as ClipRectLayer).firstChild! as TextureLayer;
+    expect(clippedTexture.rect, const Rect.fromLTWH(0, 0, 400, 400));
+
+    // Once the debounced engine shrink fires viewBufferResized(200x200), RenderAndroidView updates
+    // _currentTextureSize to 200x200 and paints a 1:1 unclipped 200x200 TextureLayer.
+    viewController.simulateBufferSizeChanged(const Size(200, 200));
+    expect(renderBox.debugNeedsPaint, isTrue);
+    pumpFrame(phase: EnginePhase.paint);
+    expect(renderBox.debugLayer!.firstChild, isA<TextureLayer>());
+    expect(
+      (renderBox.debugLayer!.firstChild! as TextureLayer).rect,
+      const Rect.fromLTWH(0, 0, 200, 200),
+    );
+
+    renderBox.dispose();
+  });
+}
+
+class _UnshrunkResizeAndroidViewController extends FakeAndroidViewController {
+  _UnshrunkResizeAndroidViewController(super.viewId);
+
+  Size _allocatedSize = Size.zero;
+
+  @override
+  Future<Size> setSize(Size size) {
+    sizes.add(size);
+    _allocatedSize = Size(
+      size.width > _allocatedSize.width ? size.width : _allocatedSize.width,
+      size.height > _allocatedSize.height ? size.height : _allocatedSize.height,
+    );
+    return Future<Size>.value(_allocatedSize);
+  }
 }
 
 class _WinningGestureArenaMember extends GestureArenaMember {

@@ -9,8 +9,10 @@ import static junit.framework.TestCase.*;
 import static org.mockito.Mockito.*;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.view.MotionEvent;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -268,6 +270,32 @@ public class FlutterMutatorViewTest {
     view.onTouchEvent(moveEvent);
     assertEquals(moveEvent, lastRequestedEvent[0]);
     assertFalse(view.getFlutterWonGesture());
+  }
+
+  @Test
+  public void draw_resetsToLayerTypeNoneWhenDescendantSurfaceViewAddedAndUpdatesCacheOnRemove() {
+    final FlutterMutatorView view = new FlutterMutatorView(ctx, 1.0f, null);
+    final FlutterMutatorsStack stack = new FlutterMutatorsStack();
+    stack.pushOpacity(0.5f);
+    view.readyToDisplay(stack, 0, 0, 100, 100);
+
+    final FrameLayout container = new FrameLayout(ctx);
+    view.addView(container);
+
+    assertFalse(view.hasDescendantSurfaceView());
+    view.draw(new Canvas());
+    assertEquals(View.LAYER_TYPE_HARDWARE, view.getLayerType());
+
+    final SurfaceView sv = new SurfaceView(ctx);
+    container.addView(sv);
+    view.requestTransparentRegion(sv);
+    assertTrue(view.hasDescendantSurfaceView());
+    view.draw(new Canvas());
+    assertEquals(View.LAYER_TYPE_NONE, view.getLayerType());
+
+    container.removeView(sv);
+    view.layout(0, 0, 100, 100);
+    assertFalse(view.hasDescendantSurfaceView());
   }
 
   @Implements(ViewGroup.class)

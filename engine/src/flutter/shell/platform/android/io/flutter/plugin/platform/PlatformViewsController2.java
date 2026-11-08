@@ -28,6 +28,7 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -48,10 +49,14 @@ import io.flutter.embedding.engine.systemchannels.PlatformViewTouch;
 import io.flutter.embedding.engine.systemchannels.PlatformViewsChannel2;
 import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.view.AccessibilityBridge;
+import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.WeakHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages platform views.
@@ -100,6 +105,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     final ArrayList<Runnable> viewOps = new ArrayList<>();
     @Nullable SurfaceControl.Transaction platformTransaction;
     final ArrayList<SurfaceControl.Transaction> rasterTransactions = new ArrayList<>();
+    final ArrayList<PlatformViewWrapper> renderTargetReleases = new ArrayList<>();
   }
 
   // Platform-thread only: defers a second frame that arrives before the current Choreographer
@@ -129,7 +135,26 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   private Surface overlayerSurface = null;
   private SurfaceControl overlaySurfaceControl = null;
 
-  private final HashSet<Integer> viewsWithPendingSurfaceCallback = new HashSet<>();
+  private boolean upgradeAllViewsToHcpp = false;
+  private long uiThreadEndFrameCount = 0;
+
+  // Tracks sealed raster frames waiting for swapTransactions(), platform-thread frames waiting for
+  // onEndFrame() or Choreographer traversal completion, and transactions passed to
+  // applyTransactionOnDraw() waiting for SurfaceFlinger commit (addTransactionCommittedListener) so
+  // a 0-PV frame on the raster thread never overtakes an in-flight UI-synced transaction.
+  private final AtomicInteger unswappedSealedFrames = new AtomicInteger(0);
+  private final AtomicInteger pendingCommittedTransactions = new AtomicInteger(0);
+  private final AtomicInteger commitGeneration = new AtomicInteger(0);
+  private boolean hasActiveSwappedFrame = false;
+  private volatile boolean platformHasInFlightSyncedFrame = false;
+  private final Object pendingTransactionsSignal = new Object();
+
+  private final WeakHashMap<SurfaceView, SurfaceHolder.Callback> pendingSurfaceCallbacks =
+      new WeakHashMap<>();
+  private final WeakHashMap<SurfaceView, View.OnLayoutChangeListener> pendingLayoutListeners =
+      new WeakHashMap<>();
+  private final HashSet<PlatformViewWrapper> pendingRenderTargetReleases = new HashSet<>();
+  private final HashSet<PlatformViewWrapper> stagedRenderTargetReleases = new HashSet<>();
 
   public PlatformViewsController2() {
     accessibilityEventsDelegate = new AccessibilityEventsDelegate();
@@ -147,6 +172,164 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   /** Whether the SurfaceControl swapchain mode is enabled. */
   public void setFlutterJNI(FlutterJNI flutterJNI) {
     this.flutterJNI = flutterJNI;
+  }
+
+  /**
+   * Configures the {@code HcppUpgradeAllViews} opt-in escape hatch. Defaults to {@code false}
+   * (TLHC-first for non-SurfaceView platform views).
+   */
+  public void setUpgradeAllViewsToHcpp(boolean enabled) {
+    this.upgradeAllViewsToHcpp = enabled;
+  }
+
+  /** Returns true if {@code HcppUpgradeAllViews} is enabled on this controller. */
+  public boolean shouldUpgradeAllViewsToHcpp() {
+    return upgradeAllViewsToHcpp;
+  }
+
+  /**
+   * Returns the number of frames that committed a SurfaceControl transaction on the UI thread via
+   * {@code applyTransactionOnDraw}. When 0 HCPP platform views are active, frames present directly
+   * on the raster thread and this counter remains unchanged.
+   */
+  public long getUiThreadEndFrameCount() {
+    return uiThreadEndFrameCount;
+  }
+
+  private void notifyIfNoPendingTransactions() {
+    if (!hasPendingTransactions()) {
+      synchronized (pendingTransactionsSignal) {
+        pendingTransactionsSignal.notifyAll();
+      }
+    }
+  }
+
+  private void updateInFlightSyncedFrameFlag() {
+    platformHasInFlightSyncedFrame =
+        hasActiveSwappedFrame || queuedFrame != null || frameStagedForTraversal;
+    notifyIfNoPendingTransactions();
+  }
+
+  /**
+   * Returns true if any UI-synced SurfaceControl transaction is still sealed, swapped, queued,
+   * staged for Choreographer traversal, or waiting for SurfaceFlinger commit after {@code
+   * applyTransactionOnDraw}. Safe to query from the raster thread.
+   *
+   * <p>Note: if {@code applyTransactionOnDraw} accepts a transaction just before the window pauses
+   * without completing a draw, {@code pendingCommittedTransactions} remains positive so any
+   * subsequent frame stays safely on the UI-synced path until the window draws or {@link
+   * #dropTransactions()} resets state on detach.
+   */
+  public boolean hasPendingTransactions() {
+    return unswappedSealedFrames.get() > 0
+        || platformHasInFlightSyncedFrame
+        || pendingCommittedTransactions.get() > 0;
+  }
+
+  /**
+   * Registers a callback invoked once SurfaceFlinger commits {@code tx}. Extracted for unit testing
+   * in environments where {@link AttachedSurfaceControl#applyTransactionOnDraw} is faked/mocked
+   * without a backing SurfaceFlinger instance.
+   */
+  @VisibleForTesting
+  @RequiresApi(API_LEVELS.API_34)
+  boolean registerTransactionCommittedCallback(
+      @NonNull SurfaceControl.Transaction tx, @NonNull Runnable onCommitted) {
+    try {
+      SurfaceControl.Transaction unused =
+          tx.addTransactionCommittedListener(Runnable::run, onCommitted::run);
+      return true;
+    } catch (RuntimeException e) {
+      Log.w(TAG, "Failed to register SurfaceControl.TransactionCommittedListener", e);
+      return false;
+    }
+  }
+
+  /**
+   * Blocks the calling (raster) thread until all previously sealed/staged UI-synced SurfaceControl
+   * transactions have drained, or until {@code timeoutMs} elapses (e.g. if the UI thread is paused
+   * or tearing down).
+   *
+   * <p>Used on the 1-PV to 0-PV transition so the first post-cleanup 0-PV frame neither overtakes
+   * the cleanup frame's {@code applyTransactionOnDraw} transaction nor schedules a new UI-synced
+   * frame that would perpetuate a Choreographer staging chain during 60Hz/120Hz animations.
+   */
+  public boolean waitForPendingTransactions(long timeoutMs) {
+    if (!hasPendingTransactions()) {
+      return true;
+    }
+    final long deadlineNanos =
+        System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+    synchronized (pendingTransactionsSignal) {
+      while (hasPendingTransactions()) {
+        final long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0L) {
+          return false;
+        }
+        final long millis = remainingNanos / 1_000_000L;
+        final int nanos = (int) (remainingNanos % 1_000_000L);
+        try {
+          pendingTransactionsSignal.wait(millis, nanos);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return !hasPendingTransactions();
+        }
+      }
+    }
+    return true;
+  }
+
+  /* package */ int getActiveRenderTargetWidth(int viewId) {
+    final FlutterMutatorView parent = platformViewParent.get(viewId);
+    if (parent instanceof PlatformViewWrapper) {
+      final PlatformViewWrapper wrapper = (PlatformViewWrapper) parent;
+      if (wrapper.hasActiveRenderTarget()) {
+        return wrapper.getRenderTargetWidth();
+      }
+    }
+    return -1;
+  }
+
+  /* package */ int getActiveRenderTargetHeight(int viewId) {
+    final FlutterMutatorView parent = platformViewParent.get(viewId);
+    if (parent instanceof PlatformViewWrapper) {
+      final PlatformViewWrapper wrapper = (PlatformViewWrapper) parent;
+      if (wrapper.hasActiveRenderTarget()) {
+        return wrapper.getRenderTargetHeight();
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Adopts a newly created {@link PlatformView} routed to HCPP during {@code createForTextureLayer}
+   * (when a {@link SurfaceView} or {@link PlatformView#requiresNativeComposition()} is detected at
+   * creation time).
+   */
+  /* package */ void adoptCreatedPlatformView(int viewId, @NonNull PlatformView platformView) {
+    platformViews.put(viewId, platformView);
+  }
+
+  /**
+   * Adopts a live {@link PlatformView} and its unified {@link PlatformViewWrapper} without
+   * detaching either from the Android {@link FlutterView} window hierarchy during a dynamic {@code
+   * TLHC -> HCPP} upgrade.
+   */
+  /* package */ void adoptUpgradingPlatformView(
+      int viewId, @NonNull PlatformView platformView, @NonNull PlatformViewWrapper wrapper) {
+    platformViews.put(viewId, platformView);
+    platformViewParent.put(viewId, wrapper);
+    wrapper.setTouchProcessor(androidTouchProcessor);
+    wrapper.setOnDescendantFocusChangeListener(
+        (view, hasFocus) -> {
+          if (hasFocus) {
+            if (platformViewsChannel != null) {
+              platformViewsChannel.invokeViewFocused(viewId);
+            }
+          } else if (textInputPlugin != null) {
+            textInputPlugin.clearPlatformViewClient(viewId);
+          }
+        });
   }
 
   @Override
@@ -308,12 +491,40 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
    * when the device rotates since the FlutterView is detached from the fragment. The next time the
    * fragment needs to be displayed, a new Flutter view is created, so attachToView is called again.
    */
+  private void cleanupSurfaceViewListeners(@Nullable View current) {
+    if (current == null) {
+      return;
+    }
+    if (current instanceof SurfaceView) {
+      final SurfaceView sv = (SurfaceView) current;
+      final View.OnLayoutChangeListener layoutListener = pendingLayoutListeners.remove(sv);
+      if (layoutListener != null) {
+        sv.removeOnLayoutChangeListener(layoutListener);
+      }
+      final SurfaceHolder.Callback surfaceCallback = pendingSurfaceCallbacks.remove(sv);
+      if (surfaceCallback != null && sv.getHolder() != null) {
+        sv.getHolder().removeCallback(surfaceCallback);
+      }
+      return;
+    }
+    if (current instanceof ViewGroup) {
+      final ViewGroup group = (ViewGroup) current;
+      final int childCount = group.getChildCount();
+      for (int i = 0; i < childCount; i++) {
+        cleanupSurfaceViewListeners(group.getChildAt(i));
+      }
+    }
+  }
+
   public void detachFromView() {
     // Remove wrapper for platform views that are composed at the view hierarchy level.
     for (int index = 0; index < platformViewParent.size(); index++) {
       final FlutterMutatorView view = platformViewParent.valueAt(index);
+      cleanupSurfaceViewListeners(view);
       flutterView.removeView(view);
     }
+    pendingLayoutListeners.clear();
+    pendingSurfaceCallbacks.clear();
 
     destroyOverlaySurface();
     flutterView = null;
@@ -528,7 +739,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     parentView.setOnDescendantFocusChangeListener(
         (view, hasFocus) -> {
           if (hasFocus) {
-            platformViewsChannel.invokeViewFocused(viewId);
+            if (platformViewsChannel != null) {
+              platformViewsChannel.invokeViewFocused(viewId);
+            }
           } else if (textInputPlugin != null) {
             textInputPlugin.clearPlatformViewClient(viewId);
           }
@@ -603,6 +816,15 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     }
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
+    if (parentView instanceof PlatformViewWrapper) {
+      final PlatformViewWrapper wrapper = (PlatformViewWrapper) parentView;
+      if (wrapper.isCaptureToTextureMode()) {
+        wrapper.switchToNativeViewComposition(getDisplayDensity());
+      }
+      if (wrapper.hasActiveRenderTarget()) {
+        pendingRenderTargetReleases.add(wrapper);
+      }
+    }
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
@@ -613,72 +835,189 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (view != null) {
       view.setLayoutParams(layoutParams);
       view.bringToFront();
-      if (view instanceof SurfaceView) {
-        maybeApplyClipToSurfaceView((SurfaceView) view, x, y, width, height, mutatorsStack, viewId);
+      if (parentView.hasDescendantSurfaceView()) {
+        applyClipsToSurfaceViewsInHierarchy(view, view, x, y, width, height, mutatorsStack);
       }
     }
   }
 
   @RequiresApi(API_LEVELS.API_34)
-  private void maybeApplyClipToSurfaceView(
-      SurfaceView surfaceView,
-      int x,
-      int y,
-      int width,
-      int height,
-      FlutterMutatorsStack mutatorsStack,
-      int viewId) {
-    // 1. CALCULATE THE FINAL RECT (RECT, RRECT, PATH, TRANSFORM)
-    // We start with the view's final on-screen bounds.
-    RectF screenRectF = new RectF(x, y, x + width, y + height);
-    Rect screenRect = new Rect();
-    screenRectF.roundOut(screenRect);
+  private void applyClipsToSurfaceViewsInHierarchy(
+      @Nullable View current,
+      @NonNull View rootEmbeddedView,
+      int pvX,
+      int pvY,
+      int pvWidth,
+      int pvHeight,
+      @NonNull FlutterMutatorsStack mutatorsStack) {
+    if (current == null) {
+      return;
+    }
+    if (current instanceof SurfaceView) {
+      maybeApplyClipToSurfaceView(
+          (SurfaceView) current, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      return;
+    }
+    if (current instanceof ViewGroup) {
+      final ViewGroup group = (ViewGroup) current;
+      final int childCount = group.getChildCount();
+      for (int i = 0; i < childCount; i++) {
+        applyClipsToSurfaceViewsInHierarchy(
+            group.getChildAt(i), rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      }
+    }
+  }
 
-    List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
+  static Rect computeLocalSurfaceViewCrop(
+      @NonNull SurfaceView surfaceView,
+      @NonNull View rootEmbeddedView,
+      int pvX,
+      int pvY,
+      int pvWidth,
+      int pvHeight,
+      @NonNull FlutterMutatorsStack mutatorsStack) {
+    final int svScreenLeft;
+    final int svScreenTop;
+    final int svWidth;
+    final int svHeight;
 
-    if (clippingPaths != null && !clippingPaths.isEmpty()) {
-      RectF pathBounds = new RectF();
+    if (surfaceView == rootEmbeddedView) {
+      svScreenLeft = pvX;
+      svScreenTop = pvY;
+      svWidth = surfaceView.getWidth() > 0 ? surfaceView.getWidth() : pvWidth;
+      svHeight = surfaceView.getHeight() > 0 ? surfaceView.getHeight() : pvHeight;
+    } else {
+      // Accumulate offset and ancestor scroll positions up to rootEmbeddedView.
+      // TODO(gmackall): Account for non-identity child scale/rotation transforms on intermediate
+      // ViewGroups if plugins apply custom View matrices above a nested SurfaceView.
+      int relX = 0;
+      int relY = 0;
+      View ancestor = surfaceView;
+      while (ancestor != null && ancestor != rootEmbeddedView) {
+        relX += ancestor.getLeft() + Math.round(ancestor.getTranslationX());
+        relY += ancestor.getTop() + Math.round(ancestor.getTranslationY());
+        final ViewParent parent = ancestor.getParent();
+        if (parent instanceof View) {
+          final View parentView = (View) parent;
+          relX -= parentView.getScrollX();
+          relY -= parentView.getScrollY();
+          ancestor = parentView;
+        } else {
+          ancestor = null;
+        }
+      }
+      svScreenLeft = pvX + relX;
+      svScreenTop = pvY + relY;
+      if (surfaceView.getWidth() > 0 && surfaceView.getHeight() > 0) {
+        svWidth = surfaceView.getWidth();
+        svHeight = surfaceView.getHeight();
+      } else if (surfaceView.getLayoutParams() != null
+          && surfaceView.getLayoutParams().width > 0
+          && surfaceView.getLayoutParams().height > 0) {
+        svWidth = surfaceView.getLayoutParams().width;
+        svHeight = surfaceView.getLayoutParams().height;
+      } else {
+        svWidth = Math.max(0, pvWidth - relX);
+        svHeight = Math.max(0, pvHeight - relY);
+      }
+    }
+
+    final Rect screenRect =
+        new Rect(svScreenLeft, svScreenTop, svScreenLeft + svWidth, svScreenTop + svHeight);
+    final Rect pvScreenRect = new Rect(pvX, pvY, pvX + pvWidth, pvY + pvHeight);
+    if (!screenRect.intersect(pvScreenRect)) {
+      screenRect.setEmpty();
+    }
+
+    final List<Path> clippingPaths = mutatorsStack.getFinalClippingPaths();
+    if (!screenRect.isEmpty() && clippingPaths != null && !clippingPaths.isEmpty()) {
+      final RectF pathBounds = new RectF();
       for (Path path : clippingPaths) {
-        // Compute the axis-aligned bounding box of the path.
         path.computeBounds(pathBounds, true);
-
-        // Round out to ensure we cover the pixels (ceil/floor logic).
-        Rect pathRectInt = new Rect();
+        final Rect pathRectInt = new Rect();
         pathBounds.roundOut(pathRectInt);
-
-        // Intersect the current visible area with this clip.
-        // If the path is a complex shape (star, rounded rect), this
-        // constrains the surface to the bounding box of that shape.
-        boolean anyIntersection = screenRect.intersect(pathRectInt);
-        if (!anyIntersection) {
+        if (!screenRect.intersect(pathRectInt)) {
           screenRect.setEmpty();
           break;
         }
       }
     }
 
-    // 2. CONVERT TO LOCAL SURFACE COORDINATES
-    // SurfaceControl.setCrop expects coordinates relative to the Surface (0,0).
-    // We shift the calculated screen-space rect by the view's origin (-x, -y).
-    screenRect.offset(-x, -y);
-    if (screenRect.width() < 0 || screenRect.height() < 0) {
+    // SurfaceControl.setCrop expects coordinates relative to the SurfaceView's own buffer (0, 0).
+    screenRect.offset(-svScreenLeft, -svScreenTop);
+    final Rect viewClipBounds = surfaceView.getClipBounds();
+    if (!screenRect.isEmpty() && viewClipBounds != null) {
+      if (!screenRect.intersect(viewClipBounds)) {
+        screenRect.setEmpty();
+      }
+    }
+    if (screenRect.width() <= 0 || screenRect.height() <= 0) {
       screenRect.setEmpty();
     }
+    return screenRect;
+  }
 
-    // 3. APPLY EITHER IN TIME, OR AS A CALLBACK
-    // If the widget tree recently changed, the SurfaceControl will likely be null.
-    // So apply via a SurfaceHolder.Callback(). Otherwise, apply via standard
-    // transaction apis.
-    float opacity = mutatorsStack.getFinalOpacity();
-    SurfaceControl sc = surfaceView.getSurfaceControl();
+  static float computeEffectiveSurfaceViewAlpha(
+      @NonNull SurfaceView surfaceView,
+      @NonNull View rootEmbeddedView,
+      @NonNull Rect localCrop,
+      @NonNull FlutterMutatorsStack mutatorsStack) {
+    // SurfaceFlinger treats an empty crop Rect(0, 0, 0, 0) as uncropped. Force alpha to 0f when
+    // the visible intersection is empty so fully clipped SurfaceViews do not remain visible.
+    if (localCrop.isEmpty()) {
+      return 0f;
+    }
+    float alpha = mutatorsStack.getFinalOpacity() * surfaceView.getAlpha();
+    if (surfaceView != rootEmbeddedView) {
+      ViewParent parent = surfaceView.getParent();
+      while (parent instanceof View) {
+        final View parentView = (View) parent;
+        alpha *= parentView.getAlpha();
+        if (parentView == rootEmbeddedView) {
+          break;
+        }
+        parent = parentView.getParent();
+      }
+    }
+    return Math.max(0f, Math.min(1f, alpha));
+  }
+
+  @RequiresApi(API_LEVELS.API_34)
+  private void maybeApplyClipToSurfaceView(
+      @NonNull SurfaceView surfaceView,
+      @NonNull View rootEmbeddedView,
+      int pvX,
+      int pvY,
+      int pvWidth,
+      int pvHeight,
+      @NonNull FlutterMutatorsStack mutatorsStack) {
+    final Rect localCrop =
+        computeLocalSurfaceViewCrop(
+            surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+    final float effectiveAlpha =
+        computeEffectiveSurfaceViewAlpha(surfaceView, rootEmbeddedView, localCrop, mutatorsStack);
+
+    if (surfaceView != rootEmbeddedView
+        && (!surfaceView.isLaidOut() || surfaceView.isLayoutRequested())
+        && !pendingLayoutListeners.containsKey(surfaceView)) {
+      final View.OnLayoutChangeListener layoutListener =
+          new PendingSurfaceLayoutListener(
+              this, surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      pendingLayoutListeners.put(surfaceView, layoutListener);
+      surfaceView.addOnLayoutChangeListener(layoutListener);
+    }
+
+    final SurfaceControl sc = surfaceView.getSurfaceControl();
     if (sc == null) {
-      if (viewsWithPendingSurfaceCallback.contains(viewId)) {
+      final SurfaceHolder holder = surfaceView.getHolder();
+      if (holder == null || pendingSurfaceCallbacks.containsKey(surfaceView)) {
         return;
       }
-      viewsWithPendingSurfaceCallback.add(viewId);
-      SurfaceHolder.Callback cb =
-          createSurfaceClipCallback(surfaceView, opacity, screenRect, viewId);
-      surfaceView.getHolder().addCallback(cb);
+      final SurfaceHolder.Callback cb =
+          new PendingSurfaceClipCallback(
+              this, surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      pendingSurfaceCallbacks.put(surfaceView, cb);
+      holder.addCallback(cb);
       return;
     }
     if (!sc.isValid()) {
@@ -689,25 +1028,152 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
               + " because it has an invalid SurfaceControl.");
       return;
     }
-    SurfaceControl.Transaction tx =
-        platformTransaction().setAlpha(sc, opacity).setCrop(sc, screenRect);
+    configureSurfaceViewTransaction(sc, effectiveAlpha, localCrop);
   }
 
   @RequiresApi(API_LEVELS.API_34)
-  private SurfaceHolder.Callback createSurfaceClipCallback(
-      @NonNull final SurfaceView surfaceView,
-      final float opacity,
-      @NonNull final Rect screenRect,
-      final int viewId) {
-    return new SurfaceHolder.Callback() {
-      @Override
-      public void surfaceCreated(@NonNull SurfaceHolder holder) {
-        SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
+  @VisibleForTesting
+  void configureSurfaceViewTransaction(
+      @NonNull SurfaceControl sc, float effectiveAlpha, @NonNull Rect localCrop) {
+    platformTransaction().setAlpha(sc, effectiveAlpha).setCrop(sc, localCrop);
+  }
+
+  // Static listener holding only WeakReferences to avoid strong value->key cycles in WeakHashMap.
+  @RequiresApi(API_LEVELS.API_34)
+  private static final class PendingSurfaceLayoutListener implements View.OnLayoutChangeListener {
+    private final WeakReference<PlatformViewsController2> controllerRef;
+    private final WeakReference<SurfaceView> surfaceViewRef;
+    private final WeakReference<View> rootEmbeddedViewRef;
+    private final int pvX;
+    private final int pvY;
+    private final int pvWidth;
+    private final int pvHeight;
+    private final FlutterMutatorsStack mutatorsStack;
+
+    PendingSurfaceLayoutListener(
+        @NonNull PlatformViewsController2 controller,
+        @NonNull SurfaceView surfaceView,
+        @NonNull View rootEmbeddedView,
+        int pvX,
+        int pvY,
+        int pvWidth,
+        int pvHeight,
+        @NonNull FlutterMutatorsStack mutatorsStack) {
+      this.controllerRef = new WeakReference<>(controller);
+      this.surfaceViewRef = new WeakReference<>(surfaceView);
+      this.rootEmbeddedViewRef = new WeakReference<>(rootEmbeddedView);
+      this.pvX = pvX;
+      this.pvY = pvY;
+      this.pvWidth = pvWidth;
+      this.pvHeight = pvHeight;
+      this.mutatorsStack = mutatorsStack;
+    }
+
+    @Override
+    public void onLayoutChange(
+        View v,
+        int left,
+        int top,
+        int right,
+        int bottom,
+        int oldLeft,
+        int oldTop,
+        int oldRight,
+        int oldBottom) {
+      final SurfaceView surfaceView = surfaceViewRef.get();
+      final PlatformViewsController2 controller = controllerRef.get();
+      if (surfaceView != null) {
+        surfaceView.removeOnLayoutChangeListener(this);
+        if (controller != null) {
+          controller.pendingLayoutListeners.remove(surfaceView);
+        }
+      }
+      final View rootEmbeddedView = rootEmbeddedViewRef.get();
+      if (controller == null || surfaceView == null || rootEmbeddedView == null) {
+        return;
+      }
+      final SurfaceControl laidOutSc = surfaceView.getSurfaceControl();
+      if (laidOutSc == null || !laidOutSc.isValid()) {
+        return;
+      }
+      final Rect updatedCrop =
+          computeLocalSurfaceViewCrop(
+              surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      final float updatedAlpha =
+          computeEffectiveSurfaceViewAlpha(
+              surfaceView, rootEmbeddedView, updatedCrop, mutatorsStack);
+      final AttachedSurfaceControl rsc =
+          controller.flutterView == null ? null : controller.flutterView.getRootSurfaceControl();
+      if (rsc != null) {
+        final SurfaceControl.Transaction layoutTx = new SurfaceControl.Transaction();
+        layoutTx.setAlpha(laidOutSc, updatedAlpha).setCrop(laidOutSc, updatedCrop);
+        // Do NOT close `layoutTx` when `applyTransactionOnDraw` accepts it; ViewRootImpl's
+        // FrameDrawingCallback may merge `layoutTx` asynchronously on RenderThread.
+        if (!rsc.applyTransactionOnDraw(layoutTx)) {
+          try {
+            layoutTx.apply();
+          } finally {
+            layoutTx.close();
+          }
+        }
+      } else {
+        controller
+            .platformTransaction()
+            .setAlpha(laidOutSc, updatedAlpha)
+            .setCrop(laidOutSc, updatedCrop);
+        if (controller.flutterJNI != null) {
+          controller.flutterJNI.scheduleFrame();
+        }
+      }
+    }
+  }
+
+  // Static callback holding only WeakReferences to avoid strong value->key cycles in WeakHashMap.
+  @RequiresApi(API_LEVELS.API_34)
+  private static final class PendingSurfaceClipCallback implements SurfaceHolder.Callback {
+    private final WeakReference<PlatformViewsController2> controllerRef;
+    private final WeakReference<SurfaceView> surfaceViewRef;
+    private final WeakReference<View> rootEmbeddedViewRef;
+    private final int pvX;
+    private final int pvY;
+    private final int pvWidth;
+    private final int pvHeight;
+    private final FlutterMutatorsStack mutatorsStack;
+
+    PendingSurfaceClipCallback(
+        @NonNull PlatformViewsController2 controller,
+        @NonNull SurfaceView surfaceView,
+        @NonNull View rootEmbeddedView,
+        int pvX,
+        int pvY,
+        int pvWidth,
+        int pvHeight,
+        @NonNull FlutterMutatorsStack mutatorsStack) {
+      this.controllerRef = new WeakReference<>(controller);
+      this.surfaceViewRef = new WeakReference<>(surfaceView);
+      this.rootEmbeddedViewRef = new WeakReference<>(rootEmbeddedView);
+      this.pvX = pvX;
+      this.pvY = pvY;
+      this.pvWidth = pvWidth;
+      this.pvHeight = pvHeight;
+      this.mutatorsStack = mutatorsStack;
+    }
+
+    @Override
+    public void surfaceCreated(@NonNull SurfaceHolder holder) {
+      final SurfaceView surfaceView = surfaceViewRef.get();
+      final PlatformViewsController2 controller = controllerRef.get();
+      final View rootEmbeddedView = rootEmbeddedViewRef.get();
+      if (controller != null && surfaceView != null && rootEmbeddedView != null) {
+        final SurfaceControl surfaceControl = surfaceView.getSurfaceControl();
         if (surfaceControl != null && surfaceControl.isValid()) {
-          SurfaceControl.Transaction tx =
-              platformTransaction()
-                  .setAlpha(surfaceControl, opacity)
-                  .setCrop(surfaceControl, screenRect);
+          final Rect localCrop =
+              computeLocalSurfaceViewCrop(
+                  surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+          final float effectiveAlpha =
+              computeEffectiveSurfaceViewAlpha(
+                  surfaceView, rootEmbeddedView, localCrop, mutatorsStack);
+          controller.configureSurfaceViewTransaction(surfaceControl, effectiveAlpha, localCrop);
         } else {
           Log.i(
               TAG,
@@ -719,21 +1185,28 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
         // guarantee there is another frame coming (if, say, the app has a static
         // layout). So we schedule one to ensure the crop is rendered properly.
         // See https://github.com/flutter/flutter/issues/175546.
-        flutterJNI.scheduleFrame();
-        viewsWithPendingSurfaceCallback.remove(viewId);
-        surfaceView.getHolder().removeCallback(this);
+        if (controller.flutterJNI != null) {
+          controller.flutterJNI.scheduleFrame();
+        }
       }
-
-      @Override
-      public void surfaceChanged(
-          @NonNull SurfaceHolder holder, int format, int width, int height) {}
-
-      @Override
-      public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
-        viewsWithPendingSurfaceCallback.remove(viewId);
-        surfaceView.getHolder().removeCallback(this);
+      if (surfaceView != null && controller != null) {
+        controller.pendingSurfaceCallbacks.remove(surfaceView);
       }
-    };
+      holder.removeCallback(this);
+    }
+
+    @Override
+    public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {}
+
+    @Override
+    public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+      final SurfaceView surfaceView = surfaceViewRef.get();
+      final PlatformViewsController2 controller = controllerRef.get();
+      if (surfaceView != null && controller != null) {
+        controller.pendingSurfaceCallbacks.remove(surfaceView);
+      }
+      holder.removeCallback(this);
+    }
   }
 
   public void hidePlatformView(int viewId) {
@@ -778,15 +1251,30 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       }
       queuedFrame.rasterTransactions.addAll(activeRasterTransactions);
       activeRasterTransactions.clear();
+      queuedFrame.renderTargetReleases.addAll(pendingRenderTargetReleases);
+      pendingRenderTargetReleases.clear();
+      hasActiveSwappedFrame = false;
+      updateInFlightSyncedFrameFlag();
       return;
     }
 
     commitActiveFrame();
   }
 
+  private void releaseStagedRenderTargets() {
+    if (stagedRenderTargetReleases.isEmpty()) {
+      return;
+    }
+    for (PlatformViewWrapper wrapper : stagedRenderTargetReleases) {
+      wrapper.release();
+    }
+    stagedRenderTargetReleases.clear();
+  }
+
   @UiThread
   @RequiresApi(API_LEVELS.API_34)
   private void commitActiveFrame() {
+    hasActiveSwappedFrame = false;
     final SurfaceControl.Transaction platformTx = activePlatformTransaction;
     activePlatformTransaction = null;
 
@@ -808,11 +1296,44 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (rootSurfaceControl == null) {
       // Release the unapplied transaction and its owned fence FDs.
       tx.close();
+      updateInFlightSyncedFrameFlag();
       return;
     }
 
+    final int expectedGeneration = commitGeneration.get();
+    final AtomicBoolean commitCompleted = new AtomicBoolean(false);
+    final Runnable completeCommit =
+        () -> {
+          if (commitCompleted.compareAndSet(false, true)
+              && commitGeneration.get() == expectedGeneration) {
+            if (pendingCommittedTransactions.decrementAndGet() <= 0) {
+              notifyIfNoPendingTransactions();
+            }
+          }
+        };
+    pendingCommittedTransactions.incrementAndGet();
+    final boolean registeredCommitCallback =
+        registerTransactionCommittedCallback(tx, completeCommit);
+    if (!registeredCommitCallback) {
+      completeCommit.run();
+    }
+
     flutterView.invalidate();
-    rootSurfaceControl.applyTransactionOnDraw(tx);
+    if (flutterView.willNotDraw() && flutterView.getChildCount() > 0) {
+      final View firstChild = flutterView.getChildAt(0);
+      if (firstChild != null) {
+        firstChild.invalidate();
+      }
+    }
+    if (!rootSurfaceControl.applyTransactionOnDraw(tx)) {
+      if (registeredCommitCallback) {
+        completeCommit.run();
+      }
+      tx.close();
+    }
+    uiThreadEndFrameCount++;
+    stagedRenderTargetReleases.addAll(pendingRenderTargetReleases);
+    pendingRenderTargetReleases.clear();
     // Defer the next frame until this Choreographer traversal finishes so its View mutations do
     // not overwrite this frame's layout before draw. If the traversal skips drawing (e.g. a
     // pre-draw listener cancels draw), the next commit merges into ViewRootImpl's still-pending
@@ -821,7 +1342,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       frameStagedForTraversal = true;
       choreographerCallbackFired = false;
       Choreographer.getInstance().postFrameCallback(traversalFrameCallback);
+    } else {
+      releaseStagedRenderTargets();
     }
+    updateInFlightSyncedFrameFlag();
   }
 
   @VisibleForTesting
@@ -850,7 +1374,9 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     if (mainHandler != null) {
       mainHandler.removeCallbacks(traversalCompleteRunnable);
     }
+    releaseStagedRenderTargets();
     if (queuedFrame == null) {
+      updateInFlightSyncedFrameFlag();
       return;
     }
     final QueuedFrame next = queuedFrame;
@@ -862,6 +1388,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     for (Runnable op : next.viewOps) {
       op.run();
     }
+    pendingRenderTargetReleases.addAll(next.renderTargetReleases);
 
     activePlatformTransaction = pendingPlatformTransaction;
     pendingPlatformTransaction = savedPendingPlatformTx;
@@ -881,6 +1408,13 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           pendingRasterFrames.pollFirst();
       if (frameTransactions != null) {
         activeRasterTransactions.addAll(frameTransactions);
+        hasActiveSwappedFrame = true;
+        platformHasInFlightSyncedFrame = true;
+        unswappedSealedFrames.set(pendingRasterFrames.size());
+      } else {
+        hasActiveSwappedFrame = false;
+        unswappedSealedFrames.set(pendingRasterFrames.size());
+        updateInFlightSyncedFrameFlag();
       }
     }
 
@@ -905,6 +1439,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
   private void dropTransactions() {
     frameStagedForTraversal = false;
     choreographerCallbackFired = false;
+    hasActiveSwappedFrame = false;
     pendingViewOps.clear();
     Choreographer.getInstance().removeFrameCallback(traversalFrameCallback);
     if (mainHandler != null) {
@@ -914,15 +1449,27 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
       if (queuedFrame.platformTransaction != null) {
         queuedFrame.platformTransaction.close();
       }
+      for (PlatformViewWrapper wrapper : queuedFrame.renderTargetReleases) {
+        wrapper.release();
+      }
       queuedFrame = null;
     }
+    for (PlatformViewWrapper wrapper : pendingRenderTargetReleases) {
+      wrapper.release();
+    }
+    pendingRenderTargetReleases.clear();
+    releaseStagedRenderTargets();
     activeRasterTransactions.clear();
     synchronized (transactionLock) {
       // If platform tasks posted before detach run swapTransactions() after an immediate
       // re-attach seals new frames, batches can shift by one until those stale tasks drain.
       pendingRasterFrames.clear();
       pendingRasterTransactions.clear();
+      unswappedSealedFrames.set(0);
     }
+    commitGeneration.incrementAndGet();
+    pendingCommittedTransactions.set(0);
+    updateInFlightSyncedFrameFlag();
 
     if (activePlatformTransaction != null) {
       activePlatformTransaction.close();
@@ -993,6 +1540,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     synchronized (transactionLock) {
       pendingRasterFrames.addLast(new ArrayList<>(pendingRasterTransactions));
       pendingRasterTransactions.clear();
+      unswappedSealedFrames.set(pendingRasterFrames.size());
     }
   }
 
@@ -1089,7 +1637,6 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
         @Override
         public void dispose(int viewId) {
-          viewsWithPendingSurfaceCallback.remove(viewId);
           final PlatformView platformView = platformViews.get(viewId);
           if (platformView == null) {
             Log.e(TAG, "Disposing unknown platform view with id: " + viewId);
@@ -1097,6 +1644,7 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           }
           if (platformView.getView() != null) {
             final View embeddedView = platformView.getView();
+            cleanupSurfaceViewListeners(embeddedView);
             final ViewGroup pvParent = (ViewGroup) embeddedView.getParent();
             if (pvParent != null) {
               // Eagerly remove the embedded view from the PlatformViewWrapper.
@@ -1115,6 +1663,12 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           // The platform view is displayed using a PlatformViewLayer.
           final FlutterMutatorView parentView = platformViewParent.get(viewId);
           if (parentView != null) {
+            if (parentView instanceof PlatformViewWrapper) {
+              final PlatformViewWrapper wrapper = (PlatformViewWrapper) parentView;
+              pendingRenderTargetReleases.remove(wrapper);
+              stagedRenderTargetReleases.remove(wrapper);
+              wrapper.release();
+            }
             parentView.removeAllViews();
             parentView.unsetOnDescendantFocusChangeListener();
 

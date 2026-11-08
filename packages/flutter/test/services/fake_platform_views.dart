@@ -74,6 +74,8 @@ class FakeAndroidViewController implements AndroidViewController {
   Offset? createPosition;
 
   final List<PlatformViewCreatedCallback> _createdCallbacks = <PlatformViewCreatedCallback>[];
+  final List<VoidCallback> _compositionModeChangedCallbacks = <VoidCallback>[];
+  final List<ValueChanged<Size>> _bufferSizeChangedCallbacks = <ValueChanged<Size>>[];
 
   /// Events that are dispatched.
   List<PointerEvent> dispatchedPointerEvents = <PointerEvent>[];
@@ -106,6 +108,8 @@ class FakeAndroidViewController implements AndroidViewController {
   @override
   Future<void> dispose() async {
     disposed = true;
+    _compositionModeChangedCallbacks.clear();
+    _bufferSizeChangedCallbacks.clear();
   }
 
   @override
@@ -125,7 +129,7 @@ class FakeAndroidViewController implements AndroidViewController {
   }
 
   @override
-  int get textureId => 0;
+  int? get textureId => requiresViewComposition ? null : 0;
 
   @override
   bool get awaitingCreation => !_createCalledSuccessfully;
@@ -142,6 +146,39 @@ class FakeAndroidViewController implements AndroidViewController {
   @override
   void removeOnPlatformViewCreatedListener(PlatformViewCreatedCallback listener) {
     createdCallbacks.remove(listener);
+  }
+
+  @override
+  void addOnCompositionModeChangedListener(VoidCallback listener) {
+    _compositionModeChangedCallbacks.add(listener);
+  }
+
+  @override
+  void removeOnCompositionModeChangedListener(VoidCallback listener) {
+    _compositionModeChangedCallbacks.remove(listener);
+  }
+
+  @override
+  void addOnBufferSizeChangedListener(ValueChanged<Size> listener) {
+    _bufferSizeChangedCallbacks.add(listener);
+  }
+
+  @override
+  void removeOnBufferSizeChangedListener(ValueChanged<Size> listener) {
+    _bufferSizeChangedCallbacks.remove(listener);
+  }
+
+  void simulateCompositionModeChanged({bool newRequiresViewComposition = true}) {
+    requiresViewComposition = newRequiresViewComposition;
+    for (final callback in List<VoidCallback>.of(_compositionModeChangedCallbacks)) {
+      callback();
+    }
+  }
+
+  void simulateBufferSizeChanged(Size bufferSize) {
+    for (final callback in List<ValueChanged<Size>>.of(_bufferSizeChangedCallbacks)) {
+      callback(bufferSize);
+    }
   }
 
   @override
@@ -186,10 +223,15 @@ class FakeAndroidPlatformViewsController {
       SystemChannels.platform_views,
       _onMethodCall,
     );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform_views_2,
+      _onMethodCall2,
+    );
   }
 
   Iterable<FakeAndroidPlatformView> get views => _views.values;
   final Map<int, FakeAndroidPlatformView> _views = <int, FakeAndroidPlatformView>{};
+  final Set<int> _hybridCompositionViewIds = <int>{};
 
   final Map<int, List<FakeAndroidMotionEvent>> motionEvents = <int, List<FakeAndroidMotionEvent>>{};
 
@@ -210,6 +252,9 @@ class FakeAndroidPlatformViewsController {
   /// When false, `create` will simulate the engine's fallback mode.
   bool allowTextureLayerMode = true;
 
+  /// True if SurfaceControl-backed HCPP (`flutter/platform_views_2`) is enabled.
+  bool surfaceControlEnabled = false;
+
   void registerViewType(String viewType) {
     _registeredViewTypes.add(viewType);
   }
@@ -217,6 +262,45 @@ class FakeAndroidPlatformViewsController {
   void invokeViewFocused(int viewId) {
     final MethodCodec codec = SystemChannels.platform_views.codec;
     final ByteData data = codec.encodeMethodCall(MethodCall('viewFocused', viewId));
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+      SystemChannels.platform_views.name,
+      data,
+      (ByteData? data) {},
+    );
+  }
+
+  void invokeViewFocused2(int viewId) {
+    final MethodCodec codec = SystemChannels.platform_views_2.codec;
+    final ByteData data = codec.encodeMethodCall(MethodCall('viewFocused', viewId));
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+      SystemChannels.platform_views_2.name,
+      data,
+      (ByteData? data) {},
+    );
+  }
+
+  void invokeViewCompositionChanged(int viewId, {String mode = 'hcpp'}) {
+    _hybridCompositionViewIds.add(viewId);
+    final MethodCodec codec = SystemChannels.platform_views.codec;
+    final ByteData data = codec.encodeMethodCall(
+      MethodCall('viewCompositionChanged', <String, Object?>{'id': viewId, 'mode': mode}),
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+      SystemChannels.platform_views.name,
+      data,
+      (ByteData? data) {},
+    );
+  }
+
+  void invokeViewBufferResized(int viewId, Size size) {
+    final MethodCodec codec = SystemChannels.platform_views.codec;
+    final ByteData data = codec.encodeMethodCall(
+      MethodCall('viewBufferResized', <String, Object?>{
+        'id': viewId,
+        'width': size.width,
+        'height': size.height,
+      }),
+    );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
       SystemChannels.platform_views.name,
       data,
@@ -233,6 +317,13 @@ class FakeAndroidPlatformViewsController {
       'setDirection' => _setDirection(call),
       'clearFocus' => _clearFocus(call),
       'offset' => _offset(call),
+      _ => Future<dynamic>.sync(() => null),
+    };
+  }
+
+  Future<dynamic> _onMethodCall2(MethodCall call) {
+    return switch (call.method) {
+      'isSurfaceControlEnabled' => Future<bool>.value(surfaceControlEnabled),
       _ => Future<dynamic>.sync(() => null),
     };
   }
@@ -282,9 +373,11 @@ class FakeAndroidPlatformViewsController {
     final bool hybridResult =
         // hybrid was explicitly requested, or
         (hybrid ?? false) ||
-        // hybrid fallback was requested and simulated.
-        (!allowTextureLayerMode && (hybridFallback ?? false));
+        // fallback mode was simulated (Virtual Display is retired; both
+        // initAndroidView and initSurfaceAndroidView fall back to hybrid composition).
+        !allowTextureLayerMode;
     if (hybridResult) {
+      _hybridCompositionViewIds.add(id);
       return Future<void>.value();
     }
     final int textureId = _textureCounter++;
@@ -298,16 +391,6 @@ class FakeAndroidPlatformViewsController {
     final id = arguments['id']! as int;
     final hybrid = arguments['hybrid']! as bool;
 
-    if (hybrid && !_views[id]!.hybrid!) {
-      throw ArgumentError(
-        'An $AndroidViewController using hybrid composition must pass `hybrid: true`',
-      );
-    } else if (!hybrid && (_views[id]!.hybrid ?? false)) {
-      throw ArgumentError(
-        'An $AndroidViewController not using hybrid composition must pass `hybrid: false`',
-      );
-    }
-
     if (!_views.containsKey(id)) {
       throw PlatformException(
         code: 'error',
@@ -315,6 +398,18 @@ class FakeAndroidPlatformViewsController {
       );
     }
 
+    final bool usesHybrid = _hybridCompositionViewIds.contains(id) || (_views[id]!.hybrid ?? false);
+    if (hybrid && !usesHybrid) {
+      throw ArgumentError(
+        'An $AndroidViewController using hybrid composition must pass `hybrid: true`',
+      );
+    } else if (!hybrid && usesHybrid) {
+      throw ArgumentError(
+        'An $AndroidViewController not using hybrid composition must pass `hybrid: false`',
+      );
+    }
+
+    _hybridCompositionViewIds.remove(id);
     _views.remove(id);
     return Future<dynamic>.sync(() => null);
   }
@@ -638,16 +733,17 @@ class FakeAndroidPlatformView {
   final bool? hybridFallback;
   final Offset? position;
 
-  FakeAndroidPlatformView copyWith({Size? size, int? layoutDirection}) => FakeAndroidPlatformView(
-    id,
-    type,
-    size ?? this.size,
-    layoutDirection ?? this.layoutDirection,
-    hybrid: hybrid,
-    hybridFallback: hybridFallback,
-    creationParams: creationParams,
-    position: position,
-  );
+  FakeAndroidPlatformView copyWith({Size? size, int? layoutDirection, bool? hybrid}) =>
+      FakeAndroidPlatformView(
+        id,
+        type,
+        size ?? this.size,
+        layoutDirection ?? this.layoutDirection,
+        hybrid: hybrid ?? this.hybrid,
+        hybridFallback: hybridFallback,
+        creationParams: creationParams,
+        position: position,
+      );
 
   @override
   bool operator ==(Object other) {

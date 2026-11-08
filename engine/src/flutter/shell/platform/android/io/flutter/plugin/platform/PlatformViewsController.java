@@ -10,18 +10,25 @@ import android.annotation.SuppressLint;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.MutableContextWrapper;
+import android.graphics.Rect;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.SparseArray;
+import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.MotionEvent.PointerCoords;
 import android.view.MotionEvent.PointerProperties;
+import android.view.SurfaceControl;
+import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.annotation.UiThread;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
@@ -40,10 +47,12 @@ import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.util.ViewUtils;
 import io.flutter.view.AccessibilityBridge;
 import io.flutter.view.TextureRegistry;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.WeakHashMap;
 
 /**
  * Manages platform views.
@@ -154,6 +163,15 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
   // Whether software rendering is used.
   private boolean usesSoftwareRendering = false;
 
+  @Nullable private PlatformViewsController2 platformViewsController2;
+  private final HashSet<PlatformViewWrapper> pendingRenderTargetReleases = new HashSet<>();
+  private final HashSet<Integer> textureFallbackHcViewIds = new HashSet<>();
+  private final SparseArray<Runnable> pendingRenderTargetShrinks = new SparseArray<>();
+  @Nullable private Handler shrinkHandler;
+
+  @VisibleForTesting static final double SHRINK_AREA_RATIO_THRESHOLD = 0.5;
+  @VisibleForTesting static final long SHRINK_DEBOUNCE_DELAY_MS = 150L;
+
   private static boolean enableImageRenderTarget = true;
 
   private static boolean enableSurfaceProducerRenderTarget = true;
@@ -220,34 +238,43 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
                     + " parent view.");
           }
 
-          // The Texture Layer Hybrid Composition mode isn't supported if any of the
-          // following are true:
-          // - The embedded view contains any of the VIEW_TYPES_REQUIRE_VIRTUAL_DISPLAY view types.
-          //   These views allow out-of-band graphics operations that aren't notified to the Android
-          //   view hierarchy via callbacks such as ViewParent#onDescendantInvalidated().
-          // - The API level is <23, due to TLHC implementation API requirements.
-          final boolean supportsTextureLayerMode =
-              !ViewUtils.hasChildViewOfType(embeddedView, VIEW_TYPES_REQUIRE_NON_TLHC);
+          final boolean hasSurfaceView =
+              ViewUtils.hasChildViewOfType(embeddedView, VIEW_TYPES_REQUIRE_NON_TLHC);
+          final boolean pluginRequestsNative =
+              !request.preferTexture && platformView.requiresNativeComposition();
 
-          // Fall back to Hybrid Composition or Virtual Display when necessary, depending on which
-          // fallback mode is requested.
-          if (!supportsTextureLayerMode) {
-            if (request.displayMode
-                == PlatformViewCreationRequest.RequestedDisplayMode.TEXTURE_WITH_HYBRID_FALLBACK) {
+          // Route directly to HCPP (when SurfaceControl swapchain is active on API 34+) or Hybrid
+          // Composition (on API < 34 / OpenGLES) from frame 0 if the view contains a SurfaceView
+          // at creation or the plugin hints requiresNativeComposition(). Virtual Display is
+          // retired.
+          if (hasSurfaceView || pluginRequestsNative) {
+            if (isHcppAvailable()) {
+              Log.i(
+                  TAG,
+                  "Routing platform view "
+                      + viewId
+                      + " directly to HCPP at creation (hasSurfaceView="
+                      + hasSurfaceView
+                      + ", requiresNativeComposition="
+                      + pluginRequestsNative
+                      + ").");
+              platformViews.remove(viewId);
+              platformViewsController2.adoptCreatedPlatformView(viewId, platformView);
+              return PlatformViewsChannel.PlatformViewsHandler.NON_TEXTURE_FALLBACK;
+            }
+            if (!usesSoftwareRendering) {
+              textureFallbackHcViewIds.add(viewId);
               configureForHybridComposition(platformView, request);
               return PlatformViewsChannel.PlatformViewsHandler.NON_TEXTURE_FALLBACK;
-            } else if (!usesSoftwareRendering) { // Virtual Display doesn't support software mode.
-              return configureForVirtualDisplay(platformView, request);
             }
-            // TODO(stuartmorgan): Consider throwing a specific exception here as a breaking change.
-            // For now, preserve the 3.0 behavior of falling through to Texture Layer mode even
-            // though it won't work correctly.
           }
           return configureForTextureLayerComposition(platformView, request);
         }
 
         @Override
         public void dispose(int viewId) {
+          cancelPendingRenderTargetShrink(viewId);
+          textureFallbackHcViewIds.remove(viewId);
           final PlatformView platformView = platformViews.get(viewId);
           if (platformView == null) {
             Log.e(TAG, "Disposing unknown platform view with id: " + viewId);
@@ -255,6 +282,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
           }
           if (platformView.getView() != null) {
             final View embeddedView = platformView.getView();
+            cleanupLegacySurfaceViewCallbacks(embeddedView);
             final ViewGroup pvParent = (ViewGroup) embeddedView.getParent();
             if (pvParent != null) {
               // Eagerly remove the embedded view from the PlatformViewWrapper.
@@ -283,6 +311,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
           // hierarchy.
           final PlatformViewWrapper viewWrapper = viewWrappers.get(viewId);
           if (viewWrapper != null) {
+            pendingRenderTargetReleases.remove(viewWrapper);
             viewWrapper.removeAllViews();
             viewWrapper.release();
             viewWrapper.unsetOnDescendantFocusChangeListener();
@@ -297,6 +326,11 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
           // The platform view is displayed using a PlatformViewLayer.
           final FlutterMutatorView parentView = platformViewParent.get(viewId);
           if (parentView != null) {
+            if (parentView instanceof PlatformViewWrapper) {
+              final PlatformViewWrapper wrapper = (PlatformViewWrapper) parentView;
+              pendingRenderTargetReleases.remove(wrapper);
+              wrapper.release();
+            }
             parentView.removeAllViews();
             parentView.unsetOnDescendantFocusChangeListener();
 
@@ -310,8 +344,8 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
 
         @Override
         public void offset(int viewId, double top, double left) {
-          if (usesVirtualDisplay(viewId)) {
-            // Virtual displays don't need an accessibility offset.
+          if (usesVirtualDisplay(viewId) || platformViewParent.get(viewId) != null) {
+            // Virtual displays and native PlatformViewLayer views don't use texture offsets.
             return;
           }
           // For platform views that use TextureView and are in the view hierarchy, set
@@ -365,20 +399,43 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
 
           final PlatformView platformView = platformViews.get(viewId);
           final PlatformViewWrapper viewWrapper = viewWrappers.get(viewId);
+          if (platformView != null
+              && viewWrapper == null
+              && platformViewParent.get(viewId) != null) {
+            onComplete.run(
+                new PlatformViewsChannel.PlatformViewBufferSize(
+                    request.newLogicalWidth, request.newLogicalHeight));
+            return;
+          }
           if (platformView == null || viewWrapper == null) {
             Log.e(TAG, "Resizing unknown platform view with id: " + viewId);
             return;
           }
-          // Resize the buffer only when the current buffer size is smaller than the new size.
-          // This is required to prevent a situation when smooth keyboard animation
-          // resizes the texture too often, such that the GPU and the platform thread don't agree on
-          // the timing of the new size.
-          // Resizing the texture causes pixel stretching since the size of the GL texture used in
-          // the engine is set by the framework, but the texture buffer size is set by the
-          // platform down below.
-          if (physicalWidth > viewWrapper.getRenderTargetWidth()
-              || physicalHeight > viewWrapper.getRenderTargetHeight()) {
-            viewWrapper.resizeRenderTarget(physicalWidth, physicalHeight);
+          // Grow the render target immediately to avoid scaling artifacts, and only shrink when
+          // the requested area drops to <= 50% of the allocated buffer and stabilizes for 150ms.
+          // This avoids per-frame ImageReader/AHB reallocation churn during keyboard or layout
+          // animations while still reclaiming oversized buffers after significant downsizes.
+          final int currentWidth = viewWrapper.getRenderTargetWidth();
+          final int currentHeight = viewWrapper.getRenderTargetHeight();
+          if (physicalWidth > currentWidth || physicalHeight > currentHeight) {
+            cancelPendingRenderTargetShrink(viewId);
+            viewWrapper.resizeRenderTarget(
+                Math.max(physicalWidth, currentWidth), Math.max(physicalHeight, currentHeight));
+          } else {
+            cancelPendingRenderTargetShrink(viewId);
+          }
+          final int updatedWidth = viewWrapper.getRenderTargetWidth();
+          final int updatedHeight = viewWrapper.getRenderTargetHeight();
+          if (physicalWidth < updatedWidth || physicalHeight < updatedHeight) {
+            final long newArea = (long) physicalWidth * (long) physicalHeight;
+            final long allocatedArea = (long) updatedWidth * (long) updatedHeight;
+            if (physicalWidth > 0
+                && physicalHeight > 0
+                && allocatedArea > 0
+                && newArea <= (long) (allocatedArea * SHRINK_AREA_RATIO_THRESHOLD)) {
+              scheduleDebouncedRenderTargetShrink(
+                  viewId, viewWrapper, physicalWidth, physicalHeight);
+            }
           }
 
           final ViewGroup.LayoutParams viewWrapperLayoutParams = viewWrapper.getLayoutParams();
@@ -587,8 +644,169 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     }
   }
 
+  private boolean isHcppAvailable() {
+    return platformViewsController2 != null && platformViewsController2.isHcppEnabled();
+  }
+
+  /** Links the companion {@link PlatformViewsController2} for HCPP routing and dynamic upgrades. */
+  public void setPlatformViewsController2(
+      @Nullable PlatformViewsController2 platformViewsController2) {
+    this.platformViewsController2 = platformViewsController2;
+  }
+
+  /** Returns true if {@code viewId} is currently composed in TLHC texture-capture mode. */
+  public boolean isUsingTextureLayerComposition(int viewId) {
+    final PlatformViewWrapper wrapper = viewWrappers.get(viewId);
+    return wrapper != null && wrapper.isCaptureToTextureMode();
+  }
+
+  /** Returns true if {@code viewId} is currently composed in Legacy Hybrid Composition mode. */
+  public boolean isUsingHybridComposition(int viewId) {
+    return platformViews.get(viewId) != null
+        && !usesVirtualDisplay(viewId)
+        && !isUsingTextureLayerComposition(viewId);
+  }
+
+  /**
+   * Returns the width in physical pixels of the active {@link PlatformViewRenderTarget} for {@code
+   * viewId}, or {@code -1} if no render target exists or it has already been released.
+   */
+  public int getRenderTargetWidth(int viewId) {
+    final PlatformViewWrapper wrapper = viewWrappers.get(viewId);
+    if (wrapper != null && wrapper.hasActiveRenderTarget()) {
+      return wrapper.getRenderTargetWidth();
+    }
+    final FlutterMutatorView parent = platformViewParent.get(viewId);
+    if (parent instanceof PlatformViewWrapper) {
+      final PlatformViewWrapper upgraded = (PlatformViewWrapper) parent;
+      if (upgraded.hasActiveRenderTarget()) {
+        return upgraded.getRenderTargetWidth();
+      }
+    }
+    if (platformViewsController2 != null) {
+      return platformViewsController2.getActiveRenderTargetWidth(viewId);
+    }
+    return -1;
+  }
+
+  /**
+   * Returns the height in physical pixels of the active {@link PlatformViewRenderTarget} for {@code
+   * viewId}, or {@code -1} if no render target exists or it has already been released.
+   */
+  public int getRenderTargetHeight(int viewId) {
+    final PlatformViewWrapper wrapper = viewWrappers.get(viewId);
+    if (wrapper != null && wrapper.hasActiveRenderTarget()) {
+      return wrapper.getRenderTargetHeight();
+    }
+    final FlutterMutatorView parent = platformViewParent.get(viewId);
+    if (parent instanceof PlatformViewWrapper) {
+      final PlatformViewWrapper upgraded = (PlatformViewWrapper) parent;
+      if (upgraded.hasActiveRenderTarget()) {
+        return upgraded.getRenderTargetHeight();
+      }
+    }
+    if (platformViewsController2 != null) {
+      return platformViewsController2.getActiveRenderTargetHeight(viewId);
+    }
+    return -1;
+  }
+
+  private void cancelPendingRenderTargetShrink(int viewId) {
+    final Runnable pending = pendingRenderTargetShrinks.get(viewId);
+    if (pending != null) {
+      if (shrinkHandler != null) {
+        shrinkHandler.removeCallbacks(pending);
+      }
+      pendingRenderTargetShrinks.remove(viewId);
+    }
+  }
+
+  private void cancelAllPendingRenderTargetShrinks() {
+    if (shrinkHandler != null) {
+      for (int i = 0; i < pendingRenderTargetShrinks.size(); i++) {
+        shrinkHandler.removeCallbacks(pendingRenderTargetShrinks.valueAt(i));
+      }
+    }
+    pendingRenderTargetShrinks.clear();
+  }
+
+  private void scheduleDebouncedRenderTargetShrink(
+      int viewId,
+      @NonNull PlatformViewWrapper viewWrapper,
+      int targetPhysicalWidth,
+      int targetPhysicalHeight) {
+    if (shrinkHandler == null) {
+      shrinkHandler = new Handler(Looper.getMainLooper());
+    }
+    final Runnable shrinkRunnable =
+        new Runnable() {
+          @Override
+          public void run() {
+            if (pendingRenderTargetShrinks.get(viewId) != this) {
+              return;
+            }
+            pendingRenderTargetShrinks.remove(viewId);
+            if (context == null
+                || viewWrappers.get(viewId) != viewWrapper
+                || !viewWrapper.isCaptureToTextureMode()
+                || !viewWrapper.hasActiveRenderTarget()) {
+              return;
+            }
+            viewWrapper.resizeRenderTarget(targetPhysicalWidth, targetPhysicalHeight);
+            viewWrapper.invalidate();
+            if (platformViewsChannel != null) {
+              platformViewsChannel.invokeViewBufferResized(
+                  viewId,
+                  toLogicalPixels(viewWrapper.getRenderTargetWidth()),
+                  toLogicalPixels(viewWrapper.getRenderTargetHeight()));
+            }
+          }
+        };
+    pendingRenderTargetShrinks.put(viewId, shrinkRunnable);
+    shrinkHandler.postDelayed(shrinkRunnable, SHRINK_DEBOUNCE_DELAY_MS);
+  }
+
+  /**
+   * Dynamically upgrades a live TLHC platform view to HCPP (when available) or Legacy Hybrid
+   * Composition in-place without detaching its unified {@link PlatformViewWrapper} or child view.
+   */
+  @UiThread
+  @VisibleForTesting
+  public void upgradeTextureLayerToNativeComposition(int viewId) {
+    if (usesSoftwareRendering) {
+      return;
+    }
+    final PlatformView platformView = platformViews.get(viewId);
+    final PlatformViewWrapper viewWrapper = viewWrappers.get(viewId);
+    if (platformView == null || viewWrapper == null) {
+      return;
+    }
+    cancelPendingRenderTargetShrink(viewId);
+    viewWrappers.remove(viewId);
+    if (isHcppAvailable()) {
+      Log.i(TAG, "Dynamically upgrading platform view " + viewId + " from TLHC to HCPP.");
+      platformViews.remove(viewId);
+      platformViewsController2.adoptUpgradingPlatformView(viewId, platformView, viewWrapper);
+      if (platformViewsChannel != null) {
+        platformViewsChannel.invokeViewCompositionChanged(viewId, "hcpp");
+      }
+    } else {
+      Log.i(
+          TAG,
+          "Dynamically upgrading platform view " + viewId + " from TLHC to Hybrid Composition.");
+      textureFallbackHcViewIds.add(viewId);
+      platformViewParent.put(viewId, viewWrapper);
+      if (platformViewsChannel != null) {
+        platformViewsChannel.invokeViewCompositionChanged(viewId, "hc");
+      }
+    }
+  }
+
   // Configures the view for Virtual Display mode, returning the associated texture ID.
-  private long configureForVirtualDisplay(
+  // TODO(https://github.com/flutter/flutter/issues/189834): Delete Virtual Display support once
+  // legacy VirtualDisplay unit tests are migrated or retired.
+  @VisibleForTesting
+  /* package */ long configureForVirtualDisplay(
       @NonNull PlatformView platformView, @NonNull PlatformViewCreationRequest request) {
     // This mode adds the view to a virtual display, which is wired up to a GL texture that
     // is composed by the Flutter engine.
@@ -696,6 +914,10 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
 
     flutterView.addView(viewWrapper);
     viewWrappers.append(request.viewId, viewWrapper);
+    if (!usesSoftwareRendering) {
+      viewWrapper.setOnSurfaceViewDetectedListener(
+          () -> upgradeTextureLayerToNativeComposition(request.viewId));
+    }
 
     maybeInvokeOnFlutterViewAttached(platformView);
 
@@ -861,6 +1083,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
    */
   @UiThread
   public void detach() {
+    cancelAllPendingRenderTargetShrinks();
     if (platformViewsChannel != null) {
       platformViewsChannel.setPlatformViewsHandler(null);
     }
@@ -903,6 +1126,7 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
    * fragment needs to be displayed, a new Flutter view is created, so attachToView is called again.
    */
   public void detachFromView() {
+    cancelAllPendingRenderTargetShrinks();
     // Remove wrapper for platform views that use GL texture.
     for (int index = 0; index < viewWrappers.size(); index++) {
       final PlatformViewWrapper view = viewWrappers.valueAt(index);
@@ -911,9 +1135,17 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     // Remove wrapper for platform views that are composed at the view hierarchy level.
     for (int index = 0; index < platformViewParent.size(); index++) {
       final FlutterMutatorView view = platformViewParent.valueAt(index);
+      cleanupLegacySurfaceViewCallbacks(view);
       flutterView.removeView(view);
     }
+    pendingLegacySurfaceCallbacks.clear();
+    pendingLegacyLayoutListeners.clear();
+    appliedLegacySurfaceStates.clear();
 
+    for (PlatformViewWrapper wrapper : pendingRenderTargetReleases) {
+      wrapper.release();
+    }
+    pendingRenderTargetReleases.clear();
     destroyOverlaySurfaces();
     removeOverlaySurfaces();
     flutterView = null;
@@ -1259,6 +1491,15 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     }
 
     final FlutterMutatorView parentView = platformViewParent.get(viewId);
+    if (parentView instanceof PlatformViewWrapper) {
+      final PlatformViewWrapper wrapper = (PlatformViewWrapper) parentView;
+      if (wrapper.isCaptureToTextureMode()) {
+        wrapper.switchToNativeViewComposition(getDisplayDensity());
+      }
+      if (wrapper.hasActiveRenderTarget()) {
+        pendingRenderTargetReleases.add(wrapper);
+      }
+    }
     parentView.readyToDisplay(mutatorsStack, x, y, width, height);
     parentView.setVisibility(View.VISIBLE);
     parentView.bringToFront();
@@ -1269,8 +1510,328 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     if (view != null) {
       view.setLayoutParams(layoutParams);
       view.bringToFront();
+      // Scope SurfaceControl crop/alpha transactions in Legacy HC strictly to views originating
+      // from createForTextureLayer (where Virtual Display was retired or TLHC hot-swapped) and
+      // only when a descendant SurfaceView is actually present, leaving explicit Legacy HC views
+      // (initExpensiveAndroidView) untouched.
+      if (Build.VERSION.SDK_INT >= API_LEVELS.API_29
+          && textureFallbackHcViewIds.contains(viewId)
+          && parentView.hasDescendantSurfaceView()) {
+        applyClipsToSurfaceViewsInLegacyHc(view, view, x, y, width, height, mutatorsStack);
+      }
     }
     currentFrameUsedPlatformViewIds.add(viewId);
+  }
+
+  private static final class AppliedLegacySurfaceState {
+    final WeakReference<SurfaceControl> surfaceControlRef;
+    final Rect localCrop;
+    final float effectiveAlpha;
+    final int svLeft;
+    final int svTop;
+    final int svRight;
+    final int svBottom;
+
+    AppliedLegacySurfaceState(
+        @NonNull SurfaceControl sc,
+        @NonNull Rect localCrop,
+        float effectiveAlpha,
+        @NonNull SurfaceView sv) {
+      this.surfaceControlRef = new WeakReference<>(sc);
+      this.localCrop = new Rect(localCrop);
+      this.effectiveAlpha = effectiveAlpha;
+      this.svLeft = sv.getLeft();
+      this.svTop = sv.getTop();
+      this.svRight = sv.getRight();
+      this.svBottom = sv.getBottom();
+    }
+
+    boolean matches(
+        @NonNull SurfaceControl sc, @NonNull Rect crop, float alpha, @NonNull SurfaceView sv) {
+      return surfaceControlRef.get() == sc
+          && Float.compare(effectiveAlpha, alpha) == 0
+          && svLeft == sv.getLeft()
+          && svTop == sv.getTop()
+          && svRight == sv.getRight()
+          && svBottom == sv.getBottom()
+          && localCrop.equals(crop);
+    }
+  }
+
+  // Static listener holding only WeakReferences to avoid strong value->key cycles in WeakHashMap.
+  // Re-asserts our SurfaceControl crop/alpha whenever SurfaceView relayouts and resets its own
+  // SurfaceControl state inside SurfaceView.updateSurface().
+  @RequiresApi(API_LEVELS.API_29)
+  private static final class LegacySurfaceLayoutListener implements View.OnLayoutChangeListener {
+    private final WeakReference<PlatformViewsController> controllerRef;
+    private final WeakReference<SurfaceView> surfaceViewRef;
+    private WeakReference<View> rootEmbeddedViewRef;
+    private int pvX;
+    private int pvY;
+    private int pvWidth;
+    private int pvHeight;
+    private FlutterMutatorsStack mutatorsStack;
+
+    LegacySurfaceLayoutListener(
+        @NonNull PlatformViewsController controller,
+        @NonNull SurfaceView surfaceView,
+        @NonNull View rootEmbeddedView,
+        int pvX,
+        int pvY,
+        int pvWidth,
+        int pvHeight,
+        @NonNull FlutterMutatorsStack mutatorsStack) {
+      this.controllerRef = new WeakReference<>(controller);
+      this.surfaceViewRef = new WeakReference<>(surfaceView);
+      updateParams(rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+    }
+
+    void updateParams(
+        @NonNull View rootEmbeddedView,
+        int pvX,
+        int pvY,
+        int pvWidth,
+        int pvHeight,
+        @NonNull FlutterMutatorsStack mutatorsStack) {
+      this.rootEmbeddedViewRef = new WeakReference<>(rootEmbeddedView);
+      this.pvX = pvX;
+      this.pvY = pvY;
+      this.pvWidth = pvWidth;
+      this.pvHeight = pvHeight;
+      this.mutatorsStack = mutatorsStack;
+    }
+
+    @Override
+    public void onLayoutChange(
+        View v,
+        int left,
+        int top,
+        int right,
+        int bottom,
+        int oldLeft,
+        int oldTop,
+        int oldRight,
+        int oldBottom) {
+      final PlatformViewsController controller = controllerRef.get();
+      final SurfaceView surfaceView = surfaceViewRef.get();
+      final View rootEmbeddedView = rootEmbeddedViewRef.get();
+      if (controller == null || surfaceView == null || rootEmbeddedView == null) {
+        if (surfaceView != null) {
+          surfaceView.removeOnLayoutChangeListener(this);
+        }
+        return;
+      }
+      // SurfaceView.layout() runs updateSurface() before firing OnLayoutChangeListeners, which may
+      // overwrite the SurfaceControl's alpha/crop with the SurfaceView's own values even if layout
+      // bounds matched the cached state. Drop the cached entry so applyLegacyHcClipToSurfaceView
+      // unconditionally re-asserts the combined crop and alpha.
+      controller.appliedLegacySurfaceStates.remove(surfaceView);
+      controller.applyLegacyHcClipToSurfaceView(
+          surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+    }
+  }
+
+  private final WeakHashMap<SurfaceView, SurfaceHolder.Callback> pendingLegacySurfaceCallbacks =
+      new WeakHashMap<>();
+  private final WeakHashMap<SurfaceView, LegacySurfaceLayoutListener> pendingLegacyLayoutListeners =
+      new WeakHashMap<>();
+  private final WeakHashMap<SurfaceView, AppliedLegacySurfaceState> appliedLegacySurfaceStates =
+      new WeakHashMap<>();
+
+  private void cleanupLegacySurfaceViewCallbacks(@Nullable View current) {
+    if (current == null) {
+      return;
+    }
+    if (current instanceof SurfaceView) {
+      final SurfaceView sv = (SurfaceView) current;
+      appliedLegacySurfaceStates.remove(sv);
+      final LegacySurfaceLayoutListener layoutListener = pendingLegacyLayoutListeners.remove(sv);
+      if (layoutListener != null) {
+        sv.removeOnLayoutChangeListener(layoutListener);
+      }
+      final SurfaceHolder.Callback cb = pendingLegacySurfaceCallbacks.remove(sv);
+      if (cb != null && sv.getHolder() != null) {
+        sv.getHolder().removeCallback(cb);
+      }
+      return;
+    }
+    if (current instanceof ViewGroup) {
+      final ViewGroup group = (ViewGroup) current;
+      final int childCount = group.getChildCount();
+      for (int i = 0; i < childCount; i++) {
+        cleanupLegacySurfaceViewCallbacks(group.getChildAt(i));
+      }
+    }
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  private void applyClipsToSurfaceViewsInLegacyHc(
+      @Nullable View current,
+      @NonNull View rootEmbeddedView,
+      int pvX,
+      int pvY,
+      int pvWidth,
+      int pvHeight,
+      @NonNull FlutterMutatorsStack mutatorsStack) {
+    if (current == null) {
+      return;
+    }
+    if (current instanceof SurfaceView) {
+      applyLegacyHcClipToSurfaceView(
+          (SurfaceView) current, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      return;
+    }
+    if (current instanceof ViewGroup) {
+      final ViewGroup group = (ViewGroup) current;
+      final int childCount = group.getChildCount();
+      for (int i = 0; i < childCount; i++) {
+        applyClipsToSurfaceViewsInLegacyHc(
+            group.getChildAt(i), rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      }
+    }
+  }
+
+  // Static callback holding only WeakReferences to avoid strong value->key cycles in WeakHashMap.
+  @RequiresApi(API_LEVELS.API_29)
+  private static final class PendingLegacySurfaceClipCallback implements SurfaceHolder.Callback {
+    private final WeakReference<PlatformViewsController> controllerRef;
+    private final WeakReference<SurfaceView> surfaceViewRef;
+    private final WeakReference<View> rootEmbeddedViewRef;
+    private final int pvX;
+    private final int pvY;
+    private final int pvWidth;
+    private final int pvHeight;
+    private final FlutterMutatorsStack mutatorsStack;
+
+    PendingLegacySurfaceClipCallback(
+        @NonNull PlatformViewsController controller,
+        @NonNull SurfaceView surfaceView,
+        @NonNull View rootEmbeddedView,
+        int pvX,
+        int pvY,
+        int pvWidth,
+        int pvHeight,
+        @NonNull FlutterMutatorsStack mutatorsStack) {
+      this.controllerRef = new WeakReference<>(controller);
+      this.surfaceViewRef = new WeakReference<>(surfaceView);
+      this.rootEmbeddedViewRef = new WeakReference<>(rootEmbeddedView);
+      this.pvX = pvX;
+      this.pvY = pvY;
+      this.pvWidth = pvWidth;
+      this.pvHeight = pvHeight;
+      this.mutatorsStack = mutatorsStack;
+    }
+
+    @Override
+    public void surfaceCreated(@NonNull SurfaceHolder h) {
+      final PlatformViewsController controller = controllerRef.get();
+      final SurfaceView surfaceView = surfaceViewRef.get();
+      final View rootEmbeddedView = rootEmbeddedViewRef.get();
+      if (controller != null && surfaceView != null) {
+        controller.pendingLegacySurfaceCallbacks.remove(surfaceView);
+      }
+      h.removeCallback(this);
+      if (controller != null && surfaceView != null && rootEmbeddedView != null) {
+        controller.applyLegacyHcClipToSurfaceView(
+            surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+        if (controller.flutterJNI != null) {
+          controller.flutterJNI.scheduleFrame();
+        }
+      }
+    }
+
+    @Override
+    public void surfaceChanged(@NonNull SurfaceHolder h, int format, int width, int height) {}
+
+    @Override
+    public void surfaceDestroyed(@NonNull SurfaceHolder h) {
+      final PlatformViewsController controller = controllerRef.get();
+      final SurfaceView surfaceView = surfaceViewRef.get();
+      if (controller != null && surfaceView != null) {
+        controller.pendingLegacySurfaceCallbacks.remove(surfaceView);
+        controller.appliedLegacySurfaceStates.remove(surfaceView);
+      }
+      h.removeCallback(this);
+    }
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  @VisibleForTesting
+  void applyLegacySurfaceTransaction(
+      @NonNull SurfaceControl sc, float effectiveAlpha, @NonNull Rect localCrop) {
+    final SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
+    SurfaceControl.Transaction unused = tx.setAlpha(sc, effectiveAlpha);
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_33) {
+      tx.setCrop(sc, localCrop);
+    }
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_31 && flutterView != null) {
+      final AttachedSurfaceControl rsc = flutterView.getRootSurfaceControl();
+      if (rsc != null && rsc.applyTransactionOnDraw(tx)) {
+        // Do NOT close `tx` here. On Android 12-13 (API 31-33),
+        // ViewRootImpl.applyTransactionOnDraw(tx) retains the Java Transaction reference inside
+        // an asynchronous FrameDrawingCallback executed on RenderThread (hwuiTask0); closing `tx`
+        // synchronously zeroes `mNativeObject` and triggers a SIGSEGV in BLASTBufferQueue.
+        return;
+      }
+    }
+    try {
+      tx.apply();
+    } finally {
+      tx.close();
+    }
+  }
+
+  @RequiresApi(API_LEVELS.API_29)
+  private void applyLegacyHcClipToSurfaceView(
+      @NonNull final SurfaceView surfaceView,
+      @NonNull final View rootEmbeddedView,
+      final int pvX,
+      final int pvY,
+      final int pvWidth,
+      final int pvHeight,
+      @NonNull final FlutterMutatorsStack mutatorsStack) {
+    final LegacySurfaceLayoutListener existingLayoutListener =
+        pendingLegacyLayoutListeners.get(surfaceView);
+    if (existingLayoutListener != null) {
+      existingLayoutListener.updateParams(
+          rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+    } else {
+      final LegacySurfaceLayoutListener newLayoutListener =
+          new LegacySurfaceLayoutListener(
+              this, surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      pendingLegacyLayoutListeners.put(surfaceView, newLayoutListener);
+      surfaceView.addOnLayoutChangeListener(newLayoutListener);
+    }
+
+    final SurfaceControl sc = surfaceView.getSurfaceControl();
+    if (sc == null) {
+      final SurfaceHolder holder = surfaceView.getHolder();
+      if (holder == null || pendingLegacySurfaceCallbacks.containsKey(surfaceView)) {
+        return;
+      }
+      final SurfaceHolder.Callback cb =
+          new PendingLegacySurfaceClipCallback(
+              this, surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+      pendingLegacySurfaceCallbacks.put(surfaceView, cb);
+      holder.addCallback(cb);
+      return;
+    }
+    if (!sc.isValid()) {
+      return;
+    }
+    final Rect localCrop =
+        PlatformViewsController2.computeLocalSurfaceViewCrop(
+            surfaceView, rootEmbeddedView, pvX, pvY, pvWidth, pvHeight, mutatorsStack);
+    final float effectiveAlpha =
+        PlatformViewsController2.computeEffectiveSurfaceViewAlpha(
+            surfaceView, rootEmbeddedView, localCrop, mutatorsStack);
+    final AppliedLegacySurfaceState previous = appliedLegacySurfaceStates.get(surfaceView);
+    if (previous != null && previous.matches(sc, localCrop, effectiveAlpha, surfaceView)) {
+      return;
+    }
+    appliedLegacySurfaceStates.put(
+        surfaceView, new AppliedLegacySurfaceState(sc, localCrop, effectiveAlpha, surfaceView));
+    applyLegacySurfaceTransaction(sc, effectiveAlpha, localCrop);
   }
 
   /**
@@ -1366,6 +1927,29 @@ public class PlatformViewsController implements PlatformViewsAccessibilityDelega
     for (int i = 0; i < platformViewParent.size(); i++) {
       final int viewId = platformViewParent.keyAt(i);
       final View parentView = platformViewParent.get(viewId);
+      if (parentView instanceof PlatformViewWrapper) {
+        final PlatformViewWrapper wrapper = (PlatformViewWrapper) parentView;
+        if (wrapper.isCaptureToTextureMode()) {
+          // Still serving TextureLayer frames while waiting for the framework to rebuild with
+          // PlatformViewLayer; keep visible and retain the render target.
+          continue;
+        }
+        if (currentFrameUsedPlatformViewIds.contains(viewId)
+            && (isFrameRenderedUsingImageReaders
+                || !synchronizeToNativeViewHierarchy
+                || !flutterViewConvertedToImageView)) {
+          parentView.setVisibility(View.VISIBLE);
+          if (pendingRenderTargetReleases.remove(wrapper)) {
+            wrapper.release();
+          }
+          continue;
+        }
+        if (wrapper.hasActiveRenderTarget()) {
+          // Keep the upgrading wrapper visible until the first synchronized HC frame acquires an
+          // image so descendant SurfaceViews do not transiently lose visibility (surfaceDestroyed).
+          continue;
+        }
+      }
 
       // This should only show platform views that are rendered in this frame and either:
       //  1. Surface has images available in this frame or,

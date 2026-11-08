@@ -83,6 +83,7 @@ class AndroidView extends StatefulWidget {
     this.creationParams,
     this.creationParamsCodec,
     this.clipBehavior = Clip.hardEdge,
+    this.preferTexture = false,
   }) : assert(creationParams == null || creationParamsCodec != null);
 
   /// The unique identifier for Android view type to be embedded by this widget.
@@ -195,6 +196,11 @@ class AndroidView extends StatefulWidget {
   ///
   /// Defaults to [Clip.hardEdge].
   final Clip clipBehavior;
+
+  /// Whether to prefer texture layer composition when no `SurfaceView` is
+  /// present in the platform view hierarchy, overriding plugin native
+  /// composition hints and engine-wide HCPP upgrade settings.
+  final bool preferTexture;
 
   @override
   State<AndroidView> createState() => _AndroidViewState();
@@ -796,6 +802,7 @@ class _AndroidViewState extends State<AndroidView> {
       layoutDirection: _layoutDirection!,
       creationParams: widget.creationParams,
       creationParamsCodec: widget.creationParamsCodec,
+      preferTexture: widget.preferTexture,
       onFocus: () {
         _focusNode!.requestFocus();
       },
@@ -1516,6 +1523,7 @@ class _AndroidViewSurfaceState extends State<AndroidViewSurface> {
   @override
   void initState() {
     super.initState();
+    widget.controller.addOnCompositionModeChangedListener(_onCompositionModeChanged);
     if (!widget.controller.isCreated) {
       // Schedule a rebuild once creation is complete and the final display
       // type is known.
@@ -1524,9 +1532,31 @@ class _AndroidViewSurfaceState extends State<AndroidViewSurface> {
   }
 
   @override
+  void didUpdateWidget(AndroidViewSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeOnCompositionModeChangedListener(_onCompositionModeChanged);
+      if (!oldWidget.controller.isCreated) {
+        oldWidget.controller.removeOnPlatformViewCreatedListener(_onPlatformViewCreated);
+      }
+      widget.controller.addOnCompositionModeChangedListener(_onCompositionModeChanged);
+      if (!widget.controller.isCreated) {
+        widget.controller.addOnPlatformViewCreatedListener(_onPlatformViewCreated);
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    widget.controller.removeOnCompositionModeChangedListener(_onCompositionModeChanged);
     widget.controller.removeOnPlatformViewCreatedListener(_onPlatformViewCreated);
     super.dispose();
+  }
+
+  void _onCompositionModeChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override

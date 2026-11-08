@@ -6,6 +6,10 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_EXTERNAL_VIEW_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_2_H_
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <unordered_map>
 
 #include "flutter/common/task_runners.h"
@@ -139,6 +143,47 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
 
   // The set of platform views that were visible in the last frame.
   absl::flat_hash_set<int64_t> views_visible_last_frame_;
+
+  // Tracks platform-thread tasks posted by synced/cleanup frames that have not
+  // yet completed `onEndFrame2()`. Shared with posted lambdas so decrements
+  // remain safe across teardown, and supports bounded raster-thread waits when
+  // transitioning back to the 0-PV fast path.
+  struct PendingPlatformEndFrames {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::atomic<int> count{0};
+
+    bool HasPending() const {
+      return count.load(std::memory_order_acquire) > 0;
+    }
+
+    void Increment() { count.fetch_add(1, std::memory_order_acq_rel); }
+
+    void DecrementAndNotify() {
+      if (count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> lock(mutex);
+        cv.notify_all();
+      }
+    }
+
+    bool WaitUntilZero(std::chrono::milliseconds timeout) {
+      if (!HasPending()) {
+        return true;
+      }
+      std::unique_lock<std::mutex> lock(mutex);
+      return cv.wait_for(lock, timeout, [&]() { return !HasPending(); });
+    }
+  };
+
+  std::shared_ptr<PendingPlatformEndFrames> pending_platform_end_frames_ =
+      std::make_shared<PendingPlatformEndFrames>();
+
+  // Raster-thread-only flag (updated in SubmitFlutterView and reset in
+  // DestroySurfaces, which also runs on the raster thread) tracking whether any
+  // previously submitted UI-synced frame may still have transactions waiting to
+  // commit to SurfaceFlinger via `PlatformViewsController2`. Avoids JNI calls
+  // on steady-state 0-PV frames once all synced transactions have committed.
+  bool synced_transactions_maybe_pending_ = false;
 
   // Destroys the surfaces created from the surface factory.
   // This method schedules a task on the platform thread, and waits for

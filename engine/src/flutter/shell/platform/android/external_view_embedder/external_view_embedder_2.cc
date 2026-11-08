@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "display_list/dl_color.h"
@@ -94,11 +95,80 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   TRACE_EVENT0("flutter", "AndroidExternalViewEmbedder2::SubmitFlutterView");
 
   if (!FrameHasPlatformLayers()) {
+    if (views_visible_last_frame_.empty()) {
+      const bool on_platform_thread =
+          task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread();
+      int64_t remaining_tx_wait_ms = 32;
+      bool end_frames_drained = !pending_platform_end_frames_->HasPending();
+      if (!on_platform_thread && !end_frames_drained) {
+        // Wait for any in-flight cleanup UI task (which hides the overlay and
+        // posts `onEndFrame2()`) to finish before checking overlay/pending
+        // transaction state so we neither overtake it nor create a new synced
+        // frame that perpetuates Choreographer traversal staging.
+        const auto wait_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(32);
+        TRACE_EVENT0(
+            "flutter",
+            "AndroidExternalViewEmbedder2::WaitForPendingPlatformEndFrames");
+        end_frames_drained = pending_platform_end_frames_->WaitUntilZero(
+            std::chrono::milliseconds(32));
+        if (end_frames_drained) {
+          const auto now = std::chrono::steady_clock::now();
+          remaining_tx_wait_ms =
+              now < wait_deadline
+                  ? std::max<int64_t>(
+                        1,
+                        (std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             wait_deadline - now)
+                             .count() +
+                         999999) /
+                            1000000)
+                  : int64_t{1};
+        }
+      }
+      if (end_frames_drained && !overlay_layer_is_shown_.load()) {
+        if (!on_platform_thread) {
+          if (synced_transactions_maybe_pending_) {
+            TRACE_EVENT0(
+                "flutter",
+                "AndroidExternalViewEmbedder2::WaitForPendingTransactions");
+            // Only switch to the decoupled fast path once SurfaceFlinger has
+            // committed the last UI-synced transaction. On timeout (e.g. busy
+            // UI/RenderThread or paused window), keep
+            // `synced_transactions_maybe_pending_` true and stay on the
+            // UI-synced path so this frame cannot overtake Frame N.
+            if (jni_facade_->waitForPendingTransactions2(
+                    remaining_tx_wait_ms)) {
+              synced_transactions_maybe_pending_ = false;
+            }
+          }
+        } else if (synced_transactions_maybe_pending_ &&
+                   !jni_facade_->areTransactionsPending2()) {
+          synced_transactions_maybe_pending_ = false;
+        }
+
+        if (!synced_transactions_maybe_pending_) {
+          // Fast path when no HCPP PlatformViewLayers are active and all prior
+          // UI-synced SurfaceControl transactions have committed to
+          // SurfaceFlinger: present directly from the raster thread via an
+          // owned native ASurfaceTransaction without JNI or UI-thread coupling.
+          jni_facade_->SetTransactionsSyncedWithPlatformViews(false);
+          frame->Submit();
+          return;
+        }
+      }
+    }
+
+    synced_transactions_maybe_pending_ = true;
+    jni_facade_->SetTransactionsSyncedWithPlatformViews(true);
     frame->Submit();
+    jni_facade_->SetTransactionsSyncedWithPlatformViews(false);
     jni_facade_->sealFrameTransactions();
+    pending_platform_end_frames_->Increment();
     task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
         [this, jni_facade = jni_facade_,
-         views_visible_last_frame = views_visible_last_frame_]() {
+         views_visible_last_frame = views_visible_last_frame_,
+         pending_end_frames = pending_platform_end_frames_]() {
           // This pointer is guaranteed to not be dangling as long as
           // DestroySurfaces is called before the embedder is deleted. See
           // https://github.com/flutter/flutter/pull/176742#discussion_r2415229396.
@@ -109,6 +179,7 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
 
           jni_facade->swapTransaction();
           jni_facade->onEndFrame2();
+          pending_end_frames->DecrementAndNotify();
         }));
     views_visible_last_frame_.clear();
     return;
@@ -179,6 +250,8 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       overlay_canvas->RestoreToCount(restore_count);
     }
   }
+  synced_transactions_maybe_pending_ = true;
+  jni_facade_->SetTransactionsSyncedWithPlatformViews(true);
   bool overlay_layer_has_content_this_frame_;
   if (overlay_frame != nullptr) {
     overlay_frame->set_submit_info({.frame_boundary = false});
@@ -189,15 +262,18 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
   }
 
   frame->Submit();
+  jni_facade_->SetTransactionsSyncedWithPlatformViews(false);
   // Every path that posts a platform task calling swapTransaction() must call
   // sealFrameTransactions() once to keep the per-frame queue paired 1:1.
   jni_facade_->sealFrameTransactions();
+  pending_platform_end_frames_->Increment();
   task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
       [&, composition_order = composition_order_, view_params = view_params_,
        jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
        slices = std::move(slices_),
        views_visible_last_frame = views_visible_last_frame_,
-       overlay_layer_has_content_this_frame_]() mutable -> void {
+       overlay_layer_has_content_this_frame_,
+       pending_end_frames = pending_platform_end_frames_]() mutable -> void {
         if (overlay_layer_has_content_this_frame_) {
           ShowOverlayLayerIfNeeded();
         } else {
@@ -229,7 +305,8 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         }
 
         jni_facade->swapTransaction();
-        jni_facade_->onEndFrame2();
+        jni_facade->onEndFrame2();
+        pending_end_frames->DecrementAndNotify();
       }));
 
   views_visible_last_frame_.clear();
@@ -308,17 +385,21 @@ void AndroidExternalViewEmbedder2::Teardown() {
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder2::DestroySurfaces() {
-  if (!surface_pool_->HasLayers()) {
+  const bool has_layers = surface_pool_->HasLayers();
+  if (!has_layers && !pending_platform_end_frames_->HasPending()) {
     return;
   }
   fml::AutoResetWaitableEvent latch;
-  fml::TaskRunner::RunNowOrPostTask(task_runners_.GetPlatformTaskRunner(),
-                                    [&]() {
-                                      surface_pool_->DestroyLayers(jni_facade_);
-                                      latch.Signal();
-                                    });
+  fml::TaskRunner::RunNowOrPostTask(
+      task_runners_.GetPlatformTaskRunner(), [&]() {
+        if (has_layers) {
+          surface_pool_->DestroyLayers(jni_facade_);
+        }
+        latch.Signal();
+      });
   latch.Wait();
   overlay_layer_is_shown_.store(false);
+  synced_transactions_maybe_pending_ = false;
 }
 
 void AndroidExternalViewEmbedder2::ShowOverlayLayerIfNeeded() {

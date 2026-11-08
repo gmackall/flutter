@@ -13,6 +13,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.FlutterInjector;
 import io.flutter.Log;
+import io.flutter.embedding.android.FlutterActivityLaunchConfigs;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.dart.DartExecutor.DartEntrypoint;
 import io.flutter.embedding.engine.deferredcomponents.DeferredComponentManager;
@@ -392,8 +393,12 @@ public class FlutterEngine implements ViewUtils.DisplayUpdater {
     PlatformViewsController2 platformViewsController2 = new PlatformViewsController2();
     platformViewsController2.setRegistry(platformViewsController.getRegistry());
     platformViewsController2.setFlutterJNI(flutterJNI);
+    if (FlutterActivityLaunchConfigs.shouldUpgradeAllViewsToHcpp(context, null)) {
+      platformViewsController2.setUpgradeAllViewsToHcpp(true);
+    }
 
     platformViewsController.setFlutterJNI(flutterJNI);
+    platformViewsController.setPlatformViewsController2(platformViewsController2);
 
     flutterJNI.addEngineLifecycleListener(engineLifecycleListener);
     flutterJNI.setPlatformViewsController(platformViewsController);

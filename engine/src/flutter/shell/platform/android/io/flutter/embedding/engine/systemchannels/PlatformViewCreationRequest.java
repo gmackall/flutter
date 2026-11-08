@@ -58,19 +58,27 @@ public class PlatformViewCreationRequest {
 
   public final RequestedDisplayMode displayMode;
 
+  /**
+   * Whether the caller explicitly requested texture composition (overriding {@code
+   * PlatformView#requiresNativeComposition()} and {@code HcppUpgradeAllViews} when no {@link
+   * android.view.SurfaceView} is present).
+   */
+  public final boolean preferTexture;
+
   /** Custom parameters that are unique to the desired platform view. */
   @Nullable public final ByteBuffer params;
 
   // Restrict primary constructor to private to enforce static factory usage.
   public static PlatformViewCreationRequest createHCPPRequest(
       int viewId, String viewType, int direction, ByteBuffer params) {
-    return new PlatformViewCreationRequest(viewId, viewType, 0, 0, 0, 0, direction, null, params);
+    return new PlatformViewCreationRequest(
+        viewId, viewType, 0, 0, 0, 0, direction, null, false, params);
   }
 
   public static PlatformViewCreationRequest createHybridCompositionRequest(
       int viewId, String viewType, int direction, ByteBuffer params) {
     return new PlatformViewCreationRequest(
-        viewId, viewType, 0, 0, 0, 0, direction, RequestedDisplayMode.HYBRID_ONLY, params);
+        viewId, viewType, 0, 0, 0, 0, direction, RequestedDisplayMode.HYBRID_ONLY, false, params);
   }
 
   public static PlatformViewCreationRequest createTLHCWithFallbackRequest(
@@ -83,6 +91,21 @@ public class PlatformViewCreationRequest {
       int direction,
       boolean hybridFallback,
       ByteBuffer params) {
+    return createTLHCWithFallbackRequest(
+        viewId, viewType, top, left, width, height, direction, hybridFallback, false, params);
+  }
+
+  public static PlatformViewCreationRequest createTLHCWithFallbackRequest(
+      int viewId,
+      String viewType,
+      double top,
+      double left,
+      double width,
+      double height,
+      int direction,
+      boolean hybridFallback,
+      boolean preferTexture,
+      ByteBuffer params) {
     return new PlatformViewCreationRequest(
         viewId,
         viewType,
@@ -94,6 +117,7 @@ public class PlatformViewCreationRequest {
         hybridFallback
             ? RequestedDisplayMode.TEXTURE_WITH_HYBRID_FALLBACK
             : RequestedDisplayMode.TEXTURE_WITH_VIRTUAL_FALLBACK,
+        preferTexture,
         params);
   }
 
@@ -120,6 +144,7 @@ public class PlatformViewCreationRequest {
         logicalHeight,
         direction,
         RequestedDisplayMode.TEXTURE_WITH_VIRTUAL_FALLBACK,
+        false,
         params);
   }
 
@@ -136,6 +161,7 @@ public class PlatformViewCreationRequest {
       double logicalHeight,
       int direction,
       @Nullable RequestedDisplayMode displayMode,
+      boolean preferTexture,
       @Nullable ByteBuffer params) {
     this.viewId = viewId;
     this.viewType = viewType;
@@ -145,6 +171,7 @@ public class PlatformViewCreationRequest {
     this.logicalHeight = logicalHeight;
     this.direction = direction;
     this.displayMode = displayMode;
+    this.preferTexture = preferTexture;
     this.params = params;
   }
 }

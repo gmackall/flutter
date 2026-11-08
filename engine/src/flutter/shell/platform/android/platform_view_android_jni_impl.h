@@ -157,6 +157,10 @@ class PlatformViewAndroidJNIImpl final : public PlatformViewAndroidJNI {
 
   void onEndFrame2() override;
 
+  bool areTransactionsPending2() override;
+
+  bool waitForPendingTransactions2(int64_t timeout_ms) override;
+
   void MaybeResizeSurfaceView(int32_t width, int32_t height) const override;
 
  private:

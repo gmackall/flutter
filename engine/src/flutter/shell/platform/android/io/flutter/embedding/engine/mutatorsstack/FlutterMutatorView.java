@@ -14,6 +14,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityEvent;
@@ -24,6 +25,9 @@ import androidx.annotation.VisibleForTesting;
 import io.flutter.embedding.android.AndroidTouchProcessor;
 import io.flutter.plugin.platform.PlatformViewGestureTracker;
 import io.flutter.util.ViewUtils;
+import java.util.Collections;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * A view that applies the {@link io.flutter.embedding.engine.mutatorsstack.FlutterMutatorsStack} to
@@ -35,9 +39,25 @@ public class FlutterMutatorView extends FrameLayout {
   private int left;
   private int top;
 
-  private final AndroidTouchProcessor androidTouchProcessor;
+  @Nullable private AndroidTouchProcessor androidTouchProcessor;
   private final PlatformViewGestureTracker gestureTracker = new PlatformViewGestureTracker();
   private Paint paint;
+  private boolean descendantSurfaceViewDirty = true;
+  private boolean cachedHasDescendantSurfaceView = false;
+  private final Set<SurfaceView> trackedSurfaceViews =
+      Collections.newSetFromMap(new WeakHashMap<>());
+  private final View.OnAttachStateChangeListener surfaceViewDetachListener =
+      new View.OnAttachStateChangeListener() {
+        @Override
+        public void onViewAttachedToWindow(@NonNull View v) {}
+
+        @Override
+        public void onViewDetachedFromWindow(@NonNull View v) {
+          v.removeOnAttachStateChangeListener(this);
+          trackedSurfaceViews.remove(v);
+          descendantSurfaceViewDirty = true;
+        }
+      };
 
   /**
    * Initialize the FlutterMutatorView. Use this to set the screenDensity, which will be used to
@@ -58,7 +78,23 @@ public class FlutterMutatorView extends FrameLayout {
     this(context, 1, /* androidTouchProcessor=*/ null);
   }
 
+  /** Sets the touch processor that allows intercepting gestures. */
+  public void setTouchProcessor(@Nullable AndroidTouchProcessor newTouchProcessor) {
+    this.androidTouchProcessor = newTouchProcessor;
+  }
+
+  /** Updates the screen density used to scale the mutator matrix. */
+  public void setScreenDensity(float screenDensity) {
+    this.screenDensity = screenDensity;
+  }
+
   @Nullable @VisibleForTesting ViewTreeObserver.OnGlobalFocusChangeListener activeFocusListener;
+
+  @Nullable
+  @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
+  protected ViewTreeObserver.OnGlobalFocusChangeListener getActiveFocusListener() {
+    return activeFocusListener;
+  }
 
   /**
    * Sets a focus change listener that notifies when the current view or any of its descendant views
@@ -112,8 +148,101 @@ public class FlutterMutatorView extends FrameLayout {
     setWillNotDraw(false);
   }
 
+  private void trackSurfaceViewDetach(@NonNull SurfaceView sv) {
+    if (trackedSurfaceViews.add(sv)) {
+      sv.addOnAttachStateChangeListener(surfaceViewDetachListener);
+    }
+  }
+
+  /** Marks the cached descendant {@link SurfaceView} state as present without re-scanning. */
+  protected void markDescendantSurfaceViewPresent(@Nullable SurfaceView sv) {
+    cachedHasDescendantSurfaceView = true;
+    if (sv != null) {
+      trackSurfaceViewDetach(sv);
+      descendantSurfaceViewDirty = !(isAttachedToWindow() && isLaidOut() && !isLayoutRequested());
+    } else {
+      descendantSurfaceViewDirty = true;
+    }
+  }
+
+  @VisibleForTesting
+  public boolean isDescendantSurfaceViewCacheDirty() {
+    return descendantSurfaceViewDirty;
+  }
+
+  /**
+   * Returns true if this container currently holds at least one descendant {@link SurfaceView}.
+   *
+   * <p>Once attached to a window and laid out with no pending layout request, the result is cached
+   * across draws and invalidated only on view hierarchy/layout/transparent-region changes or
+   * tracked {@link SurfaceView} detachment—never on ordinary child invalidations (e.g. {@code
+   * WebView} scrolling/redraws).
+   */
+  public boolean hasDescendantSurfaceView() {
+    final boolean canUseCache = isAttachedToWindow() && isLaidOut() && !isLayoutRequested();
+    if (descendantSurfaceViewDirty || !canUseCache) {
+      final boolean[] found = new boolean[] {false};
+      ViewUtils.traverseHierarchy(
+          this,
+          view -> {
+            if (view instanceof SurfaceView) {
+              found[0] = true;
+              trackSurfaceViewDetach((SurfaceView) view);
+            }
+            return false;
+          });
+      cachedHasDescendantSurfaceView = found[0];
+      descendantSurfaceViewDirty = !canUseCache;
+    }
+    return cachedHasDescendantSurfaceView;
+  }
+
+  @Override
+  protected void onAttachedToWindow() {
+    super.onAttachedToWindow();
+    descendantSurfaceViewDirty = true;
+  }
+
+  @Override
+  protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+    super.onLayout(changed, left, top, right, bottom);
+    if (!cachedHasDescendantSurfaceView) {
+      descendantSurfaceViewDirty = true;
+    }
+  }
+
+  @Override
+  public void onViewAdded(View child) {
+    super.onViewAdded(child);
+    descendantSurfaceViewDirty = true;
+  }
+
+  @Override
+  public void onViewRemoved(View child) {
+    super.onViewRemoved(child);
+    descendantSurfaceViewDirty = true;
+  }
+
+  @Override
+  public void requestTransparentRegion(@Nullable View child) {
+    super.requestTransparentRegion(child);
+    if (child instanceof SurfaceView) {
+      markDescendantSurfaceViewPresent((SurfaceView) child);
+    } else {
+      descendantSurfaceViewDirty = true;
+    }
+  }
+
+  protected boolean shouldApplyMutators() {
+    return mutatorsStack != null;
+  }
+
   @Override
   public void draw(Canvas canvas) {
+    if (!shouldApplyMutators()) {
+      super.draw(canvas);
+      return;
+    }
     // Apply all clippings on the parent canvas.
     canvas.save();
     for (Path path : mutatorsStack.getFinalClippingPaths()) {
@@ -128,11 +257,24 @@ public class FlutterMutatorView extends FrameLayout {
       canvas.clipPath(pathCopy);
     }
 
-    int newAlpha = (int) (255 * mutatorsStack.getFinalOpacity());
-    boolean shouldApplyOpacity = paint.getAlpha() != newAlpha;
-    if (shouldApplyOpacity) {
-      paint.setAlpha((int) (255 * mutatorsStack.getFinalOpacity()));
-      this.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+    // Avoid an offscreen hardware layer when a descendant SurfaceView is present: a
+    // LAYER_TYPE_HARDWARE FBO intercepts SurfaceView's PorterDuff.Mode.CLEAR hole punch instead of
+    // clearing through the root window buffer (e.g. over FlutterImageView in Legacy HC). Note that
+    // SurfaceView opacity is applied via SurfaceControl.Transaction.setAlpha, whereas
+    // non-SurfaceView
+    // sibling views sharing the same platform view container render at full alpha without an FBO.
+    if (hasDescendantSurfaceView()) {
+      if (getLayerType() != View.LAYER_TYPE_NONE) {
+        paint.setAlpha(255);
+        this.setLayerType(View.LAYER_TYPE_NONE, null);
+      }
+    } else {
+      int newAlpha = (int) (255 * mutatorsStack.getFinalOpacity());
+      boolean shouldApplyOpacity = paint.getAlpha() != newAlpha;
+      if (shouldApplyOpacity) {
+        paint.setAlpha(newAlpha);
+        this.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+      }
     }
 
     super.draw(canvas);
@@ -141,6 +283,10 @@ public class FlutterMutatorView extends FrameLayout {
 
   @Override
   public void dispatchDraw(Canvas canvas) {
+    if (!shouldApplyMutators()) {
+      super.dispatchDraw(canvas);
+      return;
+    }
     // Apply all the transforms on the child canvas.
     canvas.save();
 
@@ -212,12 +358,12 @@ public class FlutterMutatorView extends FrameLayout {
   }
 
   @VisibleForTesting
-  boolean isGestureActive() {
+  public boolean isGestureActive() {
     return gestureTracker.isGestureActive();
   }
 
   @VisibleForTesting
-  long getCurrentDownTime() {
+  public long getCurrentDownTime() {
     return gestureTracker.getCurrentDownTime();
   }
 
@@ -226,13 +372,17 @@ public class FlutterMutatorView extends FrameLayout {
     requestUnbufferedDispatch(event);
   }
 
+  protected void dispatchUnbufferedRequest(MotionEvent event) {
+    requestUnbuffered(event);
+  }
+
   @Override
   @SuppressLint("ClickableViewAccessibility")
   public boolean onTouchEvent(MotionEvent event) {
     if (androidTouchProcessor == null) {
       return super.onTouchEvent(event);
     }
-    gestureTracker.onTouchEvent(event, this::requestUnbuffered);
+    gestureTracker.onTouchEvent(event, this::dispatchUnbufferedRequest);
     final Matrix screenMatrix = new Matrix();
     screenMatrix.postTranslate(getLeft(), getTop());
     return androidTouchProcessor.onTouchEvent(event, screenMatrix);

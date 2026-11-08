@@ -92,6 +92,9 @@ static jfieldID g_jni_shell_holder_field = nullptr;
     "FlutterMutatorsStack;)V")                                                \
   V(g_hide_platform_view2_method, hidePlatformView2, "(I)V")                  \
   V(g_on_end_frame2_method, endFrame2, "()V")                                 \
+  V(g_are_transactions_pending2_method, areTransactionsPending2, "()Z")       \
+  V(g_wait_for_pending_transactions2_method, waitForPendingTransactions2,     \
+    "(J)Z")                                                                   \
   V(g_show_overlay_surface2_method, showOverlaySurface2, "()V")               \
   V(g_hide_overlay_surface2_method, hideOverlaySurface2, "()V")               \
   V(g_get_scaled_font_size_method, getScaledFontSize, "(FI)F")                \
@@ -2436,6 +2439,36 @@ void PlatformViewAndroidJNIImpl::onEndFrame2() {
   env->CallVoidMethod(java_object.obj(), g_on_end_frame2_method);
 
   FML_CHECK(fml::jni::CheckException(env));
+}
+
+bool PlatformViewAndroidJNIImpl::areTransactionsPending2() {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+
+  auto java_object = java_object_.get(env);
+  if (java_object.is_null()) {
+    return false;
+  }
+
+  jboolean pending = env->CallBooleanMethod(java_object.obj(),
+                                            g_are_transactions_pending2_method);
+  FML_CHECK(fml::jni::CheckException(env));
+  return pending == JNI_TRUE;
+}
+
+bool PlatformViewAndroidJNIImpl::waitForPendingTransactions2(
+    int64_t timeout_ms) {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+
+  auto java_object = java_object_.get(env);
+  if (java_object.is_null()) {
+    return true;
+  }
+
+  jboolean drained = env->CallBooleanMethod(
+      java_object.obj(), g_wait_for_pending_transactions2_method,
+      static_cast<jlong>(timeout_ms));
+  FML_CHECK(fml::jni::CheckException(env));
+  return drained == JNI_TRUE;
 }
 
 void PlatformViewAndroidJNIImpl::showOverlaySurface2() {

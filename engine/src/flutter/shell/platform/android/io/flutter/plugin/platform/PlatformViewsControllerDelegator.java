@@ -45,6 +45,7 @@ public class PlatformViewsControllerDelegator
     this.platformViewsController2 = platformViewsController2;
     this.channelHandler = channelHandler;
     this.channelHandler2 = channelHandler2;
+    this.platformViewsController.setPlatformViewsController2(platformViewsController2);
   }
 
   @Nullable
@@ -88,7 +89,9 @@ public class PlatformViewsControllerDelegator
       @NonNull PlatformViewsChannel.PlatformViewResizeRequest request,
       @NonNull PlatformViewsChannel.PlatformViewBufferResized onComplete) {
     if (platformViewsController2.getPlatformViewById(request.viewId) != null) {
-      // no op
+      onComplete.run(
+          new PlatformViewsChannel.PlatformViewBufferSize(
+              request.newLogicalWidth, request.newLogicalHeight));
     } else {
       channelHandler.resize(request, onComplete);
     }
@@ -148,6 +151,11 @@ public class PlatformViewsControllerDelegator
   @Override
   public boolean isHcppEnabled() {
     return platformViewsController2.isHcppEnabled();
+  }
+
+  @Override
+  public boolean shouldUpgradeAllViewsToHcpp() {
+    return platformViewsController2.shouldUpgradeAllViewsToHcpp();
   }
 
   // hc only

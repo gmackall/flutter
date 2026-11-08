@@ -220,6 +220,10 @@ import java.util.List;
     // TODO(camsim99): Consider creating an interface for embedding plugins that require an
     // `Activity` reference. See https://github.com/flutter/flutter/issues/164945.
     final Activity hostActivity = host.getActivity();
+    if (hostActivity != null
+        && FlutterActivityLaunchConfigs.shouldUpgradeAllViewsToHcpp(context, hostActivity)) {
+      flutterEngine.getPlatformViewsController2().setUpgradeAllViewsToHcpp(true);
+    }
     platformPlugin = host.providePlatformPlugin(hostActivity, flutterEngine);
     sensitiveContentPlugin = host.provideSensitiveContentPlugin(hostActivity, flutterEngine);
 

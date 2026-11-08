@@ -1538,6 +1538,43 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets(
+      'AndroidViewSurface switches from texture-based to view-based rendering on composition mode change',
+      (WidgetTester tester) async {
+        final controller = FakeAndroidViewController(0)..created = true;
+        final surface = AndroidViewSurface(
+          controller: controller,
+          hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+        );
+        await tester.pumpWidget(surface);
+
+        expect(
+          find.byWidgetPredicate(
+            (Widget widget) => widget.runtimeType.toString() == '_TextureBasedAndroidViewSurface',
+          ),
+          findsOneWidget,
+        );
+
+        controller.simulateCompositionModeChanged();
+        await tester.pump();
+
+        expect(
+          find.byWidgetPredicate(
+            (Widget widget) => widget.runtimeType.toString() == '_TextureBasedAndroidViewSurface',
+          ),
+          findsNothing,
+        );
+        expect(
+          find.byWidgetPredicate(
+            (Widget widget) =>
+                widget.runtimeType.toString() == '_PlatformLayerBasedAndroidViewSurface',
+          ),
+          findsOneWidget,
+        );
+      },
+    );
   });
 
   group('UiKitView', () {

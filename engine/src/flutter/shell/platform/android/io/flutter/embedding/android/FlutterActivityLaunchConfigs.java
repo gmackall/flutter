@@ -4,13 +4,17 @@
 
 package io.flutter.embedding.android;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import io.flutter.embedding.engine.loader.FlutterLoader;
+import io.flutter.util.ViewUtils;
 import java.util.List;
 
 /** Collection of Flutter launch configuration options. */
@@ -26,6 +30,15 @@ public class FlutterActivityLaunchConfigs {
       "io.flutter.embedding.android.NormalTheme";
   /* package */ static final String HANDLE_DEEPLINKING_META_DATA_KEY =
       "flutter_deeplinking_enabled";
+  /**
+   * Manifest {@code <meta-data>} key to opt into routing all standard {@code AndroidView} platform
+   * views directly to HCPP when the SurfaceControl swapchain is active, instead of the default
+   * TLHC-first strategy (which uses TLHC when no {@code SurfaceView} is present and upgrades to
+   * HCPP only when a {@code SurfaceView} or {@code PlatformView.requiresNativeComposition()} is
+   * detected). Defaults to {@code false}.
+   */
+  public static final String HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY =
+      "io.flutter.embedding.android.HcppUpgradeAllViews";
   // Intent extra arguments.
   /* package */ static final String EXTRA_DART_ENTRYPOINT = "dart_entrypoint";
   /* package */ static final String EXTRA_INITIAL_ROUTE = "route";
@@ -36,6 +49,7 @@ public class FlutterActivityLaunchConfigs {
   /* package */ static final String EXTRA_DESTROY_ENGINE_WITH_ACTIVITY =
       "destroy_engine_with_activity";
   /* package */ static final String EXTRA_ENABLE_STATE_RESTORATION = "enable_state_restoration";
+  public static final String EXTRA_HCPP_UPGRADE_ALL_VIEWS = "hcpp-upgrade-all-views";
 
   // Default configuration.
   /* package */ static final String DEFAULT_DART_ENTRYPOINT = "main";
@@ -115,6 +129,56 @@ public class FlutterActivityLaunchConfigs {
     }
 
     return metaData != null ? metaData.getString(INITIAL_ROUTE_META_DATA_KEY) : null;
+  }
+
+  /**
+   * Resolves whether {@code HcppUpgradeAllViews} is enabled from an Activity Intent extra, Activity
+   * {@code <meta-data>}, or Application {@code <meta-data>}, in that order of precedence. Defaults
+   * to {@code false} (TLHC-first for non-SurfaceView platform views).
+   */
+  public static boolean shouldUpgradeAllViewsToHcpp(
+      @Nullable Context context, @Nullable Activity activity) {
+    final Activity resolvedActivity =
+        activity != null ? activity : (context != null ? ViewUtils.getActivity(context) : null);
+    if (resolvedActivity != null) {
+      final Intent intent = resolvedActivity.getIntent();
+      if (intent != null) {
+        if (intent.hasExtra(EXTRA_HCPP_UPGRADE_ALL_VIEWS)) {
+          return intent.getBooleanExtra(EXTRA_HCPP_UPGRADE_ALL_VIEWS, false);
+        }
+        if (intent.hasExtra(HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY)) {
+          return intent.getBooleanExtra(HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY, false);
+        }
+      }
+      try {
+        final ActivityInfo activityInfo =
+            resolvedActivity
+                .getPackageManager()
+                .getActivityInfo(resolvedActivity.getComponentName(), PackageManager.GET_META_DATA);
+        if (activityInfo.metaData != null
+            && activityInfo.metaData.containsKey(HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY)) {
+          return activityInfo.metaData.getBoolean(HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY, false);
+        }
+      } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+        // Ignore and fall back to ApplicationInfo metaData.
+      }
+    }
+    if (context != null && context.getPackageManager() != null) {
+      try {
+        final ApplicationInfo appInfo =
+            context
+                .getPackageManager()
+                .getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA);
+        if (appInfo != null
+            && appInfo.metaData != null
+            && appInfo.metaData.containsKey(HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY)) {
+          return appInfo.metaData.getBoolean(HCPP_UPGRADE_ALL_VIEWS_META_DATA_KEY, false);
+        }
+      } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+        // Ignore and default to false.
+      }
+    }
+    return false;
   }
 
   private FlutterActivityLaunchConfigs() {}

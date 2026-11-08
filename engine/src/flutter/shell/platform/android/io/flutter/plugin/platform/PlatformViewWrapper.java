@@ -8,7 +8,6 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Matrix;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.os.Handler;
@@ -16,40 +15,62 @@ import android.os.Looper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
-import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
-import io.flutter.embedding.android.AndroidTouchProcessor;
+import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorView;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.util.ViewUtils;
 
 /**
- * Wraps a platform view to intercept gestures and project this view onto a {@link
- * PlatformViewRenderTarget}.
+ * Unified platform view container that starts in texture-capture mode (TLHC, projecting its child
+ * onto a {@link PlatformViewRenderTarget}) and can switch in-place without view detachment to
+ * native view composition ({@link FlutterMutatorView} for HCPP or Hybrid Composition) if a
+ * descendant {@link SurfaceView} is dynamically added.
  *
- * <p>An Android platform view is composed by the engine using a {@code TextureLayer}. The view is
- * embeded to the Android view hierarchy like a normal view, but it's projected onto a {@link
- * PlatformViewRenderTarget}, so it can be efficiently composed by the engine.
- *
- * <p>Since the view is in the Android view hierarchy, keyboard and accessibility interactions
- * behave normally.
+ * <p>Since the embedded view remains attached to this single wrapper in the Android view hierarchy
+ * across mode transitions, window attachment, {@link android.view.SurfaceHolder} state, keyboard
+ * focus, active IME {@code InputConnection}s, and accessibility interactions are preserved without
+ * interruption.
  */
-public class PlatformViewWrapper extends FrameLayout {
+public class PlatformViewWrapper extends FlutterMutatorView {
   private static final String TAG = "PlatformViewWrapper";
 
-  private AndroidTouchProcessor touchProcessor;
-  private PlatformViewRenderTarget renderTarget;
+  private static boolean hasSurfaceView(@Nullable View root) {
+    return ViewUtils.traverseHierarchy(root, view -> view instanceof SurfaceView);
+  }
 
-  private final PlatformViewGestureTracker gestureTracker = new PlatformViewGestureTracker();
+  private static void invalidateSubtree(@NonNull View view, boolean requestSurfaceViewLayout) {
+    view.invalidate();
+    if (requestSurfaceViewLayout && view instanceof SurfaceView) {
+      view.requestLayout();
+    }
+    if (view instanceof ViewGroup) {
+      final ViewGroup group = (ViewGroup) view;
+      final int count = group.getChildCount();
+      for (int i = 0; i < count; i++) {
+        invalidateSubtree(group.getChildAt(i), requestSurfaceViewLayout);
+      }
+    }
+  }
 
-  private ViewTreeObserver.OnGlobalFocusChangeListener activeFocusListener;
+  /** Listener invoked on the UI thread when a descendant {@link SurfaceView} is detected. */
+  public interface OnSurfaceViewDetectedListener {
+    void onSurfaceViewDetected();
+  }
+
+  @Nullable private PlatformViewRenderTarget renderTarget;
+  private boolean captureToTextureMode = true;
+  private boolean surfaceViewDetected = false;
+  private boolean layoutScanPending = false;
+  @Nullable private OnSurfaceViewDetectedListener onSurfaceViewDetectedListener;
 
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -58,6 +79,25 @@ public class PlatformViewWrapper extends FrameLayout {
   @Nullable private Surface pendingFrameSurface;
   @Nullable private Canvas pendingFrameCanvas;
   private final Runnable postPendingFrameRunnable = () -> postPendingFrame(true);
+  private final Runnable surfaceViewUpgradeRunnable =
+      () -> {
+        final OnSurfaceViewDetectedListener listener = onSurfaceViewDetectedListener;
+        onSurfaceViewDetectedListener = null;
+        if (captureToTextureMode && listener != null) {
+          listener.onSurfaceViewDetected();
+        }
+      };
+  private final Runnable layoutScanRunnable =
+      () -> {
+        layoutScanPending = false;
+        if (captureToTextureMode
+            && !surfaceViewDetected
+            && onSurfaceViewDetectedListener != null
+            && hasSurfaceView(this)) {
+          markDescendantSurfaceViewPresent(null);
+          scheduleSurfaceViewUpgrade();
+        }
+      };
 
   public PlatformViewWrapper(@NonNull Context context) {
     super(context);
@@ -80,13 +120,97 @@ public class PlatformViewWrapper extends FrameLayout {
     }
   }
 
+  @Override
+  protected boolean shouldApplyMutators() {
+    return !captureToTextureMode && super.shouldApplyMutators();
+  }
+
+  /** Returns true while this wrapper is capturing its child hierarchy into a texture (TLHC). */
+  public boolean isCaptureToTextureMode() {
+    return captureToTextureMode;
+  }
+
+  /** Returns true if the underlying {@link PlatformViewRenderTarget} has not yet been released. */
+  public boolean hasActiveRenderTarget() {
+    return renderTarget != null;
+  }
+
   /**
-   * Sets the touch processor that allows to intercept gestures.
-   *
-   * @param newTouchProcessor The touch processor.
+   * Registers a one-shot listener notified on the UI looper when a descendant {@link SurfaceView}
+   * is detected inside this wrapper while in texture-capture mode.
    */
-  public void setTouchProcessor(@Nullable AndroidTouchProcessor newTouchProcessor) {
-    touchProcessor = newTouchProcessor;
+  public void setOnSurfaceViewDetectedListener(@Nullable OnSurfaceViewDetectedListener listener) {
+    this.onSurfaceViewDetectedListener = listener;
+    if (captureToTextureMode && !surfaceViewDetected && listener != null && hasSurfaceView(this)) {
+      markDescendantSurfaceViewPresent(null);
+      scheduleSurfaceViewUpgrade();
+    }
+  }
+
+  private void scheduleSurfaceViewUpgrade() {
+    if (surfaceViewDetected || !captureToTextureMode) {
+      return;
+    }
+    surfaceViewDetected = true;
+    Log.w(
+        TAG,
+        "SurfaceView detected dynamically inside TLHC platform view; upgrading to native"
+            + " composition. Implement PlatformView.requiresNativeComposition() = true to avoid"
+            + " runtime transition.");
+    mainHandler.removeCallbacks(layoutScanRunnable);
+    layoutScanPending = false;
+    mainHandler.post(surfaceViewUpgradeRunnable);
+  }
+
+  /**
+   * Transitions this wrapper in-place from texture-capture mode (TLHC) to native view composition
+   * ({@link FlutterMutatorView}) without detaching the embedded child view.
+   *
+   * <p>Note: {@link #release()} is intentionally NOT called here so the last rendered texture
+   * buffer remains valid until the first native composition frame is committed.
+   */
+  public void switchToNativeViewComposition(float screenDensity) {
+    if (!captureToTextureMode) {
+      return;
+    }
+    postPendingFrame(false);
+    captureToTextureMode = false;
+    setScreenDensity(screenDensity);
+    onSurfaceViewDetectedListener = null;
+    mainHandler.removeCallbacks(surfaceViewUpgradeRunnable);
+    mainHandler.removeCallbacks(layoutScanRunnable);
+    layoutScanPending = false;
+    // Recursively invalidate all descendants (and request layout on any SurfaceView) so the
+    // Window's ThreadedRenderer re-records every child RenderNode (including SurfaceView's CLEAR
+    // hole punch and PositionUpdateListener) even when wrapper bounds do not change.
+    invalidateSubtree(this, /* requestSurfaceViewLayout= */ true);
+    final ViewParent parent = getParent();
+    if (parent instanceof View) {
+      ((View) parent).invalidate();
+    }
+  }
+
+  @Override
+  public void requestTransparentRegion(@Nullable View child) {
+    super.requestTransparentRegion(child);
+    if (captureToTextureMode && !surfaceViewDetected && onSurfaceViewDetectedListener != null) {
+      if (child instanceof SurfaceView || hasSurfaceView(this)) {
+        markDescendantSurfaceViewPresent(child instanceof SurfaceView ? (SurfaceView) child : null);
+        scheduleSurfaceViewUpgrade();
+      }
+    }
+  }
+
+  @Override
+  protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+    super.onLayout(changed, left, top, right, bottom);
+    if (captureToTextureMode
+        && !surfaceViewDetected
+        && onSurfaceViewDetectedListener != null
+        && !layoutScanPending) {
+      layoutScanPending = true;
+      mainHandler.post(layoutScanRunnable);
+    }
   }
 
   /**
@@ -161,33 +285,27 @@ public class PlatformViewWrapper extends FrameLayout {
 
   /** Releases resources. */
   public void release() {
+    onSurfaceViewDetectedListener = null;
+    mainHandler.removeCallbacks(surfaceViewUpgradeRunnable);
+    mainHandler.removeCallbacks(layoutScanRunnable);
+    layoutScanPending = false;
     // Unlock any pending canvas without scheduling a redundant engine frame for a texture that is
     // about to be released.
     postPendingFrame(false);
+    final boolean hadRenderTarget = renderTarget != null;
     if (renderTarget != null) {
       renderTarget.release();
       renderTarget = null;
     }
-  }
-
-  @Override
-  public boolean onInterceptTouchEvent(@NonNull MotionEvent event) {
-    return true;
-  }
-
-  @Override
-  public boolean requestSendAccessibilityEvent(View child, AccessibilityEvent event) {
-    final View embeddedView = getChildAt(0);
-    if (embeddedView != null
-        && embeddedView.getImportantForAccessibility()
-            == View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS) {
-      return false;
+    if (hadRenderTarget && !captureToTextureMode && isAttachedToWindow()) {
+      // Ensure the Window's ThreadedRenderer re-draws the subtree and re-asserts any SurfaceView
+      // PositionUpdateListener if tearing down the offscreen render target invalidated HWUI state.
+      invalidateSubtree(this, /* requestSurfaceViewLayout= */ false);
+      final ViewParent parent = getParent();
+      if (parent instanceof View) {
+        ((View) parent).invalidate();
+      }
     }
-    // Forward the request only if the embedded view is in the Flutter accessibility tree.
-    // The embedded view may be ignored when the framework doesn't populate a SemanticNode
-    // for the current platform view.
-    // See AccessibilityBridge for more.
-    return super.requestSendAccessibilityEvent(child, event);
   }
 
   /** Used on Android O+, {@link invalidateChildInParent} used for previous versions. */
@@ -195,21 +313,44 @@ public class PlatformViewWrapper extends FrameLayout {
   @Override
   public void onDescendantInvalidated(@NonNull View child, @NonNull View target) {
     super.onDescendantInvalidated(child, target);
-    invalidate();
+    if (captureToTextureMode) {
+      invalidate();
+    }
   }
 
   @Override
   public ViewParent invalidateChildInParent(int[] location, Rect dirty) {
-    invalidate();
+    if (captureToTextureMode) {
+      invalidate();
+    }
     return super.invalidateChildInParent(location, dirty);
   }
 
   @Override
   @SuppressLint("NewApi")
   public void draw(Canvas canvas) {
+    if (!captureToTextureMode) {
+      super.draw(canvas);
+      return;
+    }
     if (renderTarget == null) {
       super.draw(canvas);
       Log.e(TAG, "Platform view cannot be composed without a RenderTarget.");
+      return;
+    }
+
+    if (surfaceViewDetected
+        || (onSurfaceViewDetectedListener != null && hasDescendantSurfaceView())) {
+      if (!surfaceViewDetected && onSurfaceViewDetectedListener != null) {
+        scheduleSurfaceViewUpgrade();
+      }
+      // Once a descendant SurfaceView is present on an upgradable TLHC wrapper, freeze the last
+      // pre-SV texture buffer rather than locking the offscreen Surface.HwuiContext canvas:
+      // SurfaceView cannot render into an offscreen texture (it would only punch a CLEAR hole), and
+      // recording SurfaceView.mRenderNode into Surface.HwuiContext clears child HWUI dirty flags
+      // and binds its PositionUpdateListener to the offscreen HardwareRenderer, whose later
+      // destruction in release() fires positionLost() -> tx.hide(mSurfaceControl).
+      postPendingFrame(true);
       return;
     }
 
@@ -218,7 +359,7 @@ public class PlatformViewWrapper extends FrameLayout {
     postPendingFrame(true);
 
     final Surface targetSurface = renderTarget.getSurface();
-    if (!targetSurface.isValid()) {
+    if (targetSurface == null || !targetSurface.isValid()) {
       Log.e(TAG, "Platform view cannot be composed without a valid RenderTarget surface.");
       return;
     }
@@ -278,32 +419,29 @@ public class PlatformViewWrapper extends FrameLayout {
     }
   }
 
-  /**
-   * Informs this view that Flutter has won the gesture arena for the active touch sequence.
-   *
-   * <p>Subsequent {@link MotionEvent#ACTION_MOVE} events will request unbuffered dispatch to
-   * minimize latency and prevent stutter for Flutter-driven gestures (e.g., scrolling).
-   *
-   * @param gestureId The identifier (downTime) of the gesture that Flutter won. Unbuffered dispatch
-   *     is only enabled if this matches the currently active gesture's downTime.
-   */
-  public void onFlutterWonGesture(long gestureId) {
-    gestureTracker.onFlutterWonGesture(gestureId);
+  @Nullable
+  @Override
+  @VisibleForTesting
+  protected ViewTreeObserver.OnGlobalFocusChangeListener getActiveFocusListener() {
+    return super.getActiveFocusListener();
   }
 
+  @Override
   @VisibleForTesting
-  boolean getFlutterWonGesture() {
-    return gestureTracker.getFlutterWonGesture();
+  public boolean getFlutterWonGesture() {
+    return super.getFlutterWonGesture();
   }
 
+  @Override
   @VisibleForTesting
-  boolean isGestureActive() {
-    return gestureTracker.isGestureActive();
+  public boolean isGestureActive() {
+    return super.isGestureActive();
   }
 
+  @Override
   @VisibleForTesting
-  long getCurrentDownTime() {
-    return gestureTracker.getCurrentDownTime();
+  public long getCurrentDownTime() {
+    return super.getCurrentDownTime();
   }
 
   @VisibleForTesting
@@ -312,46 +450,7 @@ public class PlatformViewWrapper extends FrameLayout {
   }
 
   @Override
-  @SuppressLint("ClickableViewAccessibility")
-  public boolean onTouchEvent(@NonNull MotionEvent event) {
-    if (touchProcessor == null) {
-      return super.onTouchEvent(event);
-    }
-    gestureTracker.onTouchEvent(event, this::requestUnbuffered);
-    // The parent transformed this event into this view's coordinate space using the view's current
-    // position, so the same position maps it back into the parent's (the FlutterView's) space.
-    final Matrix screenMatrix = new Matrix();
-    screenMatrix.postTranslate(getLeft(), getTop());
-    return touchProcessor.onTouchEvent(event, screenMatrix);
-  }
-
-  @VisibleForTesting
-  public ViewTreeObserver.OnGlobalFocusChangeListener getActiveFocusListener() {
-    return this.activeFocusListener;
-  }
-
-  public void setOnDescendantFocusChangeListener(@NonNull OnFocusChangeListener userFocusListener) {
-    unsetOnDescendantFocusChangeListener();
-    final ViewTreeObserver observer = getViewTreeObserver();
-    if (observer.isAlive() && activeFocusListener == null) {
-      activeFocusListener =
-          new ViewTreeObserver.OnGlobalFocusChangeListener() {
-            @Override
-            public void onGlobalFocusChanged(View oldFocus, View newFocus) {
-              userFocusListener.onFocusChange(
-                  PlatformViewWrapper.this, ViewUtils.childHasFocus(PlatformViewWrapper.this));
-            }
-          };
-      observer.addOnGlobalFocusChangeListener(activeFocusListener);
-    }
-  }
-
-  public void unsetOnDescendantFocusChangeListener() {
-    final ViewTreeObserver observer = getViewTreeObserver();
-    if (observer.isAlive() && activeFocusListener != null) {
-      final ViewTreeObserver.OnGlobalFocusChangeListener currFocusListener = activeFocusListener;
-      activeFocusListener = null;
-      observer.removeOnGlobalFocusChangeListener(currFocusListener);
-    }
+  protected void dispatchUnbufferedRequest(MotionEvent event) {
+    requestUnbuffered(event);
   }
 }
