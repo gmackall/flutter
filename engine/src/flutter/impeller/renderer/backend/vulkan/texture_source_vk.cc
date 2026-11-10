@@ -42,8 +42,8 @@ absl::Status TextureSourceVK::SetLayout(const BarrierVK& barrier) const {
   image_barrier.oldLayout = old_layout;
   image_barrier.newLayout = barrier.new_layout;
   image_barrier.image = GetImage();
-  image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  image_barrier.srcQueueFamilyIndex = barrier.src_queue_family_index;
+  image_barrier.dstQueueFamilyIndex = barrier.dst_queue_family_index;
   image_barrier.subresourceRange.aspectMask = ToImageAspectFlags(desc_.format);
   image_barrier.subresourceRange.baseMipLevel = barrier.base_mip_level;
   image_barrier.subresourceRange.levelCount =

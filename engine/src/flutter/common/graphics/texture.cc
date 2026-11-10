@@ -90,6 +90,12 @@ void TextureRegistry::OnGrContextDestroyed() {
   }
 }
 
+void TextureRegistry::NotifyLowMemoryWarning() {
+  for (auto& it : mapping_) {
+    it.second->OnLowMemoryWarning();
+  }
+}
+
 std::shared_ptr<Texture> TextureRegistry::GetTexture(int64_t id) {
   auto it = mapping_.find(id);
   return it != mapping_.end() ? it->second : nullptr;

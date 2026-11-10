@@ -5,6 +5,7 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_COMMAND_QUEUE_VK_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_COMMAND_QUEUE_VK_H_
 
+#include "impeller/renderer/backend/vulkan/vk.h"
 #include "impeller/renderer/command_queue.h"
 
 namespace impeller {
@@ -20,6 +21,10 @@ class CommandQueueVK : public CommandQueue {
   absl::Status Submit(
       const std::vector<std::shared_ptr<CommandBuffer>>& buffers,
       const CompletionCallback& completion_callback = {}) override;
+
+  absl::Status Submit(const std::shared_ptr<CommandBuffer>& buffer,
+                      vk::UniqueSemaphore wait_semaphore,
+                      vk::PipelineStageFlags wait_stage);
 
   SubmitResult SubmitWithReceipt(
       const std::shared_ptr<CommandBuffer>& buffer,

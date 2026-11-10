@@ -228,12 +228,10 @@ public class FlutterRenderer implements TextureRegistry {
         && Build.VERSION.SDK_INT >= API_LEVELS.API_29
         && !hasAndroidHardwareBufferDefect()) {
       final long id = nextTextureId.getAndIncrement();
-      final ImageReaderSurfaceProducer producer = new ImageReaderSurfaceProducer(id);
       boolean reset = lifecycle == SurfaceLifecycle.resetInBackground;
+      final ImageReaderSurfaceProducer producer = new ImageReaderSurfaceProducer(id, reset);
       registerImageTexture(id, producer, reset);
-      if (reset) {
-        addOnTrimMemoryListener(producer);
-      }
+      addOnTrimMemoryListener(producer);
       imageReaderProducers.add(producer);
       Log.v(TAG, "New ImageReaderSurfaceProducer ID: " + id);
       entry = producer;
@@ -441,6 +439,44 @@ public class FlutterRenderer implements TextureRegistry {
     }
   }
 
+  /** Internal state held per Image produced by Java ImageReaders. */
+  static final class PerImage {
+    public final Image image;
+    public final long queuedTime;
+
+    public PerImage(Image image, long queuedTime) {
+      this.image = image;
+      this.queuedTime = queuedTime;
+    }
+  }
+
+  /** Injectable reader abstraction backing each PerImageReader slot. */
+  @VisibleForTesting
+  interface BackingReader {
+    @Nullable
+    Surface getSurface();
+
+    @Nullable
+    PerImage dequeueImage();
+
+    int queuedImageCount();
+
+    boolean imageQueueIsEmpty();
+
+    boolean canPrune(boolean isLastReaderDequeuedFrom);
+
+    void discardFreeBuffers();
+
+    void close();
+  }
+
+  /** Factory hook used to inject test readers in unit tests. */
+  @VisibleForTesting
+  interface BackingReaderFactory {
+    @NonNull
+    BackingReader create(int width, int height);
+  }
+
   // Keep a queue of ImageReaders.
   // Each ImageReader holds acquired Images.
   // When we acquire the next image, close any ImageReaders that don't have any
@@ -469,6 +505,7 @@ public class FlutterRenderer implements TextureRegistry {
     private static final boolean CLEANUP_ON_MEMORY_PRESSURE = true;
 
     private final long id;
+    private final boolean resetOnBackground;
 
     private boolean released;
     // Will be true in tests and on Android API < 33.
@@ -504,28 +541,73 @@ public class FlutterRenderer implements TextureRegistry {
     private final HashMap<ImageReader, PerImageReader> perImageReaders = new HashMap<>();
     private ArrayList<PerImage> lastDequeuedImage = new ArrayList<PerImage>();
     private PerImageReader lastReaderDequeuedFrom = null;
+    @Nullable private BackingReaderFactory backingReaderFactory = null;
 
     @VisibleForTesting Callback callback = null;
 
-    /** Internal class: state held per Image produced by ImageReaders. */
-    private class PerImage {
-      public final Image image;
-      public final long queuedTime;
+    /** BackingReader implementation delegating to an NDK AImageReader in C++. */
+    private final class NativeBackingReader implements BackingReader {
+      private final long nativeHandle;
+      private final Surface surface;
+      private boolean closed = false;
 
-      public PerImage(Image image, long queuedTime) {
-        this.image = image;
-        this.queuedTime = queuedTime;
+      NativeBackingReader(long nativeHandle, @NonNull Surface surface) {
+        this.nativeHandle = nativeHandle;
+        this.surface = surface;
+      }
+
+      @Override
+      @NonNull
+      public Surface getSurface() {
+        return surface;
+      }
+
+      @Override
+      @Nullable
+      public PerImage dequeueImage() {
+        return null;
+      }
+
+      @Override
+      public int queuedImageCount() {
+        return 0;
+      }
+
+      @Override
+      public boolean imageQueueIsEmpty() {
+        return true;
+      }
+
+      @Override
+      public boolean canPrune(boolean isLastReaderDequeuedFrom) {
+        return closed || flutterJNI.isNativeImageReaderClosed(nativeHandle);
+      }
+
+      @Override
+      public void discardFreeBuffers() {}
+
+      @Override
+      public void close() {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        flutterJNI.closeNativeImageReader(nativeHandle);
+        surface.release();
       }
     }
 
-    /** Internal class: state held per ImageReader. */
-    private class PerImageReader {
-      public final ImageReader reader;
+    /** BackingReader implementation delegating to android.media.ImageReader. */
+    private final class JavaBackingReader implements BackingReader {
+      final ImageReader reader;
       private final ArrayDeque<PerImage> imageQueue = new ArrayDeque<>();
       private boolean closed = false;
 
-      public PerImageReader(ImageReader reader) {
+      JavaBackingReader(@NonNull ImageReader reader) {
         this.reader = reader;
+      }
+
+      void attachListener() {
         ImageReader.OnImageAvailableListener onImageAvailableListener =
             r -> {
               Image image = null;
@@ -547,13 +629,13 @@ public class FlutterRenderer implements TextureRegistry {
             onImageAvailableListener, new Handler(Looper.getMainLooper()));
       }
 
+      @Nullable
       PerImage queueImage(Image image) {
         if (closed) {
           return null;
         }
         PerImage perImage = new PerImage(image, System.nanoTime());
         imageQueue.add(perImage);
-        // If we fall too far behind we will skip some frames.
         while (imageQueue.size() > 2) {
           PerImage r = imageQueue.removeFirst();
           if (VERBOSE_LOGS) {
@@ -564,29 +646,114 @@ public class FlutterRenderer implements TextureRegistry {
         return perImage;
       }
 
-      PerImage dequeueImage() {
+      @Override
+      @Nullable
+      public Surface getSurface() {
+        return reader.getSurface();
+      }
+
+      @Override
+      @Nullable
+      public PerImage dequeueImage() {
         if (imageQueue.isEmpty()) {
           return null;
         }
         return imageQueue.removeFirst();
       }
 
-      /** returns true if we can prune this reader */
-      boolean canPrune() {
-        return imageQueue.isEmpty() && lastReaderDequeuedFrom != this;
+      @Override
+      public int queuedImageCount() {
+        return imageQueue.size();
       }
 
-      boolean imageQueueIsEmpty() {
+      @Override
+      public boolean imageQueueIsEmpty() {
         return imageQueue.isEmpty();
       }
 
-      void close() {
+      @Override
+      public boolean canPrune(boolean isLastReaderDequeuedFrom) {
+        return imageQueue.isEmpty() && !isLastReaderDequeuedFrom;
+      }
+
+      @Override
+      public void discardFreeBuffers() {
+        if (!closed && Build.VERSION.SDK_INT >= API_LEVELS.API_28) {
+          discardFreeBuffers28(reader);
+        }
+      }
+
+      @RequiresApi(API_LEVELS.API_28)
+      private void discardFreeBuffers28(@NonNull ImageReader target) {
+        target.discardFreeBuffers();
+      }
+
+      @Override
+      public void close() {
+        if (closed) {
+          return;
+        }
         closed = true;
         if (VERBOSE_LOGS) {
           Log.i(TAG, "Closing reader=" + reader.hashCode());
         }
         reader.close();
         imageQueue.clear();
+      }
+    }
+
+    /** Internal class: state held per reader in the resize queue. */
+    @VisibleForTesting
+    final class PerImageReader {
+      public final BackingReader reader;
+      @Nullable public final ImageReader javaReader;
+
+      PerImageReader(@NonNull BackingReader reader) {
+        this.reader = reader;
+        this.javaReader =
+            (reader instanceof JavaBackingReader) ? ((JavaBackingReader) reader).reader : null;
+      }
+
+      PerImageReader(@NonNull ImageReader javaReader) {
+        JavaBackingReader backing = new JavaBackingReader(javaReader);
+        this.reader = backing;
+        this.javaReader = javaReader;
+        backing.attachListener();
+      }
+
+      @Nullable
+      Surface getSurface() {
+        return reader.getSurface();
+      }
+
+      @Nullable
+      PerImage queueImage(Image image) {
+        if (reader instanceof JavaBackingReader) {
+          return ((JavaBackingReader) reader).queueImage(image);
+        }
+        image.close();
+        return null;
+      }
+
+      @Nullable
+      PerImage dequeueImage() {
+        return reader.dequeueImage();
+      }
+
+      boolean canPrune() {
+        return reader.canPrune(lastReaderDequeuedFrom == this);
+      }
+
+      boolean imageQueueIsEmpty() {
+        return reader.imageQueueIsEmpty();
+      }
+
+      int queuedImageCount() {
+        return reader.queuedImageCount();
+      }
+
+      void close() {
+        reader.close();
       }
     }
 
@@ -612,6 +779,28 @@ public class FlutterRenderer implements TextureRegistry {
       return new PerImageReader(reader);
     }
 
+    @VisibleForTesting
+    void setBackingReaderFactoryForTest(@Nullable BackingReaderFactory factory) {
+      synchronized (lock) {
+        this.backingReaderFactory = factory;
+      }
+    }
+
+    @NonNull
+    private BackingReader createDefaultBackingReader(int width, int height) {
+      if (Build.VERSION.SDK_INT >= API_LEVELS.API_29 && flutterJNI.isAttached()) {
+        long nativeHandle = flutterJNI.createNativeImageReader(id, width, height);
+        if (nativeHandle != 0L) {
+          Surface nativeSurface = flutterJNI.getNativeImageReaderSurface(nativeHandle);
+          if (nativeSurface != null) {
+            return new NativeBackingReader(nativeHandle, nativeSurface);
+          }
+          flutterJNI.closeNativeImageReader(nativeHandle);
+        }
+      }
+      return new JavaBackingReader(createImageReader());
+    }
+
     void pruneImageReaderQueue() {
       boolean change = false;
       // Prune nodes from the head of the ImageReader queue.
@@ -622,7 +811,9 @@ public class FlutterRenderer implements TextureRegistry {
           break;
         }
         imageReaderQueue.removeFirst();
-        perImageReaders.remove(r.reader);
+        if (r.javaReader != null) {
+          perImageReaders.remove(r.javaReader);
+        }
         r.close();
         change = true;
       }
@@ -746,6 +937,17 @@ public class FlutterRenderer implements TextureRegistry {
       synchronized (lock) {
         numTrims++;
       }
+      if (!resetOnBackground) {
+        synchronized (lock) {
+          for (PerImageReader pir : imageReaderQueue) {
+            pir.reader.discardFreeBuffers();
+          }
+        }
+        if (flutterJNI.isAttached()) {
+          flutterJNI.trimImageTexture(id);
+        }
+        return;
+      }
       if (this.callback != null) {
         notifiedDestroy = true;
         this.callback.onSurfaceCleanup();
@@ -763,10 +965,14 @@ public class FlutterRenderer implements TextureRegistry {
 
     private void cleanup() {
       synchronized (lock) {
-        for (PerImageReader pir : perImageReaders.values()) {
+        for (PerImageReader pir : imageReaderQueue) {
           if (lastReaderDequeuedFrom == pir) {
             lastReaderDequeuedFrom = null;
           }
+          pir.close();
+        }
+        imageReaderQueue.clear();
+        for (PerImageReader pir : perImageReaders.values()) {
           pir.close();
         }
         perImageReaders.clear();
@@ -780,7 +986,6 @@ public class FlutterRenderer implements TextureRegistry {
           lastReaderDequeuedFrom.close();
           lastReaderDequeuedFrom = null;
         }
-        imageReaderQueue.clear();
       }
     }
 
@@ -812,7 +1017,12 @@ public class FlutterRenderer implements TextureRegistry {
     }
 
     ImageReaderSurfaceProducer(long id) {
+      this(id, true);
+    }
+
+    ImageReaderSurfaceProducer(long id, boolean resetOnBackground) {
       this.id = id;
+      this.resetOnBackground = resetOnBackground;
     }
 
     @Override
@@ -870,7 +1080,7 @@ public class FlutterRenderer implements TextureRegistry {
       if (VERBOSE_LOGS) {
         Log.i(TAG, pir.reader.hashCode() + " returning surface to render a new frame.");
       }
-      return pir.reader.getSurface();
+      return pir.getSurface();
     }
 
     @Override
@@ -905,23 +1115,35 @@ public class FlutterRenderer implements TextureRegistry {
 
     private PerImageReader getActiveReader() {
       synchronized (lock) {
-        if (!createNewReader) {
+        pruneImageReaderQueue();
+        if (!createNewReader && !imageReaderQueue.isEmpty()) {
           // Verify we don't need a new ImageReader anyway because its Surface has been invalidated.
           PerImageReader lastPerImageReader = imageReaderQueue.peekLast();
-          Surface lastImageReaderSurface = lastPerImageReader.reader.getSurface();
-          boolean lastImageReaderHasValidSurface = lastImageReaderSurface.isValid();
+          Surface lastImageReaderSurface = lastPerImageReader.getSurface();
+          boolean lastImageReaderHasValidSurface =
+              lastImageReaderSurface != null && lastImageReaderSurface.isValid();
           if (lastImageReaderHasValidSurface) {
             return lastPerImageReader;
           }
         }
 
         createNewReader = false;
-        // Create a new ImageReader and add it to the queue.
-        ImageReader reader = createImageReader();
-        if (VERBOSE_LOGS) {
-          Log.i(TAG, reader.hashCode() + " created w=" + requestedWidth + " h=" + requestedHeight);
+        BackingReader backing =
+            (backingReaderFactory != null)
+                ? backingReaderFactory.create(requestedWidth, requestedHeight)
+                : createDefaultBackingReader(requestedWidth, requestedHeight);
+        if (backing instanceof JavaBackingReader) {
+          ImageReader javaReader = ((JavaBackingReader) backing).reader;
+          if (VERBOSE_LOGS) {
+            Log.i(
+                TAG,
+                javaReader.hashCode() + " created w=" + requestedWidth + " h=" + requestedHeight);
+          }
+          return getOrCreatePerImageReader(javaReader);
         }
-        return getOrCreatePerImageReader(reader);
+        PerImageReader perReader = new PerImageReader(backing);
+        imageReaderQueue.add(perReader);
+        return perReader;
       }
     }
 
@@ -985,6 +1207,7 @@ public class FlutterRenderer implements TextureRegistry {
     @VisibleForTesting
     public int numImageReaders() {
       synchronized (lock) {
+        pruneImageReaderQueue();
         return imageReaderQueue.size();
       }
     }
@@ -1001,7 +1224,7 @@ public class FlutterRenderer implements TextureRegistry {
       int r = 0;
       synchronized (lock) {
         for (PerImageReader reader : imageReaderQueue) {
-          r += reader.imageQueue.size();
+          r += reader.queuedImageCount();
         }
       }
       return r;

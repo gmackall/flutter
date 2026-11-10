@@ -171,6 +171,9 @@ void Rasterizer::DisableThreadMergerIfNeeded() {
 }
 
 void Rasterizer::NotifyLowMemoryWarning() const {
+  if (compositor_context_ && compositor_context_->texture_registry()) {
+    compositor_context_->texture_registry()->NotifyLowMemoryWarning();
+  }
   ClearRenderTargetCache();
 }
 

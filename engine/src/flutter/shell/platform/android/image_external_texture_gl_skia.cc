@@ -4,24 +4,52 @@
 
 #include "flutter/shell/platform/android/image_external_texture_gl_skia.h"
 
+#include <algorithm>
+#include <utility>
+
 #include "flutter/display_list/image/dl_image_skia.h"
 #include "flutter/third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
 #include "flutter/third_party/skia/include/gpu/ganesh/gl/GrGLBackendSurface.h"
 
 namespace flutter {
 
+namespace {
+
+struct SkiaGlExternalResource {
+  impeller::UniqueEGLImageKHR egl_image;
+  impeller::UniqueGLTexture texture;
+};
+
+void ReleaseSkiaGlExternalResource(SkImages::ReleaseContext release_context) {
+  auto* resource = static_cast<SkiaGlExternalResource*>(release_context);
+  if (resource == nullptr) {
+    return;
+  }
+  if (eglGetCurrentContext() == EGL_NO_CONTEXT) {
+    (void)resource->texture.release();
+  }
+  delete resource;
+}
+
+}  // namespace
+
 ImageExternalTextureGLSkia::ImageExternalTextureGLSkia(
-    const std::shared_ptr<AndroidContextGLSkia>& context,
+    const std::shared_ptr<AndroidContextGLSkia>& /*context*/,
     int64_t id,
     const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-    ImageExternalTexture::ImageLifecycle lifecycle)
-    : ImageExternalTextureGL(id, image_texture_entry, jni_facade, lifecycle) {}
+    ImageExternalTexture::ImageLifecycle lifecycle,
+    std::shared_ptr<NdkImageTextureBridge> ndk_bridge,
+    std::shared_ptr<IncrementalRetireQueue> retire_queue)
+    : ImageExternalTextureGL(id,
+                             image_texture_entry,
+                             jni_facade,
+                             lifecycle,
+                             std::move(ndk_bridge),
+                             std::move(retire_queue)) {}
 
 void ImageExternalTextureGLSkia::Attach(PaintContext& context) {
   if (state_ == AttachmentState::kUninitialized) {
-    // After this call state_ will be AttachmentState::kAttached and egl_image_
-    // will have been created if we still have an Image associated with us.
     ImageExternalTextureGL::Attach(context);
   }
 }
@@ -30,39 +58,61 @@ void ImageExternalTextureGLSkia::Detach() {
   ImageExternalTextureGL::Detach();
 }
 
-void ImageExternalTextureGLSkia::BindImageToTexture(
-    const impeller::UniqueEGLImageKHR& image,
-    GLuint tex) {
-  if (!image.is_valid() || tex == 0) {
+void ImageExternalTextureGLSkia::BindImageToTexture(EGLImageKHR image,
+                                                    GLuint tex) {
+  if (image == EGL_NO_IMAGE_KHR || tex == 0) {
     return;
   }
   glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
   glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES,
-                               static_cast<GLeglImageOES>(image.get().image));
+                               static_cast<GLeglImageOES>(image));
 }
 
-sk_sp<flutter::DlImage> ImageExternalTextureGLSkia::CreateDlImage(
+ImageExternalTextureGL::GlImageImport ImageExternalTextureGLSkia::CreateDlImage(
     PaintContext& context,
-    const SkRect& bounds,
-    std::optional<HardwareBufferKey> id,
+    const AHardwareBuffer_Desc& desc,
     impeller::UniqueEGLImageKHR&& egl_image) {
-  GLuint texture_name;
+  if (!egl_image.is_valid()) {
+    return {};
+  }
+
+  GLuint texture_name = 0;
   glGenTextures(1, &texture_name);
-  auto gl_texture = impeller::GLTexture{texture_name};
+  if (texture_name == 0) {
+    return {};
+  }
   impeller::UniqueGLTexture unique_texture;
-  unique_texture.reset(gl_texture);
+  unique_texture.reset(impeller::GLTexture{texture_name});
 
-  BindImageToTexture(egl_image, unique_texture.get().texture_name);
-  GrGLTextureInfo textureInfo = {
-      GL_TEXTURE_EXTERNAL_OES, unique_texture.get().texture_name, GL_RGBA8_OES};
-  auto backendTexture =
-      GrBackendTextures::MakeGL(1, 1, skgpu::Mipmapped::kNo, textureInfo);
+  const EGLImageKHR raw_egl_image = egl_image.get().image;
+  BindImageToTexture(raw_egl_image, texture_name);
 
-  gl_entries_[id.value_or(0)] = GlEntry{.egl_image = std::move(egl_image),
-                                        .texture = std::move(unique_texture)};
-  return DlImageSkia::Make(SkImages::BorrowTextureFrom(
-      context.gr_context, backendTexture, kTopLeft_GrSurfaceOrigin,
-      kRGBA_8888_SkColorType, kPremul_SkAlphaType, nullptr));
+  GrGLTextureInfo texture_info = {GL_TEXTURE_EXTERNAL_OES, texture_name,
+                                  GL_RGBA8_OES};
+  const int width = std::max<int>(1, static_cast<int>(desc.width));
+  const int height = std::max<int>(1, static_cast<int>(desc.height));
+  auto backend_texture = GrBackendTextures::MakeGL(
+      width, height, skgpu::Mipmapped::kNo, texture_info);
+
+  auto* resource = new SkiaGlExternalResource{
+      .egl_image = std::move(egl_image),
+      .texture = std::move(unique_texture),
+  };
+  sk_sp<SkImage> sk_image = SkImages::BorrowTextureFrom(
+      context.gr_context, backend_texture, kTopLeft_GrSurfaceOrigin,
+      kRGBA_8888_SkColorType, kPremul_SkAlphaType, nullptr,
+      &ReleaseSkiaGlExternalResource, resource);
+  if (!sk_image) {
+    return {};
+  }
+
+  return GlImageImport{
+      .dl_image = DlImageSkia::Make(std::move(sk_image)),
+      .rebind_callback =
+          [raw_egl_image, texture_name]() {
+            BindImageToTexture(raw_egl_image, texture_name);
+          },
+  };
 }
 
 }  // namespace flutter

@@ -157,7 +157,9 @@ PlatformViewAndroid::PlatformViewAndroid(
       jni_facade_(jni_facade),
       android_context_(android_context),
       platform_view_android_delegate_(jni_facade),
-      platform_message_handler_(new PlatformMessageHandlerAndroid(jni_facade)) {
+      platform_message_handler_(new PlatformMessageHandlerAndroid(jni_facade)),
+      image_retire_queue_(std::make_shared<IncrementalRetireQueue>(
+          task_runners.GetRasterTaskRunner())) {
   if (android_context_) {
     FML_CHECK(android_context_->IsValid())
         << "Could not create surface from invalid Android context.";
@@ -179,7 +181,34 @@ PlatformViewAndroid::PlatformViewAndroid(
   }
 }
 
-PlatformViewAndroid::~PlatformViewAndroid() = default;
+PlatformViewAndroid::~PlatformViewAndroid() {
+  std::unordered_map<uint64_t, std::shared_ptr<NdkImageReader>> readers;
+  std::unordered_map<int64_t, std::shared_ptr<NdkImageTextureBridge>> bridges;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    readers.swap(ndk_image_readers_);
+    bridges.swap(ndk_image_bridges_);
+  }
+  for (auto& [gen, reader] : readers) {
+    if (reader) {
+      reader->CloseOnPlatformThread();
+    }
+  }
+  for (auto& [id, bridge] : bridges) {
+    if (bridge) {
+      bridge->CloseAllReaders();
+    }
+  }
+  if (image_retire_queue_ && task_runners_.GetRasterTaskRunner()) {
+    fml::AutoResetWaitableEvent latch;
+    fml::TaskRunner::RunNowOrPostTask(task_runners_.GetRasterTaskRunner(),
+                                      [&latch, queue = image_retire_queue_]() {
+                                        queue->FlushSynchronously();
+                                        latch.Signal();
+                                      });
+    latch.Wait();
+  }
+}
 
 void PlatformViewAndroid::NotifyCreated(
     fml::RefPtr<AndroidNativeWindow> native_window) {
@@ -223,10 +252,22 @@ void PlatformViewAndroid::NotifyDestroyed() {
 
   if (android_surface_) {
     fml::AutoResetWaitableEvent latch;
+    fml::TaskRunner::RunNowOrPostTask(task_runners_.GetRasterTaskRunner(),
+                                      [&latch, surface = android_surface_.get(),
+                                       retire_queue = image_retire_queue_]() {
+                                        if (retire_queue) {
+                                          retire_queue->FlushSynchronously();
+                                        }
+                                        surface->TeardownOnScreenContext();
+                                        latch.Signal();
+                                      });
+    latch.Wait();
+  } else if (image_retire_queue_ && task_runners_.GetRasterTaskRunner()) {
+    fml::AutoResetWaitableEvent latch;
     fml::TaskRunner::RunNowOrPostTask(
         task_runners_.GetRasterTaskRunner(),
-        [&latch, surface = android_surface_.get()]() {
-          surface->TeardownOnScreenContext();
+        [&latch, retire_queue = image_retire_queue_]() {
+          retire_queue->FlushSynchronously();
           latch.Signal();
         });
     latch.Wait();
@@ -386,34 +427,181 @@ void PlatformViewAndroid::RegisterImageTexture(
     int64_t texture_id,
     const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
     ImageExternalTexture::ImageLifecycle lifecycle) {
+  if (!android_context_) {
+    return;
+  }
+
+  auto bridge = std::make_shared<NdkImageTextureBridge>(
+      texture_id, GetWeakPtr(), task_runners_.GetPlatformTaskRunner(),
+      task_runners_.GetRasterTaskRunner());
+  std::shared_ptr<NdkImageTextureBridge> previous_bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it != ndk_image_bridges_.end()) {
+      previous_bridge = std::move(it->second);
+    }
+    ndk_image_bridges_[texture_id] = bridge;
+  }
+  if (previous_bridge) {
+    previous_bridge->CloseAllReaders();
+  }
+
+  std::shared_ptr<ImageExternalTexture> texture;
   switch (android_context_->RenderingApi()) {
 #if !SLIMPELLER
     case AndroidRenderingAPI::kSkiaOpenGLES:
-      // Legacy GL.
-      RegisterTexture(std::make_shared<ImageExternalTextureGLSkia>(
+      texture = std::make_shared<ImageExternalTextureGLSkia>(
           std::static_pointer_cast<AndroidContextGLSkia>(android_context_),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle, bridge,
+          image_retire_queue_);
       break;
     case AndroidRenderingAPI::kSoftware:
       FML_LOG(INFO) << "Software rendering does not support external textures.";
-      break;
+      return;
 #endif  // !SLIMPELLER
     case AndroidRenderingAPI::kImpellerOpenGLES:
-      // Impeller GLES.
-      RegisterTexture(std::make_shared<ImageExternalTextureGLImpeller>(
+      texture = std::make_shared<ImageExternalTextureGLImpeller>(
           std::static_pointer_cast<impeller::ContextGLES>(
               android_context_->GetImpellerContext()),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle, bridge,
+          image_retire_queue_);
       break;
     case AndroidRenderingAPI::kImpellerVulkan:
-      RegisterTexture(std::make_shared<ImageExternalTextureVKImpeller>(
+      texture = std::make_shared<ImageExternalTextureVKImpeller>(
           std::static_pointer_cast<impeller::ContextVK>(
               android_context_->GetImpellerContext()),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle, bridge,
+          image_retire_queue_);
       break;
     case AndroidRenderingAPI::kImpellerAutoselect:
       FML_CHECK(false);
-      break;
+      return;
+  }
+
+  if (texture) {
+    bridge->BindTexture(texture);
+    RegisterTexture(std::move(texture));
+  }
+}
+
+void PlatformViewAndroid::UnregisterExternalTexture(int64_t texture_id) {
+  std::shared_ptr<NdkImageTextureBridge> bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it != ndk_image_bridges_.end()) {
+      bridge = std::move(it->second);
+      ndk_image_bridges_.erase(it);
+    }
+  }
+  if (bridge) {
+    bridge->CloseAllReaders();
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    for (auto it = ndk_image_readers_.begin();
+         it != ndk_image_readers_.end();) {
+      if (!it->second || it->second->IsClosed()) {
+        it = ndk_image_readers_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  UnregisterTexture(texture_id);
+}
+
+jlong PlatformViewAndroid::CreateNativeImageReader(JNIEnv* env,
+                                                   int64_t texture_id,
+                                                   int32_t width,
+                                                   int32_t height) {
+  std::shared_ptr<NdkImageTextureBridge> bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it == ndk_image_bridges_.end()) {
+      return 0;
+    }
+    bridge = it->second;
+  }
+  auto reader = NdkImageReader::Create(env, width, height, std::move(bridge));
+  if (!reader) {
+    return 0;
+  }
+  const uint64_t handle = reader->generation();
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    ndk_image_readers_[handle] = std::move(reader);
+  }
+  return static_cast<jlong>(handle);
+}
+
+jobject PlatformViewAndroid::GetNativeImageReaderSurface(
+    JNIEnv* env,
+    uint64_t reader_handle) {
+  if (env == nullptr || reader_handle == 0) {
+    return nullptr;
+  }
+  std::shared_ptr<NdkImageReader> reader;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_readers_.find(reader_handle);
+    if (it != ndk_image_readers_.end()) {
+      reader = it->second;
+    }
+  }
+  if (!reader) {
+    return nullptr;
+  }
+  auto local_surface = reader->GetJavaSurface();
+  return local_surface.Release();
+}
+
+void PlatformViewAndroid::CloseNativeImageReader(uint64_t reader_handle) {
+  if (reader_handle == 0) {
+    return;
+  }
+  std::shared_ptr<NdkImageReader> reader;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_readers_.find(reader_handle);
+    if (it != ndk_image_readers_.end()) {
+      reader = std::move(it->second);
+      ndk_image_readers_.erase(it);
+    }
+  }
+  if (reader) {
+    reader->RequestClose();
+  }
+}
+
+bool PlatformViewAndroid::IsNativeImageReaderClosed(
+    uint64_t reader_handle) const {
+  if (reader_handle == 0) {
+    return true;
+  }
+  std::shared_ptr<NdkImageReader> reader;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_readers_.find(reader_handle);
+    if (it == ndk_image_readers_.end()) {
+      return true;
+    }
+    reader = it->second;
+  }
+  return !reader || reader->IsClosed();
+}
+
+void PlatformViewAndroid::TrimImageTexture(int64_t texture_id) {
+  std::shared_ptr<NdkImageTextureBridge> bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it != ndk_image_bridges_.end()) {
+      bridge = it->second;
+    }
+  }
+  if (bridge) {
+    bridge->RequestPurgeExceptCurrent();
   }
 }
 

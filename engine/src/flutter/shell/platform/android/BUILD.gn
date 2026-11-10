@@ -126,6 +126,8 @@ source_set("flutter_shell_native_src") {
     "image_lru.cc",
     "image_lru.h",
     "library_loader.cc",
+    "ndk_image_reader.cc",
+    "ndk_image_reader.h",
     "platform_message_handler_android.cc",
     "platform_message_handler_android.h",
     "platform_message_response_android.cc",

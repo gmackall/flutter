@@ -58,6 +58,9 @@ class Texture : public ContextListener {
   // Called on raster thread.
   virtual void OnTextureUnregistered() = 0;
 
+  // Called on raster thread when the system reports memory pressure.
+  virtual void OnLowMemoryWarning() {}
+
   int64_t Id() { return id_; }
 
  private:
@@ -90,6 +93,9 @@ class TextureRegistry {
 
   // Called from raster thread.
   void OnGrContextDestroyed();
+
+  // Called from raster thread.
+  void NotifyLowMemoryWarning();
 
  private:
   std::map<int64_t, std::shared_ptr<Texture>> mapping_;

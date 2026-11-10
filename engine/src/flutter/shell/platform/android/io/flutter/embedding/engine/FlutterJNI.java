@@ -1059,6 +1059,82 @@ public class FlutterJNI {
   }
 
   private native void nativeUnregisterTexture(long nativeShellHolderId, long textureId);
+
+  @UiThread
+  public long createNativeImageReader(long textureId, int width, int height) {
+    if (!FlutterJNI.loadLibraryCalled || !isAttached()) {
+      return 0L;
+    }
+    ensureRunningOnMainThread();
+    return nativeCreateNativeImageReader(nativeShellHolderId, textureId, width, height);
+  }
+
+  private native long nativeCreateNativeImageReader(
+      long nativeShellHolderId, long textureId, int width, int height);
+
+  @Nullable
+  public Surface getNativeImageReaderSurface(long readerHandle) {
+    if (!FlutterJNI.loadLibraryCalled || readerHandle == 0L) {
+      return null;
+    }
+    shellHolderLock.readLock().lock();
+    try {
+      if (!isAttached()) {
+        return null;
+      }
+      return nativeGetNativeImageReaderSurface(nativeShellHolderId, readerHandle);
+    } finally {
+      shellHolderLock.readLock().unlock();
+    }
+  }
+
+  @Nullable
+  private native Surface nativeGetNativeImageReaderSurface(
+      long nativeShellHolderId, long readerHandle);
+
+  public void closeNativeImageReader(long readerHandle) {
+    if (!FlutterJNI.loadLibraryCalled || readerHandle == 0L) {
+      return;
+    }
+    shellHolderLock.readLock().lock();
+    try {
+      if (isAttached()) {
+        nativeCloseNativeImageReader(nativeShellHolderId, readerHandle);
+      }
+    } finally {
+      shellHolderLock.readLock().unlock();
+    }
+  }
+
+  private native void nativeCloseNativeImageReader(long nativeShellHolderId, long readerHandle);
+
+  public boolean isNativeImageReaderClosed(long readerHandle) {
+    if (!FlutterJNI.loadLibraryCalled || readerHandle == 0L) {
+      return true;
+    }
+    shellHolderLock.readLock().lock();
+    try {
+      if (!isAttached()) {
+        return true;
+      }
+      return nativeIsNativeImageReaderClosed(nativeShellHolderId, readerHandle);
+    } finally {
+      shellHolderLock.readLock().unlock();
+    }
+  }
+
+  private native boolean nativeIsNativeImageReaderClosed(
+      long nativeShellHolderId, long readerHandle);
+
+  @UiThread
+  public void trimImageTexture(long textureId) {
+    ensureRunningOnMainThread();
+    if (isAttached()) {
+      nativeTrimImageTexture(nativeShellHolderId, textureId);
+    }
+  }
+
+  private native void nativeTrimImageTexture(long nativeShellHolderId, long textureId);
   // ------ Start Texture Registration Support -----
 
   // ------ Start Dart Execution Support -------

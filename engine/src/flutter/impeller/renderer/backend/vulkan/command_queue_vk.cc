@@ -104,6 +104,81 @@ absl::Status CommandQueueVK::Submit(
   return absl::OkStatus();
 }
 
+absl::Status CommandQueueVK::Submit(
+    const std::shared_ptr<CommandBuffer>& buffer,
+    vk::UniqueSemaphore wait_semaphore,
+    vk::PipelineStageFlags wait_stage) {
+  if (!wait_semaphore) {
+    return Submit({buffer});
+  }
+  if (!buffer) {
+    return absl::Status(absl::StatusCode::kInvalidArgument,
+                        "No command buffer provided.");
+  }
+
+  CommandBufferVK& command_buffer = CommandBufferVK::Cast(*buffer);
+  if (!command_buffer.EndCommandBuffer()) {
+    return absl::Status(absl::StatusCode::kCancelled,
+                        "Failed to end command buffer.");
+  }
+  vk::CommandBuffer vk_buffer = command_buffer.GetCommandBuffer();
+  std::shared_ptr<TrackedObjectsVK> tracked_objects =
+      std::move(command_buffer.tracked_objects_);
+
+  auto context = context_.lock();
+  if (!context) {
+    VALIDATION_LOG << "Device lost.";
+    return absl::Status(absl::StatusCode::kCancelled, "Device lost.");
+  }
+  auto [fence_result, fence] = context->GetDevice().createFenceUnique({});
+  if (fence_result != vk::Result::eSuccess) {
+    VALIDATION_LOG << "Failed to create fence: " << vk::to_string(fence_result);
+    return absl::Status(absl::StatusCode::kCancelled,
+                        "Failed to create fence.");
+  }
+
+  auto shared_semaphore =
+      std::make_shared<vk::UniqueSemaphore>(std::move(wait_semaphore));
+  vk::Semaphore raw_wait_semaphore = shared_semaphore->get();
+
+  auto submit_callback = [&context, &vk_buffer, &raw_wait_semaphore,
+                          &wait_stage](vk::Fence submit_fence) {
+    vk::SubmitInfo submit_info;
+    submit_info.setWaitSemaphores(raw_wait_semaphore);
+    submit_info.setWaitDstStageMask(wait_stage);
+    submit_info.setCommandBuffers(vk_buffer);
+    auto status =
+        context->GetGraphicsQueue()->Submit(submit_info, submit_fence);
+    if (status != vk::Result::eSuccess) {
+      std::string submit_error =
+          "Failed to submit command: " + vk::to_string(status);
+      VALIDATION_LOG << submit_error;
+      return absl::Status(absl::StatusCode::kCancelled, submit_error);
+    }
+    return absl::OkStatus();
+  };
+
+  std::shared_ptr<GpuSubmissionTracker> tracker =
+      context->GetMutableSubmissionTracker();
+  uint64_t submission_id = tracker->RecordSubmission();
+
+  auto fence_complete_callback =
+      [tracker, submission_id, tracked_objects = std::move(tracked_objects),
+       shared_semaphore = std::move(shared_semaphore)]() mutable {
+        shared_semaphore.reset();
+        tracked_objects.reset();
+        tracker->RecordCompletion(submission_id);
+      };
+
+  auto fence_status = context->GetFenceWaiter()->AddFence(
+      std::move(fence), submit_callback, std::move(fence_complete_callback));
+  if (!fence_status.ok()) {
+    tracker->RecordCompletion(submission_id);
+    return fence_status;
+  }
+  return absl::OkStatus();
+}
+
 CommandQueue::SubmitResult CommandQueueVK::SubmitWithReceipt(
     const std::shared_ptr<CommandBuffer>& buffer,
     const CompletionCallback& completion_callback) {

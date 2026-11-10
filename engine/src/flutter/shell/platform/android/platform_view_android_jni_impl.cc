@@ -591,7 +591,50 @@ static void UnregisterTexture(JNIEnv* env,
                               jobject jcaller,
                               jlong shell_holder,
                               jlong texture_id) {
-  ANDROID_SHELL_HOLDER->GetPlatformView()->UnregisterTexture(
+  ANDROID_SHELL_HOLDER->GetPlatformView()->UnregisterExternalTexture(
+      static_cast<int64_t>(texture_id));
+}
+
+static jlong CreateNativeImageReader(JNIEnv* env,
+                                     jobject jcaller,
+                                     jlong shell_holder,
+                                     jlong texture_id,
+                                     jint width,
+                                     jint height) {
+  return ANDROID_SHELL_HOLDER->GetPlatformView()->CreateNativeImageReader(
+      env, static_cast<int64_t>(texture_id), static_cast<int32_t>(width),
+      static_cast<int32_t>(height));
+}
+
+static jobject GetNativeImageReaderSurface(JNIEnv* env,
+                                           jobject jcaller,
+                                           jlong shell_holder,
+                                           jlong reader_handle) {
+  return ANDROID_SHELL_HOLDER->GetPlatformView()->GetNativeImageReaderSurface(
+      env, static_cast<uint64_t>(reader_handle));
+}
+
+static void CloseNativeImageReader(JNIEnv* env,
+                                   jobject jcaller,
+                                   jlong shell_holder,
+                                   jlong reader_handle) {
+  ANDROID_SHELL_HOLDER->GetPlatformView()->CloseNativeImageReader(
+      static_cast<uint64_t>(reader_handle));
+}
+
+static jboolean IsNativeImageReaderClosed(JNIEnv* env,
+                                          jobject jcaller,
+                                          jlong shell_holder,
+                                          jlong reader_handle) {
+  return ANDROID_SHELL_HOLDER->GetPlatformView()->IsNativeImageReaderClosed(
+      static_cast<uint64_t>(reader_handle));
+}
+
+static void TrimImageTexture(JNIEnv* env,
+                             jobject jcaller,
+                             jlong shell_holder,
+                             jlong texture_id) {
+  ANDROID_SHELL_HOLDER->GetPlatformView()->TrimImageTexture(
       static_cast<int64_t>(texture_id));
 }
 
@@ -894,6 +937,31 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeUnregisterTexture",
           .signature = "(JJ)V",
           .fnPtr = reinterpret_cast<void*>(&UnregisterTexture),
+      },
+      {
+          .name = "nativeCreateNativeImageReader",
+          .signature = "(JJII)J",
+          .fnPtr = reinterpret_cast<void*>(&CreateNativeImageReader),
+      },
+      {
+          .name = "nativeGetNativeImageReaderSurface",
+          .signature = "(JJ)Landroid/view/Surface;",
+          .fnPtr = reinterpret_cast<void*>(&GetNativeImageReaderSurface),
+      },
+      {
+          .name = "nativeCloseNativeImageReader",
+          .signature = "(JJ)V",
+          .fnPtr = reinterpret_cast<void*>(&CloseNativeImageReader),
+      },
+      {
+          .name = "nativeIsNativeImageReaderClosed",
+          .signature = "(JJ)Z",
+          .fnPtr = reinterpret_cast<void*>(&IsNativeImageReaderClosed),
+      },
+      {
+          .name = "nativeTrimImageTexture",
+          .signature = "(JJ)V",
+          .fnPtr = reinterpret_cast<void*>(&TrimImageTexture),
       },
       // Methods for Dart callback functionality.
       {

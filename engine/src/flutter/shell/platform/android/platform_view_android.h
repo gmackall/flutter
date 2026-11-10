@@ -6,7 +6,9 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_PLATFORM_VIEW_ANDROID_H_
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <android/hardware_buffer_jni.h>
@@ -16,6 +18,7 @@
 #include "flutter/shell/common/snapshot_surface_producer.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
+#include "flutter/shell/platform/android/ndk_image_reader.h"
 #include "flutter/shell/platform/android/platform_message_handler_android.h"
 #include "flutter/shell/platform/android/platform_view_android_delegate/platform_view_android_delegate.h"
 #include "flutter/shell/platform/android/surface/android_native_window.h"
@@ -97,6 +100,21 @@ class PlatformViewAndroid final : public PlatformView {
       const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
       ImageExternalTexture::ImageLifecycle lifecycle);
 
+  void UnregisterExternalTexture(int64_t texture_id);
+
+  jlong CreateNativeImageReader(JNIEnv* env,
+                                int64_t texture_id,
+                                int32_t width,
+                                int32_t height);
+
+  jobject GetNativeImageReaderSurface(JNIEnv* env, uint64_t reader_handle);
+
+  void CloseNativeImageReader(uint64_t reader_handle);
+
+  bool IsNativeImageReaderClosed(uint64_t reader_handle) const;
+
+  void TrimImageTexture(int64_t texture_id);
+
   // |PlatformView|
   void LoadDartDeferredLibrary(
       intptr_t loading_unit_id,
@@ -136,6 +154,12 @@ class PlatformViewAndroid final : public PlatformView {
 
   std::unique_ptr<AndroidSurface> android_surface_;
   std::shared_ptr<PlatformMessageHandlerAndroid> platform_message_handler_;
+  std::shared_ptr<IncrementalRetireQueue> image_retire_queue_;
+  mutable std::mutex ndk_readers_mutex_;
+  std::unordered_map<int64_t, std::shared_ptr<NdkImageTextureBridge>>
+      ndk_image_bridges_;
+  std::unordered_map<uint64_t, std::shared_ptr<NdkImageReader>>
+      ndk_image_readers_;
   bool android_meets_hcpp_criteria_ = false;
 
   // |PlatformView|
