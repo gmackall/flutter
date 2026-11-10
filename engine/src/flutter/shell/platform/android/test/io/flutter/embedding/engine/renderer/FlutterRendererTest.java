@@ -1132,4 +1132,67 @@ public class FlutterRendererTest {
     producer.waitOnFence(image);
     verify(fence, times(1)).close();
   }
+
+  @Test
+  public void ImageReaderSurfaceProducerDelegatesToNativeSurfaceWhenAvailable() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    TextureRegistry.SurfaceProducer producer =
+        flutterRenderer.createSurfaceProducer(TextureRegistry.SurfaceLifecycle.resetInBackground);
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) producer;
+
+    Surface nativeSurface1 = mock(Surface.class);
+    Surface nativeSurface2 = mock(Surface.class);
+    when(nativeSurface1.isValid()).thenReturn(true);
+    when(nativeSurface2.isValid()).thenReturn(true);
+    when(fakeFlutterJNI.createNativeImageReaderSurface(eq(producer.id()), eq(64), eq(64)))
+        .thenReturn(nativeSurface1);
+    when(fakeFlutterJNI.createNativeImageReaderSurface(eq(producer.id()), eq(128), eq(128)))
+        .thenReturn(nativeSurface2);
+
+    texture.setSize(64, 64);
+    assertEquals(nativeSurface1, texture.getSurface());
+    assertEquals(nativeSurface1, texture.getSurface());
+    assertEquals(1, texture.numImageReaders());
+    assertNull(texture.acquireLatestImage());
+    verify(fakeFlutterJNI, times(1))
+        .createNativeImageReaderSurface(eq(producer.id()), eq(64), eq(64));
+
+    texture.setSize(128, 128);
+    assertEquals(nativeSurface2, texture.getSurface());
+    assertEquals(1, texture.numImageReaders());
+    verify(nativeSurface1, never()).release();
+
+    flutterRenderer.onTrimMemory(TRIM_MEMORY_BACKGROUND);
+    assertEquals(0, texture.numImageReaders());
+    verify(nativeSurface2, times(1)).release();
+    verify(fakeFlutterJNI, times(1)).closeNativeImageReaders(eq(producer.id()));
+
+    when(fakeFlutterJNI.createNativeImageReaderSurface(eq(producer.id()), eq(128), eq(128)))
+        .thenReturn(nativeSurface1);
+    assertEquals(nativeSurface1, texture.getSurface());
+
+    producer.release();
+    verify(nativeSurface1, times(1)).release();
+    verify(fakeFlutterJNI, times(2)).closeNativeImageReaders(eq(producer.id()));
+    verify(fakeFlutterJNI, times(1)).unregisterTexture(eq(producer.id()));
+  }
+
+  @Test
+  public void ImageReaderSurfaceProducerRecreatesNativeSurfaceWhenInvalidated() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    TextureRegistry.SurfaceProducer producer = flutterRenderer.createSurfaceProducer();
+
+    Surface invalidSurface = mock(Surface.class);
+    Surface replacementSurface = mock(Surface.class);
+    when(invalidSurface.isValid()).thenReturn(false);
+    when(replacementSurface.isValid()).thenReturn(true);
+    when(fakeFlutterJNI.createNativeImageReaderSurface(eq(producer.id()), eq(32), eq(32)))
+        .thenReturn(invalidSurface)
+        .thenReturn(replacementSurface);
+
+    producer.setSize(32, 32);
+    assertEquals(invalidSurface, producer.getSurface());
+    assertEquals(replacementSurface, producer.getSurface());
+  }
 }
