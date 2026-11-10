@@ -96,14 +96,15 @@ void ConcurrentMessageLoop::WorkerMain() {
     lock.unlock();
 
     TRACE_EVENT0("flutter", "ConcurrentWorkerWake");
+    // Execute any thread tasks first so per-worker configuration (such as CPU
+    // affinity) applies before queued work runs on this worker.
+    for (const auto& thread_task : thread_tasks) {
+      ExecuteTask(thread_task);
+    }
+
     // Execute the primary task we woke up for.
     if (task) {
       ExecuteTask(task);
-    }
-
-    // Execute any thread tasks.
-    for (const auto& thread_task : thread_tasks) {
-      ExecuteTask(thread_task);
     }
 
     if (shutdown_now) {

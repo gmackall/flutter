@@ -12,6 +12,9 @@ namespace fml {
 /// @brief Android specific implementation of EfficiencyCoreCount.
 std::optional<size_t> AndroidEfficiencyCoreCount();
 
+/// @brief Android specific implementation of NonEfficiencyCoreCount.
+std::optional<size_t> AndroidNonEfficiencyCoreCount();
+
 /// @brief Android specific implementation of RequestAffinity.
 bool AndroidRequestAffinity(CpuAffinity affinity);
 

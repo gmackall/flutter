@@ -21,6 +21,8 @@
 #include <sys/time.h>
 #endif  // FML_OS_ANDROID
 
+#include <algorithm>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <optional>
@@ -127,6 +129,20 @@ size_t ContextVK::ChooseThreadCountForWorkers(size_t hardware_concurrency) {
   // Never create more than 4 worker threads. Attempt to use up to
   // half of the available concurrency.
   return std::clamp(hardware_concurrency / 2ull, /*lo=*/1ull, /*hi=*/4ull);
+}
+
+// static
+size_t ContextVK::ChoosePinnedWorkerCount(
+    size_t worker_count,
+    std::optional<size_t> non_efficiency_cores) {
+  if (!non_efficiency_cores.has_value()) {
+    return worker_count;
+  }
+  const size_t available =
+      *non_efficiency_cores > kReservedNonEfficiencyCores
+          ? *non_efficiency_cores - kReservedNonEfficiencyCores
+          : 0;
+  return std::min(worker_count, available);
 }
 
 namespace {
@@ -418,8 +434,26 @@ void ContextVK::Setup(DeviceSelection selection) {
   //----------------------------------------------------------------------------
   /// Setup the worker threads and the pipeline library.
   ///
-  raster_message_loop_ = fml::ConcurrentMessageLoop::Create(
-      ChooseThreadCountForWorkers(std::thread::hardware_concurrency()));
+  const auto worker_count =
+      ChooseThreadCountForWorkers(std::thread::hardware_concurrency());
+  raster_message_loop_ = fml::ConcurrentMessageLoop::Create(worker_count);
+  // The workers are created by the calling thread, which on Android is the
+  // raster thread, and inherit its kNotEfficiency CPU affinity. Reserve
+  // kReservedNonEfficiencyCores non-efficiency cores for the raster and UI
+  // threads, keep at most the remaining non-efficiency cores worth of workers
+  // pinned, and let every other worker use all cores.
+  const size_t pinned_workers =
+      ChoosePinnedWorkerCount(worker_count, fml::NonEfficiencyCoreCount());
+  if (pinned_workers < worker_count) {
+    auto worker_index = std::make_shared<std::atomic<size_t>>(0);
+    raster_message_loop_->PostTaskToAllWorkers(
+        [worker_index, pinned_workers]() {
+          if (worker_index->fetch_add(1, std::memory_order_relaxed) >=
+              pinned_workers) {
+            fml::RequestAffinity(fml::CpuAffinity::kAll);
+          }
+        });
+  }
 
   auto pipeline_library = std::shared_ptr<PipelineLibraryVK>(
       new PipelineLibraryVK(device_holder,                         //

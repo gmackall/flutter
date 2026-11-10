@@ -129,6 +129,18 @@ class ContextVK final : public Context,
   /// Visible for testing.
   static size_t ChooseThreadCountForWorkers(size_t hardware_concurrency);
 
+  /// Number of non-efficiency cores kept free of pinned background pipeline
+  /// workers so the raster and UI threads each have headroom on fast cores.
+  static constexpr size_t kReservedNonEfficiencyCores = 2;
+
+  /// Choose how many worker threads keep the caller's inherited CPU affinity
+  /// instead of widening to `fml::CpuAffinity::kAll`.
+  ///
+  /// Visible for testing.
+  static size_t ChoosePinnedWorkerCount(
+      size_t worker_count,
+      std::optional<size_t> non_efficiency_cores);
+
   /// Initialize the Vulkan instance and select a physical device, returning its
   /// `DriverInfoVK` so the caller can inspect or reject the device before the
   /// remainder of context setup runs.

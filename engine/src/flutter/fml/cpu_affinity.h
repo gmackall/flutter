@@ -30,6 +30,14 @@ enum class CpuAffinity {
 
   /// @brief Request affinity for all non-efficiency cores.
   kNotEfficiency,
+
+  /// @brief Request affinity for every core.
+  ///
+  ///        A thread inherits the affinity of the thread that created it.
+  ///        Use this option for threads that are created by a thread with a
+  ///        restricted affinity, such as the raster thread, and that should
+  ///        not share that restriction.
+  kAll,
 };
 
 /// @brief Request count of efficiency cores.
@@ -39,6 +47,14 @@ enum class CpuAffinity {
 ///        cores have the same reported speed then this returns std::nullopt.
 ///        That is, the result will never be 0.
 std::optional<size_t> EfficiencyCoreCount();
+
+/// @brief Request count of non-efficiency cores.
+///
+///        Non-efficiency cores are defined as those with a reported
+///        cpu_max_freq strictly greater than the lowest core speed. If the CPU
+///        speed could not be determined, or if all cores have the same reported
+///        speed, then this returns std::nullopt.
+std::optional<size_t> NonEfficiencyCoreCount();
 
 /// @brief Request the given affinity for the current thread.
 ///
@@ -84,6 +100,7 @@ class CPUSpeedTracker {
   std::vector<size_t> performance_;
   std::vector<size_t> not_performance_;
   std::vector<size_t> not_efficiency_;
+  std::vector<size_t> all_;
 };
 
 /// @note Visible for testing.

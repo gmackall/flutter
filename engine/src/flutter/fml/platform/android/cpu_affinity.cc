@@ -56,6 +56,15 @@ std::optional<size_t> AndroidEfficiencyCoreCount() {
   return result;
 }
 
+std::optional<size_t> AndroidNonEfficiencyCoreCount() {
+  if (!SetUpCPUTracker()) {
+    return std::nullopt;
+  }
+  auto result = gCPUTracker->GetIndices(CpuAffinity::kNotEfficiency).size();
+  FML_DCHECK(result > 0);
+  return result;
+}
+
 bool AndroidRequestAffinity(CpuAffinity affinity) {
   if (!SetUpCPUTracker()) {
     return true;

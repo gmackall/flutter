@@ -24,6 +24,14 @@ std::optional<size_t> EfficiencyCoreCount() {
 #endif
 }
 
+std::optional<size_t> NonEfficiencyCoreCount() {
+#ifdef FML_OS_ANDROID
+  return AndroidNonEfficiencyCoreCount();
+#else
+  return std::nullopt;
+#endif
+}
+
 bool RequestAffinity(CpuAffinity affinity) {
 #ifdef FML_OS_ANDROID
   return AndroidRequestAffinity(affinity);
@@ -52,6 +60,7 @@ CPUSpeedTracker::CPUSpeedTracker(std::vector<CpuIndexAndSpeed> data)
   const int64_t min_speed_value = min_speed.value();
 
   for (const auto& data : cpu_speeds_) {
+    all_.push_back(data.index);
     if (data.speed == max_speed_value) {
       performance_.push_back(data.index);
     } else {
@@ -82,6 +91,8 @@ const std::vector<size_t>& CPUSpeedTracker::GetIndices(
       return not_performance_;
     case CpuAffinity::kNotEfficiency:
       return not_efficiency_;
+    case CpuAffinity::kAll:
+      return all_;
   }
 }
 
