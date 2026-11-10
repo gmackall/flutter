@@ -51,6 +51,7 @@ executable("flutter_shell_native_unittests") {
     "apk_asset_provider_unittests.cc",
     "flutter_shell_native_unittests.cc",
     "image_lru_unittests.cc",
+    "ndk_image_reader_unittests.cc",
     "platform_view_android_jni_impl_unittests.cc",
     "platform_view_android_unittests.cc",
   ]

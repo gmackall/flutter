@@ -27,6 +27,24 @@ TEST(ToolkitAndroidTest, CanCreateProcTable) {
   ASSERT_TRUE(proc_table.IsValid());
 }
 
+TEST(ToolkitAndroidTest, ResolvesMediaNdkImageReaderAndNativeWindowProcs) {
+  const auto& proc_table = GetProcTable();
+  ASSERT_TRUE(proc_table.IsValid());
+  if (android_get_device_api_level() < 26) {
+    GTEST_SKIP() << "Media NDK AImageReader APIs require API 26+.";
+  }
+  EXPECT_TRUE(proc_table.AImage_delete.IsAvailable());
+  EXPECT_TRUE(proc_table.AImage_deleteAsync.IsAvailable());
+  EXPECT_TRUE(proc_table.AImage_getHardwareBuffer.IsAvailable());
+  EXPECT_TRUE(proc_table.AImageReader_acquireLatestImageAsync.IsAvailable());
+  EXPECT_TRUE(proc_table.AImageReader_delete.IsAvailable());
+  EXPECT_TRUE(proc_table.AImageReader_getWindow.IsAvailable());
+  EXPECT_TRUE(proc_table.AImageReader_newWithUsage.IsAvailable());
+  EXPECT_TRUE(proc_table.AImageReader_setBufferRemovedListener.IsAvailable());
+  EXPECT_TRUE(proc_table.AImageReader_setImageListener.IsAvailable());
+  EXPECT_TRUE(proc_table.ANativeWindow_toSurface.IsAvailable());
+}
+
 TEST(ToolkitAndroidTest, GuardsAgainstZeroSizedDescriptors) {
   auto desc = HardwareBufferDescriptor::MakeForSwapchainImage({0, 0});
   ASSERT_GT(desc.size.width, 0u);

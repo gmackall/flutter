@@ -1351,6 +1351,54 @@ TEST(RasterizerTest, TeardownNoSurface) {
   rasterizer->Teardown();
 }
 
+TEST(RasterizerTest, NotifyLowMemoryWarningForwardsToRegisteredTextures) {
+  class CountingLowMemoryTexture final : public Texture {
+   public:
+    explicit CountingLowMemoryTexture(int64_t id) : Texture(id) {}
+    void Paint(PaintContext&,
+               const DlRect&,
+               bool,
+               const DlImageSampling) override {}
+    void MarkNewFrameAvailable() override {}
+    void OnTextureUnregistered() override {}
+    void OnGrContextCreated() override {}
+    void OnGrContextDestroyed() override {}
+    void OnLowMemoryWarning() override { ++low_memory_count; }
+    int low_memory_count = 0;
+  };
+
+  std::string test_name =
+      ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  ThreadHost thread_host("io.flutter.test." + test_name + ".",
+                         ThreadHost::Type::kPlatform |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo |
+                             ThreadHost::Type::kUi);
+  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
+                           thread_host.raster_thread->GetTaskRunner(),
+                           thread_host.ui_thread->GetTaskRunner(),
+                           thread_host.io_thread->GetTaskRunner());
+
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  EXPECT_CALL(delegate, GetTaskRunners())
+      .WillRepeatedly(ReturnRef(task_runners));
+
+  fml::AutoResetWaitableEvent latch;
+  thread_host.raster_thread->GetTaskRunner()->PostTask([&] {
+    auto rasterizer = std::make_unique<Rasterizer>(delegate);
+    auto tex = std::make_shared<CountingLowMemoryTexture>(100);
+    rasterizer->GetTextureRegistry()->RegisterTexture(tex);
+    EXPECT_EQ(tex->low_memory_count, 0);
+    rasterizer->NotifyLowMemoryWarning();
+    EXPECT_EQ(tex->low_memory_count, 1);
+    rasterizer->GetTextureRegistry()->UnregisterTexture(100);
+    rasterizer->Teardown();
+    latch.Signal();
+  });
+  latch.Wait();
+}
+
 TEST(RasterizerTest, presentationTimeSetWhenVsyncTargetInFuture) {
   GTEST_SKIP() << "eglPresentationTime is disabled due to "
                   "https://github.com/flutter/flutter/issues/112503";

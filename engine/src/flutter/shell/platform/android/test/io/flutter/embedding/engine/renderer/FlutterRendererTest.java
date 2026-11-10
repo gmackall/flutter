@@ -710,7 +710,8 @@ public class FlutterRendererTest {
   @Test
   public void ImageReaderSurfaceProducerTrimMemoryCallback() {
     FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
-    TextureRegistry.SurfaceProducer producer = flutterRenderer.createSurfaceProducer();
+    TextureRegistry.SurfaceProducer producer =
+        flutterRenderer.createSurfaceProducer(TextureRegistry.SurfaceLifecycle.resetInBackground);
     FlutterRenderer.ImageReaderSurfaceProducer texture =
         (FlutterRenderer.ImageReaderSurfaceProducer) producer;
 
@@ -1131,5 +1132,131 @@ public class FlutterRendererTest {
     when(image.getFence()).thenReturn(fence);
     producer.waitOnFence(image);
     verify(fence, times(1)).close();
+  }
+
+  @Test
+  public void ImageReaderSurfaceProducerManualTrimPreservesSurfaceAndTrimsCache() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    TextureRegistry.SurfaceProducer producer =
+        flutterRenderer.createSurfaceProducer(TextureRegistry.SurfaceLifecycle.manual);
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) producer;
+    TextureRegistry.SurfaceProducer.Callback callback =
+        mock(TextureRegistry.SurfaceProducer.Callback.class);
+    producer.setCallback(callback);
+
+    texture.setSize(4, 4);
+    Surface surface = texture.getSurface();
+    assertNotNull(surface);
+    assertTrue(surface.isValid());
+    assertEquals(1, texture.numImageReaders());
+
+    flutterRenderer.onTrimMemory(TRIM_MEMORY_BACKGROUND);
+    shadowMainLooper().idle();
+
+    // Manual lifecycle must preserve the active Surface and reader while trimming native caches.
+    assertEquals(1, texture.numImageReaders());
+    assertTrue(surface.isValid());
+    assertEquals(1, texture.numTrims());
+    verify(callback, never()).onSurfaceCleanup();
+    verify(fakeFlutterJNI, times(1)).trimImageTexture(eq(producer.id()));
+  }
+
+  @Test
+  public void ImageReaderSurfaceProducerDelegatesToNativeBackingReaderWhenAvailable() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    TextureRegistry.SurfaceProducer producer =
+        flutterRenderer.createSurfaceProducer(TextureRegistry.SurfaceLifecycle.manual);
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) producer;
+
+    Surface nativeSurface1 = mock(Surface.class);
+    Surface nativeSurface2 = mock(Surface.class);
+    when(nativeSurface1.isValid()).thenReturn(true);
+    when(nativeSurface2.isValid()).thenReturn(true);
+
+    when(fakeFlutterJNI.createNativeImageReader(eq(producer.id()), eq(64), eq(64)))
+        .thenReturn(1001L);
+    when(fakeFlutterJNI.getNativeImageReaderSurface(eq(1001L))).thenReturn(nativeSurface1);
+    when(fakeFlutterJNI.isNativeImageReaderClosed(eq(1001L))).thenReturn(false);
+
+    texture.setSize(64, 64);
+    assertEquals(nativeSurface1, texture.getSurface());
+    assertEquals(1, texture.numImageReaders());
+    assertNull(texture.acquireLatestImage());
+
+    // Resize to 128x128: creates second native reader; once native side marks first closed,
+    // pruneImageReaderQueue removes and closes handle 1001L.
+    when(fakeFlutterJNI.createNativeImageReader(eq(producer.id()), eq(128), eq(128)))
+        .thenReturn(1002L);
+    when(fakeFlutterJNI.getNativeImageReaderSurface(eq(1002L))).thenReturn(nativeSurface2);
+    when(fakeFlutterJNI.isNativeImageReaderClosed(eq(1002L))).thenReturn(false);
+
+    texture.setSize(128, 128);
+    assertEquals(nativeSurface2, texture.getSurface());
+    assertEquals(2, texture.numImageReaders());
+
+    when(fakeFlutterJNI.isNativeImageReaderClosed(eq(1001L))).thenReturn(true);
+    assertEquals(nativeSurface2, texture.getSurface());
+    assertEquals(1, texture.numImageReaders());
+    verify(fakeFlutterJNI, times(1)).closeNativeImageReader(eq(1001L));
+    verify(nativeSurface1, times(1)).release();
+
+    producer.release();
+    verify(fakeFlutterJNI, times(1)).closeNativeImageReader(eq(1002L));
+    verify(nativeSurface2, times(1)).release();
+  }
+
+  @Test
+  public void ImageReaderSurfaceProducerFallsBackToJavaWhenNativeSurfaceNull() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    TextureRegistry.SurfaceProducer producer = flutterRenderer.createSurfaceProducer();
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) producer;
+
+    when(fakeFlutterJNI.createNativeImageReader(eq(producer.id()), eq(32), eq(32)))
+        .thenReturn(2001L);
+    when(fakeFlutterJNI.getNativeImageReaderSurface(eq(2001L))).thenReturn(null);
+
+    texture.setSize(32, 32);
+    Surface fallbackSurface = texture.getSurface();
+    assertNotNull(fallbackSurface);
+    verify(fakeFlutterJNI, times(1)).closeNativeImageReader(eq(2001L));
+    assertEquals(1, texture.numImageReaders());
+  }
+
+  @Test
+  public void ImageReaderSurfaceProducerSupportsInjectableBackingReaderFactory() {
+    FlutterRenderer flutterRenderer = engineRule.getFlutterEngine().getRenderer();
+    TextureRegistry.SurfaceProducer producer =
+        flutterRenderer.createSurfaceProducer(TextureRegistry.SurfaceLifecycle.manual);
+    FlutterRenderer.ImageReaderSurfaceProducer texture =
+        (FlutterRenderer.ImageReaderSurfaceProducer) producer;
+
+    FlutterRenderer.BackingReader mockBacking = mock(FlutterRenderer.BackingReader.class);
+    Surface mockSurface = mock(Surface.class);
+    when(mockSurface.isValid()).thenReturn(true);
+    when(mockBacking.getSurface()).thenReturn(mockSurface);
+    when(mockBacking.imageQueueIsEmpty()).thenReturn(true);
+
+    AtomicInteger createdWidth = new AtomicInteger();
+    AtomicInteger createdHeight = new AtomicInteger();
+    texture.setBackingReaderFactoryForTest(
+        (w, h) -> {
+          createdWidth.set(w);
+          createdHeight.set(h);
+          return mockBacking;
+        });
+
+    texture.setSize(80, 60);
+    assertEquals(mockSurface, texture.getSurface());
+    assertEquals(80, createdWidth.get());
+    assertEquals(60, createdHeight.get());
+
+    flutterRenderer.onTrimMemory(TRIM_MEMORY_BACKGROUND);
+    verify(mockBacking, times(1)).discardFreeBuffers();
+
+    producer.release();
+    verify(mockBacking, times(1)).close();
   }
 }
