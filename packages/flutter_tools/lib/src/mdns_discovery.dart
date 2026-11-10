@@ -12,10 +12,10 @@ import 'base/common.dart';
 import 'base/context.dart';
 import 'base/io.dart';
 import 'base/logger.dart';
+import 'base/platform.dart';
 import 'build_info.dart';
 import 'convert.dart';
 import 'device.dart';
-import 'globals.dart' as globals;
 
 // macOS error code for EADDRINUSE.
 const _kMacOSAddressAlreadyInUseErrno = 48;
@@ -51,6 +51,7 @@ class MDnsVmServiceDiscovery {
   MDnsVmServiceDiscovery({
     required this._analytics,
     required this._logger,
+    required this._platform,
     MDnsClient? mdnsClient,
     MDnsClient? preliminaryMDnsClient,
   }) : _client = mdnsClient ?? MDnsClient(),
@@ -64,6 +65,7 @@ class MDnsVmServiceDiscovery {
 
   final Logger _logger;
   final Analytics _analytics;
+  final Platform _platform;
 
   @visibleForTesting
   static const dartVmServiceName = '_dartVmService._tcp.local';
@@ -278,7 +280,7 @@ class MDnsVmServiceDiscovery {
     try {
       return await completer.future;
     } on SocketException catch (e, stackTrace) {
-      if (!globals.platform.isMacOS) {
+      if (!_platform.isMacOS) {
         rethrow;
       }
       _logger.printTrace('mDNS discovery failed: $e\n$stackTrace');
@@ -596,8 +598,8 @@ class MDnsVmServiceDiscovery {
       return;
     }
     final TargetPlatform targetPlatform = await device.targetPlatform;
-    switch (targetPlatform) {
-      case TargetPlatform.ios:
+    switch (targetPlatform.os) {
+      case .ios:
         _analytics.send(
           Event.appleUsageEvent(workflow: 'ios-mdns', parameter: 'no-ipv4-link-local'),
         );
@@ -608,22 +610,9 @@ class MDnsVmServiceDiscovery {
           'under System Preferences > Network > iPhone USB. '
           'See https://github.com/flutter/flutter/issues/46698 for details.',
         );
-      case TargetPlatform.android:
-      case TargetPlatform.android_arm:
-      case TargetPlatform.android_arm64:
-      case TargetPlatform.android_x64:
-      case TargetPlatform.darwin:
-      case TargetPlatform.fuchsia_arm64:
-      case TargetPlatform.fuchsia_x64:
-      case TargetPlatform.linux_arm64:
-      case TargetPlatform.linux_riscv64:
-      case TargetPlatform.linux_x64:
-      case TargetPlatform.tester:
-      case TargetPlatform.web_javascript:
-      case TargetPlatform.windows_x64:
-      case TargetPlatform.windows_arm64:
+      case .android || .macos || .fuchsia || .linux || .tester || .web || .windows:
         _logger.printTrace('No interface with an ipv4 link local address was found.');
-      case TargetPlatform.unsupported:
+      case .unsupported:
         TargetPlatform.throwUnsupportedTarget();
     }
   }

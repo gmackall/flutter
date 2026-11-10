@@ -1941,7 +1941,7 @@ Future<void> testMain() async {
 
     test('singleTextField Autofill: setClient, setEditingState, show, '
         'setSizeAndTransform, setEditingState, clearClient', () async {
-      // Create a configuration with focused element has autofil hint.
+      // Create a configuration with focused element has autofill hint.
       final Map<String, dynamic> flutterSingleAutofillElementConfig = createFlutterConfig(
         'text',
         autofillHint: 'username',
@@ -1994,7 +1994,7 @@ Future<void> testMain() async {
 
     test('singleTextField Autofill setEditableSizeAndTransform preserves'
         'editing state', () async {
-      // Create a configuration with focused element has autofil hint.
+      // Create a configuration with focused element has autofill hint.
       final Map<String, dynamic> flutterSingleAutofillElementConfig = createFlutterConfig(
         'text',
         autofillHint: 'username',
@@ -3825,6 +3825,9 @@ Future<void> testMain() async {
 
       // Editing state is applied to the element.
       expect(passwordElement.value, 'Test');
+      // Without semantics, password manager extensions fill these elements,
+      // and some skip elements hidden from assistive technology.
+      expect(passwordElement.getAttribute('aria-hidden'), isNull);
       // When we only set the `value` without changing selection, the browser
       // automatically sets the selection to the end of the value.
       expect(passwordElement.selectionStart, 4);
