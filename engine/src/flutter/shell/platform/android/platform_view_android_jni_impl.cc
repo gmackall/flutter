@@ -591,7 +591,27 @@ static void UnregisterTexture(JNIEnv* env,
                               jobject jcaller,
                               jlong shell_holder,
                               jlong texture_id) {
-  ANDROID_SHELL_HOLDER->GetPlatformView()->UnregisterTexture(
+  ANDROID_SHELL_HOLDER->GetPlatformView()->UnregisterExternalTexture(
+      static_cast<int64_t>(texture_id));
+}
+
+static jobject CreateNativeImageReaderSurface(JNIEnv* env,
+                                              jobject jcaller,
+                                              jlong shell_holder,
+                                              jlong texture_id,
+                                              jint width,
+                                              jint height) {
+  return ANDROID_SHELL_HOLDER->GetPlatformView()
+      ->CreateNativeImageReaderSurface(env, static_cast<int64_t>(texture_id),
+                                       static_cast<int32_t>(width),
+                                       static_cast<int32_t>(height));
+}
+
+static void CloseNativeImageReaders(JNIEnv* env,
+                                    jobject jcaller,
+                                    jlong shell_holder,
+                                    jlong texture_id) {
+  ANDROID_SHELL_HOLDER->GetPlatformView()->CloseNativeImageReaders(
       static_cast<int64_t>(texture_id));
 }
 
@@ -894,6 +914,16 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeUnregisterTexture",
           .signature = "(JJ)V",
           .fnPtr = reinterpret_cast<void*>(&UnregisterTexture),
+      },
+      {
+          .name = "nativeCreateNativeImageReaderSurface",
+          .signature = "(JJII)Landroid/view/Surface;",
+          .fnPtr = reinterpret_cast<void*>(&CreateNativeImageReaderSurface),
+      },
+      {
+          .name = "nativeCloseNativeImageReaders",
+          .signature = "(JJ)V",
+          .fnPtr = reinterpret_cast<void*>(&CloseNativeImageReaders),
       },
       // Methods for Dart callback functionality.
       {

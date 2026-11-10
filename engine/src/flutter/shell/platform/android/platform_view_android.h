@@ -6,7 +6,9 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_PLATFORM_VIEW_ANDROID_H_
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <android/hardware_buffer_jni.h>
@@ -97,6 +99,15 @@ class PlatformViewAndroid final : public PlatformView {
       const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
       ImageExternalTexture::ImageLifecycle lifecycle);
 
+  void UnregisterExternalTexture(int64_t texture_id);
+
+  jobject CreateNativeImageReaderSurface(JNIEnv* env,
+                                         int64_t texture_id,
+                                         int32_t width,
+                                         int32_t height);
+
+  void CloseNativeImageReaders(int64_t texture_id);
+
   // |PlatformView|
   void LoadDartDeferredLibrary(
       intptr_t loading_unit_id,
@@ -137,6 +148,9 @@ class PlatformViewAndroid final : public PlatformView {
   std::unique_ptr<AndroidSurface> android_surface_;
   std::shared_ptr<PlatformMessageHandlerAndroid> platform_message_handler_;
   bool android_meets_hcpp_criteria_ = false;
+  mutable std::mutex ndk_readers_mutex_;
+  std::unordered_map<int64_t, std::shared_ptr<NdkImageTextureBridge>>
+      ndk_image_bridges_;
 
   // |PlatformView|
   void UpdateSemantics(

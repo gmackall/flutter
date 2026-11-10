@@ -5,7 +5,9 @@
 #include "flutter/shell/platform/android/image_external_texture_vk_impeller.h"
 
 #include <cstdint>
+#include <utility>
 
+#include "flutter/fml/closure.h"
 #include "flutter/impeller/core/formats.h"
 #include "flutter/impeller/core/texture_descriptor.h"
 #include "flutter/impeller/display_list/dl_image_impeller.h"
@@ -21,86 +23,109 @@ ImageExternalTextureVKImpeller::ImageExternalTextureVKImpeller(
     int64_t id,
     const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-    ImageExternalTexture::ImageLifecycle lifecycle)
-    : ImageExternalTexture(id, image_texture_entry, jni_facade, lifecycle),
+    ImageExternalTexture::ImageLifecycle lifecycle,
+    std::shared_ptr<NdkImageTextureBridge> ndk_bridge)
+    : ImageExternalTexture(id,
+                           image_texture_entry,
+                           jni_facade,
+                           lifecycle,
+                           std::move(ndk_bridge)),
       impeller_context_(impeller_context) {}
 
-ImageExternalTextureVKImpeller::~ImageExternalTextureVKImpeller() {}
+ImageExternalTextureVKImpeller::~ImageExternalTextureVKImpeller() = default;
 
-void ImageExternalTextureVKImpeller::Attach(PaintContext& context) {
+void ImageExternalTextureVKImpeller::Attach(PaintContext& /*context*/) {
   if (state_ == AttachmentState::kUninitialized) {
-    // First processed frame we are attached.
     state_ = AttachmentState::kAttached;
   }
 }
 
 void ImageExternalTextureVKImpeller::Detach() {}
 
-void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& context,
-                                                  const SkRect& bounds) {
-  JavaLocalRef image = AcquireLatestImage();
-  if (image.is_null()) {
-    return;
+sk_sp<flutter::DlImage> ImageExternalTextureVKImpeller::ImportHardwareBuffer(
+    AHardwareBuffer* hardware_buffer,
+    const AHardwareBuffer_Desc& desc) {
+  if (!impeller_context_ || hardware_buffer == nullptr) {
+    return nullptr;
   }
-  JavaLocalRef hardware_buffer = HardwareBufferFor(image);
-  if (hardware_buffer.is_null()) {
-    return;
-  }
-  AHardwareBuffer* latest_hardware_buffer = AHardwareBufferFor(hardware_buffer);
-
-  auto hb_desc =
-      impeller::android::HardwareBuffer::Describe(latest_hardware_buffer);
-  std::optional<HardwareBufferKey> key =
-      impeller::android::HardwareBuffer::GetSystemUniqueID(
-          latest_hardware_buffer);
-  auto existing_image = image_lru_.FindImage(key);
-  if (existing_image != nullptr || !hb_desc.has_value()) {
-    dl_image_ = existing_image;
-
-    CloseHardwareBuffer(hardware_buffer);
-    return;
-  }
-
   auto texture_source = std::make_shared<impeller::AHBTextureSourceVK>(
-      impeller_context_, latest_hardware_buffer, hb_desc.value());
+      impeller_context_, hardware_buffer, desc);
   if (!texture_source->IsValid()) {
-    CloseHardwareBuffer(hardware_buffer);
-    return;
+    return nullptr;
   }
 
   auto texture =
       std::make_shared<impeller::TextureVK>(impeller_context_, texture_source);
-  // Transition the layout to shader read.
-  {
-    auto buffer = impeller_context_->CreateCommandBuffer();
-    impeller::CommandBufferVK& buffer_vk =
-        impeller::CommandBufferVK::Cast(*buffer);
-
-    impeller::BarrierVK barrier;
-    barrier.cmd_buffer = buffer_vk.GetCommandBuffer();
-    barrier.src_access = impeller::vk::AccessFlagBits::eColorAttachmentWrite |
-                         impeller::vk::AccessFlagBits::eTransferWrite;
-    barrier.src_stage =
-        impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        impeller::vk::PipelineStageFlagBits::eTransfer;
-    barrier.dst_access = impeller::vk::AccessFlagBits::eShaderRead;
-    barrier.dst_stage = impeller::vk::PipelineStageFlagBits::eFragmentShader;
-
-    barrier.new_layout = impeller::vk::ImageLayout::eShaderReadOnlyOptimal;
-
-    if (!texture->SetLayout(barrier)) {
-      return;
-    }
-    if (!impeller_context_->GetCommandQueue()->Submit({buffer}).ok()) {
-      return;
-    }
+  auto buffer = impeller_context_->CreateCommandBuffer();
+  if (!buffer) {
+    return nullptr;
+  }
+  impeller::CommandBufferVK& buffer_vk =
+      impeller::CommandBufferVK::Cast(*buffer);
+  if (!buffer_vk.Track(texture)) {
+    return nullptr;
   }
 
-  dl_image_ = impeller::DlImageImpeller::Make(texture);
-  if (key.has_value()) {
-    image_lru_.AddImage(dl_image_, key.value());
+  impeller::BarrierVK barrier;
+  barrier.cmd_buffer = buffer_vk.GetCommandBuffer();
+  barrier.src_access = impeller::vk::AccessFlagBits::eColorAttachmentWrite |
+                       impeller::vk::AccessFlagBits::eTransferWrite;
+  barrier.src_stage =
+      impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput |
+      impeller::vk::PipelineStageFlagBits::eTransfer;
+  barrier.dst_access = impeller::vk::AccessFlagBits::eShaderRead;
+  barrier.dst_stage = impeller::vk::PipelineStageFlagBits::eFragmentShader;
+  barrier.new_layout = impeller::vk::ImageLayout::eShaderReadOnlyOptimal;
+
+  if (!texture->SetLayout(barrier)) {
+    return nullptr;
   }
-  CloseHardwareBuffer(hardware_buffer);
+  if (!impeller_context_->GetCommandQueue()->Submit({buffer}).ok()) {
+    return nullptr;
+  }
+  return impeller::DlImageImpeller::Make(texture);
+}
+
+void ImageExternalTextureVKImpeller::ProcessFrame(PaintContext& /*context*/,
+                                                  const SkRect& /*bounds*/) {
+  DrainPendingEvictions();
+
+  AcquiredFrame frame = AcquireLatestFrame();
+  if (frame.ahardware_buffer == nullptr) {
+    return;
+  }
+  fml::ScopedCleanupClosure close_java_hb([this, &frame]() {
+    if (!frame.java_hardware_buffer.is_null()) {
+      CloseHardwareBuffer(frame.java_hardware_buffer);
+    }
+  });
+
+  if (!WaitAcquireFenceFd(frame.acquire_fence_fd)) {
+    return;
+  }
+
+  std::optional<HardwareBufferKey> key =
+      impeller::android::HardwareBuffer::GetSystemUniqueID(
+          frame.ahardware_buffer);
+  auto existing_image = FindCachedImage(frame.reader_generation, key);
+  if (existing_image != nullptr) {
+    dl_image_ = std::move(existing_image);
+    return;
+  }
+
+  auto hb_desc =
+      impeller::android::HardwareBuffer::Describe(frame.ahardware_buffer);
+  if (!hb_desc.has_value()) {
+    return;
+  }
+
+  sk_sp<flutter::DlImage> imported =
+      ImportHardwareBuffer(frame.ahardware_buffer, hb_desc.value());
+  if (!imported) {
+    return;
+  }
+  dl_image_ = imported;
+  CacheImage(frame.reader_generation, key, std::move(imported));
 }
 
 }  // namespace flutter

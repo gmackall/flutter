@@ -5,7 +5,10 @@
 #include "flutter/shell/platform/android/image_external_texture.h"
 
 #include <android/hardware_buffer_jni.h>
-#include <android/sensor.h>
+
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "flutter/fml/platform/android/jni_util.h"
 #include "flutter/impeller/toolkit/android/proc_table.h"
@@ -17,15 +20,19 @@ ImageExternalTexture::ImageExternalTexture(
     int64_t id,
     const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-    ImageLifecycle lifecycle)
+    ImageLifecycle lifecycle,
+    std::shared_ptr<NdkImageTextureBridge> ndk_bridge)
     : Texture(id),
-      image_texture_entry_(image_texture_entry),
       jni_facade_(jni_facade),
-      texture_lifecycle_(lifecycle) {}
+      ndk_bridge_(std::move(ndk_bridge)),
+      texture_lifecycle_(lifecycle) {
+  if (!image_texture_entry.is_null()) {
+    image_texture_entry_.Reset(image_texture_entry);
+  }
+}
 
 ImageExternalTexture::~ImageExternalTexture() = default;
 
-// Implementing flutter::Texture.
 void ImageExternalTexture::Paint(PaintContext& context,
                                  const DlRect& bounds,
                                  bool freeze,
@@ -34,8 +41,8 @@ void ImageExternalTexture::Paint(PaintContext& context,
     return;
   }
   Attach(context);
-  const bool should_process_frame = !freeze;
-  if (should_process_frame) {
+  DrainPendingEvictions();
+  if (!freeze) {
     ProcessFrame(context, ToSkRect(bounds));
   }
   if (dl_image_) {
@@ -52,49 +59,165 @@ void ImageExternalTexture::Paint(PaintContext& context,
   }
 }
 
-// Implementing flutter::Texture.
-void ImageExternalTexture::MarkNewFrameAvailable() {
-  // NOOP.
+void ImageExternalTexture::MarkNewFrameAvailable() {}
+
+void ImageExternalTexture::OnTextureUnregistered() {
+  dl_image_.reset();
+  image_cache_.clear();
 }
 
-// Implementing flutter::Texture.
-void ImageExternalTexture::OnTextureUnregistered() {}
-
-// Implementing flutter::ContextListener.
 void ImageExternalTexture::OnGrContextCreated() {
   state_ = AttachmentState::kUninitialized;
 }
 
-// Implementing flutter::ContextListener.
 void ImageExternalTexture::OnGrContextDestroyed() {
+  switch (texture_lifecycle_) {
+    case ImageLifecycle::kReset:
+      dl_image_.reset();
+      image_cache_.clear();
+      break;
+    case ImageLifecycle::kKeepAlive:
+      image_cache_.clear();
+      break;
+  }
   if (state_ == AttachmentState::kAttached) {
-    switch (texture_lifecycle_) {
-      case ImageLifecycle::kReset: {
-        dl_image_.reset();
-        image_lru_.Clear();
-      } break;
-      case ImageLifecycle::kKeepAlive:
-        // Intentionally do nothing.
-        ///
-        // If we reset the image, we are not able to re-acquire it, but the
-        // producer of the image will not know to reproduce it, resulting in a
-        // blank image. See https://github.com/flutter/flutter/issues/163561.
-        break;
-    }
     Detach();
   }
   state_ = AttachmentState::kDetached;
 }
 
+void ImageExternalTexture::DrainPendingEvictions() {
+  if (!ndk_bridge_) {
+    return;
+  }
+  std::vector<NdkImageTextureBridge::BufferEviction> buffers;
+  std::vector<uint64_t> closed_generations;
+  ndk_bridge_->TakePendingEvictions(&buffers, &closed_generations);
+  for (const auto& item : buffers) {
+    image_cache_.erase(ImageCacheKey{
+        .reader_generation = item.reader_generation,
+        .hardware_buffer_id = item.buffer_id,
+    });
+  }
+  if (!closed_generations.empty()) {
+    std::unordered_set<uint64_t> closed_set(closed_generations.begin(),
+                                            closed_generations.end());
+    for (auto it = image_cache_.begin(); it != image_cache_.end();) {
+      if (closed_set.find(it->first.reader_generation) != closed_set.end()) {
+        it = image_cache_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+}
+
+sk_sp<flutter::DlImage> ImageExternalTexture::FindCachedImage(
+    uint64_t reader_generation,
+    std::optional<HardwareBufferKey> key) {
+  if (!key.has_value()) {
+    return nullptr;
+  }
+  auto found = image_cache_.find(ImageCacheKey{
+      .reader_generation = reader_generation,
+      .hardware_buffer_id = key.value(),
+  });
+  if (found == image_cache_.end()) {
+    return nullptr;
+  }
+  found->second.last_used_seq = ++use_sequence_;
+  return found->second.dl_image;
+}
+
+void ImageExternalTexture::CacheImage(uint64_t reader_generation,
+                                      std::optional<HardwareBufferKey> key,
+                                      sk_sp<flutter::DlImage> image) {
+  if (!key.has_value() || !image) {
+    return;
+  }
+  const ImageCacheKey cache_key{
+      .reader_generation = reader_generation,
+      .hardware_buffer_id = key.value(),
+  };
+  image_cache_[cache_key] = CacheEntry{
+      .dl_image = std::move(image),
+      .last_used_seq = ++use_sequence_,
+  };
+  if (reader_generation == 0) {
+    EnforceLegacyGenerationZeroCap();
+  }
+}
+
+void ImageExternalTexture::EnforceLegacyGenerationZeroCap() {
+  size_t gen_zero_count = 0;
+  for (const auto& [k, _] : image_cache_) {
+    if (k.reader_generation == 0) {
+      ++gen_zero_count;
+    }
+  }
+  while (gen_zero_count > kLegacyJavaCacheMaxEntries) {
+    auto oldest_it = image_cache_.end();
+    for (auto it = image_cache_.begin(); it != image_cache_.end(); ++it) {
+      if (it->first.reader_generation != 0) {
+        continue;
+      }
+      if (oldest_it == image_cache_.end() ||
+          it->second.last_used_seq < oldest_it->second.last_used_seq) {
+        oldest_it = it;
+      }
+    }
+    if (oldest_it == image_cache_.end()) {
+      break;
+    }
+    image_cache_.erase(oldest_it);
+    --gen_zero_count;
+  }
+}
+
+ImageExternalTexture::AcquiredFrame ImageExternalTexture::AcquireLatestFrame() {
+  if (ndk_bridge_ && ndk_bridge_->HasReaders()) {
+    auto native_frame = ndk_bridge_->AcquireLatestFromReaders();
+    if (native_frame.hardware_buffer == nullptr) {
+      return {};
+    }
+    return AcquiredFrame{
+        .reader_generation = native_frame.reader_generation,
+        .ahardware_buffer = native_frame.hardware_buffer,
+        .owned_buffer_ref = std::move(native_frame.owned_buffer_ref),
+        .acquire_fence_fd = std::move(native_frame.acquire_fence_fd),
+        .java_hardware_buffer = JavaLocalRef(),
+    };
+  }
+
+  if (image_texture_entry_.is_null() || !jni_facade_) {
+    return {};
+  }
+  JavaLocalRef image = AcquireLatestImage();
+  if (image.is_null()) {
+    return {};
+  }
+  JavaLocalRef hardware_buffer = HardwareBufferFor(image);
+  if (hardware_buffer.is_null()) {
+    return {};
+  }
+  AHardwareBuffer* ahb = AHardwareBufferFor(hardware_buffer);
+  if (ahb == nullptr) {
+    CloseHardwareBuffer(hardware_buffer);
+    return {};
+  }
+  return AcquiredFrame{
+      .reader_generation = 0,
+      .ahardware_buffer = ahb,
+      .acquire_fence_fd = fml::UniqueFD(),
+      .java_hardware_buffer = std::move(hardware_buffer),
+  };
+}
+
 JavaLocalRef ImageExternalTexture::AcquireLatestImage() {
   JNIEnv* env = fml::jni::AttachCurrentThread();
   FML_CHECK(env != nullptr);
-
-  // ImageTextureEntry.acquireLatestImage.
-  JavaLocalRef image_java =
-      jni_facade_->ImageProducerTextureEntryAcquireLatestImage(
-          JavaLocalRef(image_texture_entry_));
-  return image_java;
+  return jni_facade_->ImageProducerTextureEntryAcquireLatestImage(
+      JavaLocalRef(image_texture_entry_));
 }
 
 void ImageExternalTexture::CloseImage(const fml::jni::JavaRef<jobject>& image) {
@@ -117,7 +240,6 @@ JavaLocalRef ImageExternalTexture::HardwareBufferFor(
   if (image.obj() == nullptr) {
     return JavaLocalRef();
   }
-  // Image.getHardwareBuffer.
   return jni_facade_->ImageGetHardwareBuffer(JavaLocalRef(image));
 }
 

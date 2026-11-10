@@ -6,8 +6,6 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_IMAGE_EXTERNAL_TEXTURE_GL_H_
 
 #include <memory>
-#include <optional>
-#include <unordered_map>
 
 #include "flutter/impeller/toolkit/egl/image.h"
 #include "flutter/impeller/toolkit/gles/texture.h"
@@ -19,41 +17,22 @@ class ImageExternalTextureGL : public ImageExternalTexture {
  public:
   ImageExternalTextureGL(
       int64_t id,
-      const fml::jni::ScopedJavaGlobalRef<jobject>& image_textury_entry,
+      const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-      ImageExternalTexture::ImageLifecycle lifecycle);
+      ImageExternalTexture::ImageLifecycle lifecycle,
+      std::shared_ptr<NdkImageTextureBridge> ndk_bridge = nullptr);
 
  protected:
-  // |ImageExternalTexture|
   void Attach(PaintContext& context) override;
-
-  // |ImageExternalTexture|
   void Detach() override;
-
-  // |ImageExternalTexture|
   void ProcessFrame(PaintContext& context, const SkRect& bounds) override;
 
   virtual sk_sp<flutter::DlImage> CreateDlImage(
       PaintContext& context,
       const SkRect& bounds,
-      std::optional<HardwareBufferKey> id,
       impeller::UniqueEGLImageKHR&& egl_image) = 0;
 
-  void UpdateImage(JavaLocalRef& hardware_buffer,
-                   const SkRect& bounds,
-                   PaintContext& context);
-
-  impeller::UniqueEGLImageKHR CreateEGLImage(AHardwareBuffer* buffer);
-
-  struct GlEntry {
-    impeller::UniqueEGLImageKHR egl_image;
-    impeller::UniqueGLTexture texture;
-  };
-
-  // Each GL entry is keyed off of the currently active
-  // hardware buffers and evicted when the hardware buffer
-  // is removed from the LRU cache.
-  std::unordered_map<HardwareBufferKey, GlEntry> gl_entries_;
+  virtual impeller::UniqueEGLImageKHR CreateEGLImage(AHardwareBuffer* buffer);
 
   FML_DISALLOW_COPY_AND_ASSIGN(ImageExternalTextureGL);
 };

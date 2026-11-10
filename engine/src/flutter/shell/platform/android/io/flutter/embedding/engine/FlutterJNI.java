@@ -1059,6 +1059,27 @@ public class FlutterJNI {
   }
 
   private native void nativeUnregisterTexture(long nativeShellHolderId, long textureId);
+
+  @UiThread
+  @Nullable
+  public Surface createNativeImageReaderSurface(long textureId, int width, int height) {
+    ensureRunningOnMainThread();
+    ensureAttachedToNative();
+    return nativeCreateNativeImageReaderSurface(nativeShellHolderId, textureId, width, height);
+  }
+
+  @Nullable
+  private native Surface nativeCreateNativeImageReaderSurface(
+      long nativeShellHolderId, long textureId, int width, int height);
+
+  @UiThread
+  public void closeNativeImageReaders(long textureId) {
+    ensureRunningOnMainThread();
+    ensureAttachedToNative();
+    nativeCloseNativeImageReaders(nativeShellHolderId, textureId);
+  }
+
+  private native void nativeCloseNativeImageReaders(long nativeShellHolderId, long textureId);
   // ------ Start Texture Registration Support -----
 
   // ------ Start Dart Execution Support -------

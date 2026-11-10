@@ -520,12 +520,14 @@ public class FlutterRenderer implements TextureRegistry {
 
     /** Internal class: state held per ImageReader. */
     private class PerImageReader {
-      public final ImageReader reader;
+      @Nullable public final ImageReader reader;
+      @Nullable private final Surface nativeSurface;
       private final ArrayDeque<PerImage> imageQueue = new ArrayDeque<>();
       private boolean closed = false;
 
       public PerImageReader(ImageReader reader) {
         this.reader = reader;
+        this.nativeSurface = null;
         ImageReader.OnImageAvailableListener onImageAvailableListener =
             r -> {
               Image image = null;
@@ -545,6 +547,16 @@ public class FlutterRenderer implements TextureRegistry {
             };
         reader.setOnImageAvailableListener(
             onImageAvailableListener, new Handler(Looper.getMainLooper()));
+      }
+
+      PerImageReader(@NonNull Surface nativeSurface) {
+        this.reader = null;
+        this.nativeSurface = nativeSurface;
+      }
+
+      @Nullable
+      Surface getSurface() {
+        return nativeSurface != null ? nativeSurface : reader.getSurface();
       }
 
       PerImage queueImage(Image image) {
@@ -573,7 +585,7 @@ public class FlutterRenderer implements TextureRegistry {
 
       /** returns true if we can prune this reader */
       boolean canPrune() {
-        return imageQueue.isEmpty() && lastReaderDequeuedFrom != this;
+        return reader != null && imageQueue.isEmpty() && lastReaderDequeuedFrom != this;
       }
 
       boolean imageQueueIsEmpty() {
@@ -582,10 +594,14 @@ public class FlutterRenderer implements TextureRegistry {
 
       void close() {
         closed = true;
-        if (VERBOSE_LOGS) {
-          Log.i(TAG, "Closing reader=" + reader.hashCode());
+        if (reader != null) {
+          if (VERBOSE_LOGS) {
+            Log.i(TAG, "Closing reader=" + reader.hashCode());
+          }
+          reader.close();
+        } else if (nativeSurface != null) {
+          nativeSurface.release();
         }
-        reader.close();
         imageQueue.clear();
       }
     }
@@ -762,7 +778,14 @@ public class FlutterRenderer implements TextureRegistry {
     }
 
     private void cleanup() {
+      boolean hasNativeReaders = false;
       synchronized (lock) {
+        for (PerImageReader pir : imageReaderQueue) {
+          if (pir.nativeSurface != null) {
+            hasNativeReaders = true;
+            pir.close();
+          }
+        }
         for (PerImageReader pir : perImageReaders.values()) {
           if (lastReaderDequeuedFrom == pir) {
             lastReaderDequeuedFrom = null;
@@ -781,6 +804,9 @@ public class FlutterRenderer implements TextureRegistry {
           lastReaderDequeuedFrom = null;
         }
         imageReaderQueue.clear();
+      }
+      if (hasNativeReaders && flutterJNI.isAttached()) {
+        flutterJNI.closeNativeImageReaders(id);
       }
     }
 
@@ -867,10 +893,10 @@ public class FlutterRenderer implements TextureRegistry {
     @Override
     public Surface getSurface() {
       PerImageReader pir = getActiveReader();
-      if (VERBOSE_LOGS) {
+      if (VERBOSE_LOGS && pir.reader != null) {
         Log.i(TAG, pir.reader.hashCode() + " returning surface to render a new frame.");
       }
-      return pir.reader.getSurface();
+      return pir.getSurface();
     }
 
     @Override
@@ -905,17 +931,31 @@ public class FlutterRenderer implements TextureRegistry {
 
     private PerImageReader getActiveReader() {
       synchronized (lock) {
-        if (!createNewReader) {
+        if (!createNewReader && !imageReaderQueue.isEmpty()) {
           // Verify we don't need a new ImageReader anyway because its Surface has been invalidated.
           PerImageReader lastPerImageReader = imageReaderQueue.peekLast();
-          Surface lastImageReaderSurface = lastPerImageReader.reader.getSurface();
-          boolean lastImageReaderHasValidSurface = lastImageReaderSurface.isValid();
+          Surface lastImageReaderSurface = lastPerImageReader.getSurface();
+          boolean lastImageReaderHasValidSurface =
+              lastImageReaderSurface != null && lastImageReaderSurface.isValid();
           if (lastImageReaderHasValidSurface) {
             return lastPerImageReader;
           }
         }
 
         createNewReader = false;
+        if (Build.VERSION.SDK_INT >= API_LEVELS.API_29 && flutterJNI.isAttached()) {
+          Surface nativeSurface =
+              flutterJNI.createNativeImageReaderSurface(id, requestedWidth, requestedHeight);
+          if (nativeSurface != null) {
+            while (!imageReaderQueue.isEmpty()
+                && imageReaderQueue.peekFirst().nativeSurface != null) {
+              imageReaderQueue.removeFirst();
+            }
+            PerImageReader perReader = new PerImageReader(nativeSurface);
+            imageReaderQueue.add(perReader);
+            return perReader;
+          }
+        }
         // Create a new ImageReader and add it to the queue.
         ImageReader reader = createImageReader();
         if (VERBOSE_LOGS) {

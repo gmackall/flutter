@@ -6,7 +6,6 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_IMAGE_EXTERNAL_TEXTURE_GL_IMPELLER_H_
 
 #include <memory>
-#include <optional>
 
 #include "flutter/fml/macros.h"
 #include "flutter/impeller/renderer/backend/gles/context_gles.h"
@@ -23,20 +22,15 @@ class ImageExternalTextureGLImpeller : public ImageExternalTextureGL {
       const fml::jni::ScopedJavaGlobalRef<jobject>&
           hardware_buffer_texture_entry,
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-      ImageExternalTexture::ImageLifecycle lifecycle);
+      ImageExternalTexture::ImageLifecycle lifecycle,
+      std::shared_ptr<NdkImageTextureBridge> ndk_bridge = nullptr);
 
  private:
-  // |ImageExternalTexture|
   void Attach(PaintContext& context) override;
-
-  // |ImageExternalTexture|
   void Detach() override;
-
-  // |ImageExternalTextureGL|
   sk_sp<flutter::DlImage> CreateDlImage(
       PaintContext& context,
       const SkRect& bounds,
-      std::optional<HardwareBufferKey> id,
       impeller::UniqueEGLImageKHR&& egl_image) override;
 
   const std::shared_ptr<impeller::ContextGLES> impeller_context_;

@@ -179,7 +179,18 @@ PlatformViewAndroid::PlatformViewAndroid(
   }
 }
 
-PlatformViewAndroid::~PlatformViewAndroid() = default;
+PlatformViewAndroid::~PlatformViewAndroid() {
+  std::unordered_map<int64_t, std::shared_ptr<NdkImageTextureBridge>> bridges;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    bridges.swap(ndk_image_bridges_);
+  }
+  for (auto& [_, bridge] : bridges) {
+    if (bridge) {
+      bridge->CloseAllReaders();
+    }
+  }
+}
 
 void PlatformViewAndroid::NotifyCreated(
     fml::RefPtr<AndroidNativeWindow> native_window) {
@@ -386,34 +397,112 @@ void PlatformViewAndroid::RegisterImageTexture(
     int64_t texture_id,
     const fml::jni::ScopedJavaGlobalRef<jobject>& image_texture_entry,
     ImageExternalTexture::ImageLifecycle lifecycle) {
+  if (!android_context_) {
+    return;
+  }
+
+  auto bridge = std::make_shared<NdkImageTextureBridge>(
+      texture_id, GetWeakPtr(), task_runners_.GetPlatformTaskRunner(),
+      task_runners_.GetRasterTaskRunner());
+  std::shared_ptr<NdkImageTextureBridge> previous_bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it != ndk_image_bridges_.end()) {
+      previous_bridge = std::move(it->second);
+    }
+    ndk_image_bridges_[texture_id] = bridge;
+  }
+  if (previous_bridge) {
+    previous_bridge->CloseAllReaders();
+  }
+
+  std::shared_ptr<ImageExternalTexture> texture;
   switch (android_context_->RenderingApi()) {
 #if !SLIMPELLER
     case AndroidRenderingAPI::kSkiaOpenGLES:
-      // Legacy GL.
-      RegisterTexture(std::make_shared<ImageExternalTextureGLSkia>(
+      texture = std::make_shared<ImageExternalTextureGLSkia>(
           std::static_pointer_cast<AndroidContextGLSkia>(android_context_),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle, bridge);
       break;
     case AndroidRenderingAPI::kSoftware:
       FML_LOG(INFO) << "Software rendering does not support external textures.";
-      break;
+      return;
 #endif  // !SLIMPELLER
     case AndroidRenderingAPI::kImpellerOpenGLES:
-      // Impeller GLES.
-      RegisterTexture(std::make_shared<ImageExternalTextureGLImpeller>(
+      texture = std::make_shared<ImageExternalTextureGLImpeller>(
           std::static_pointer_cast<impeller::ContextGLES>(
               android_context_->GetImpellerContext()),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle, bridge);
       break;
     case AndroidRenderingAPI::kImpellerVulkan:
-      RegisterTexture(std::make_shared<ImageExternalTextureVKImpeller>(
+      texture = std::make_shared<ImageExternalTextureVKImpeller>(
           std::static_pointer_cast<impeller::ContextVK>(
               android_context_->GetImpellerContext()),
-          texture_id, image_texture_entry, jni_facade_, lifecycle));
+          texture_id, image_texture_entry, jni_facade_, lifecycle, bridge);
       break;
     case AndroidRenderingAPI::kImpellerAutoselect:
       FML_CHECK(false);
-      break;
+      return;
+  }
+
+  if (texture) {
+    bridge->BindTexture(texture);
+    RegisterTexture(std::move(texture));
+  }
+}
+
+void PlatformViewAndroid::UnregisterExternalTexture(int64_t texture_id) {
+  std::shared_ptr<NdkImageTextureBridge> bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it != ndk_image_bridges_.end()) {
+      bridge = std::move(it->second);
+      ndk_image_bridges_.erase(it);
+    }
+  }
+  if (bridge) {
+    bridge->CloseAllReaders();
+  }
+  UnregisterTexture(texture_id);
+}
+
+jobject PlatformViewAndroid::CreateNativeImageReaderSurface(JNIEnv* env,
+                                                            int64_t texture_id,
+                                                            int32_t width,
+                                                            int32_t height) {
+  if (env == nullptr) {
+    return nullptr;
+  }
+  std::shared_ptr<NdkImageTextureBridge> bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it == ndk_image_bridges_.end()) {
+      return nullptr;
+    }
+    bridge = it->second;
+  }
+  jobject java_surface = nullptr;
+  if (!NdkImageReader::Create(env, width, height, std::move(bridge),
+                              &java_surface)) {
+    return nullptr;
+  }
+  return java_surface;
+}
+
+void PlatformViewAndroid::CloseNativeImageReaders(int64_t texture_id) {
+  std::shared_ptr<NdkImageTextureBridge> bridge;
+  {
+    std::lock_guard<std::mutex> lock(ndk_readers_mutex_);
+    auto it = ndk_image_bridges_.find(texture_id);
+    if (it != ndk_image_bridges_.end()) {
+      bridge = it->second;
+    }
+  }
+  if (bridge) {
+    bridge->CloseAllReaders();
   }
 }
 
