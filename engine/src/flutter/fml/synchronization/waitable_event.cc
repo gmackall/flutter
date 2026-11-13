@@ -8,6 +8,7 @@
 #include <ctime>
 
 #include "flutter/fml/logging.h"
+#include "flutter/fml/task_runner.h"
 #include "flutter/fml/time/time_delta.h"
 #include "flutter/fml/time/time_point.h"
 
@@ -26,6 +27,12 @@ bool WaitWithTimeoutImpl(std::unique_lock<std::mutex>* locker,
   if (condition()) {
     return false;
   }
+
+  if (timeout <= TimeDelta::Zero()) {
+    return true;
+  }
+
+  ScopedTaskRunnerWaitPreemption preempt_guard;
 
   // We may get spurious wakeups.
   TimeDelta wait_remaining = timeout;
@@ -71,6 +78,11 @@ void AutoResetWaitableEvent::Reset() {
 
 void AutoResetWaitableEvent::Wait() {
   std::unique_lock<std::mutex> locker(mutex_);
+  if (signaled_) {
+    signaled_ = false;
+    return;
+  }
+  ScopedTaskRunnerWaitPreemption preempt_guard;
   while (!signaled_) {
     cv_.wait(locker);
   }
@@ -84,6 +96,12 @@ bool AutoResetWaitableEvent::WaitWithTimeout(TimeDelta timeout) {
     signaled_ = false;
     return false;
   }
+
+  if (timeout <= TimeDelta::Zero()) {
+    return true;
+  }
+
+  ScopedTaskRunnerWaitPreemption preempt_guard;
 
   // We may get spurious wakeups.
   TimeDelta wait_remaining = timeout;
@@ -143,6 +161,7 @@ void ManualResetWaitableEvent::Wait() {
     return;
   }
 
+  ScopedTaskRunnerWaitPreemption preempt_guard;
   auto last_signal_id = signal_id_;
   do {
     cv_.wait(locker);

@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/android/external_view_embedder/external_view_embedder.h"
 
 #include <cmath>
+#include <utility>
 
 #include "flow/view_slicer.h"
 #include "flutter/common/constants.h"
@@ -38,14 +39,16 @@ AndroidExternalViewEmbedder::AndroidExternalViewEmbedder(
     const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
     std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-    const TaskRunners& task_runners)
+    const TaskRunners& task_runners,
+    fml::closure on_schedule_frame)
     : ExternalViewEmbedder(),
       android_context_(android_context),
       jni_facade_(std::move(jni_facade)),
       surface_factory_(std::move(surface_factory)),
       surface_pool_(
           std::make_unique<SurfacePool>(/*use_new_surface_methods=*/false)),
-      task_runners_(task_runners) {}
+      task_runners_(task_runners),
+      on_schedule_frame_(std::move(on_schedule_frame)) {}
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder::PrerollCompositeEmbeddedView(
@@ -150,7 +153,7 @@ void AndroidExternalViewEmbedder::SubmitFlutterView(
                               slices_.at(view_id).get(),  //
                               overlay->second             //
         );
-    if (should_submit_current_frame) {
+    if (frame && should_submit_current_frame) {
       frame->Submit();
     }
   }
@@ -162,8 +165,17 @@ AndroidExternalViewEmbedder::CreateSurfaceIfNeeded(GrDirectContext* context,
                                                    int64_t view_id,
                                                    EmbedderViewSlice* slice,
                                                    const DlRect& rect) {
+  bool was_preempted = false;
   std::shared_ptr<OverlayLayer> layer = surface_pool_->GetLayer(
-      context, android_context_, jni_facade_, surface_factory_);
+      context, android_context_, jni_facade_, surface_factory_,
+      task_runners_.GetPlatformTaskRunner(), &was_preempted);
+  if (layer == nullptr) {
+    if (was_preempted && on_schedule_frame_ &&
+        task_runners_.GetPlatformTaskRunner()) {
+      task_runners_.GetPlatformTaskRunner()->PostTask(on_schedule_frame_);
+    }
+    return nullptr;
+  }
 
   std::unique_ptr<SurfaceFrame> frame =
       layer->surface->AcquireFrame(frame_size_);
@@ -292,16 +304,8 @@ void AndroidExternalViewEmbedder::Teardown() {
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder::DestroySurfaces() {
-  if (!surface_pool_->HasLayers()) {
-    return;
-  }
-  fml::AutoResetWaitableEvent latch;
-  fml::TaskRunner::RunNowOrPostTask(task_runners_.GetPlatformTaskRunner(),
-                                    [&]() {
-                                      surface_pool_->DestroyLayers(jni_facade_);
-                                      latch.Signal();
-                                    });
-  latch.Wait();
+  surface_pool_->DestroyLayers(jni_facade_,
+                               task_runners_.GetPlatformTaskRunner());
 }
 
 }  // namespace flutter

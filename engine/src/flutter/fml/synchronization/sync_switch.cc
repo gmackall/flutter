@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <mutex>
 
+#include "flutter/fml/task_runner.h"
+
 namespace fml {
 
 SyncSwitch::Handlers& SyncSwitch::Handlers::SetIfTrue(
@@ -24,7 +26,11 @@ SyncSwitch::Handlers& SyncSwitch::Handlers::SetIfFalse(
 SyncSwitch::SyncSwitch(bool value) : value_(value) {}
 
 void SyncSwitch::Execute(const SyncSwitch::Handlers& handlers) const {
-  std::shared_lock lock(mutex_);
+  std::shared_lock<std::shared_mutex> lock(mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    ScopedTaskRunnerWaitPreemption preempt_guard;
+    lock.lock();
+  }
   if (value_) {
     handlers.true_handler();
   } else {
@@ -34,7 +40,11 @@ void SyncSwitch::Execute(const SyncSwitch::Handlers& handlers) const {
 
 void SyncSwitch::SetSwitch(bool value) {
   {
-    std::unique_lock lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      ScopedTaskRunnerWaitPreemption preempt_guard;
+      lock.lock();
+    }
     value_ = value;
   }
   for (Observer* observer : observers_) {
@@ -43,7 +53,11 @@ void SyncSwitch::SetSwitch(bool value) {
 }
 
 void SyncSwitch::AddObserver(Observer* observer) const {
-  std::unique_lock lock(mutex_);
+  std::unique_lock<std::shared_mutex> lock(mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    ScopedTaskRunnerWaitPreemption preempt_guard;
+    lock.lock();
+  }
   if (std::find(observers_.begin(), observers_.end(), observer) ==
       observers_.end()) {
     observers_.push_back(observer);
@@ -51,7 +65,11 @@ void SyncSwitch::AddObserver(Observer* observer) const {
 }
 
 void SyncSwitch::RemoveObserver(Observer* observer) const {
-  std::unique_lock lock(mutex_);
+  std::unique_lock<std::shared_mutex> lock(mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    ScopedTaskRunnerWaitPreemption preempt_guard;
+    lock.lock();
+  }
   observers_.erase(std::remove(observers_.begin(), observers_.end(), observer),
                    observers_.end());
 }

@@ -5,9 +5,13 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_EXTERNAL_VIEW_EMBEDDER_SURFACE_POOL_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_EXTERNAL_VIEW_EMBEDDER_SURFACE_POOL_H_
 
+#include <cstdint>
+#include <memory>
 #include <mutex>
+#include <vector>
 
 #include "flutter/flow/surface.h"
+#include "flutter/fml/task_runner.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/surface/android_surface.h"
 
@@ -52,11 +56,24 @@ class SurfacePool {
   // Gets a layer from the pool if available, or allocates a new one.
   // Finally, it marks the layer as used. That is, it increments
   // `available_layer_index_`.
-  std::shared_ptr<OverlayLayer> GetLayer(
+  //
+  // If `platform_task_runner` is non-null and a new overlay surface must be
+  // allocated, the Java overlay creation is dispatched to
+  // `platform_task_runner` using a preemptible wait. If that wait is preempted
+  // because the platform thread is in (or enters) a blocking synchronization
+  // wait, or if the pool's layers are destroyed concurrently while allocating
+  // the surface, this method returns `nullptr`. If `out_preempted` is non-null,
+  // `*out_preempted` is set to true if and only if the wait was preempted.
+  //
+  // CONTRACT: Every caller MUST handle a `nullptr` return value and safely
+  // skip overlay rendering for the current frame.
+  [[nodiscard]] std::shared_ptr<OverlayLayer> GetLayer(
       GrDirectContext* gr_context,
       const AndroidContext& android_context,
       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-      const std::shared_ptr<AndroidSurfaceFactory>& surface_factory);
+      const std::shared_ptr<AndroidSurfaceFactory>& surface_factory,
+      const fml::RefPtr<fml::TaskRunner>& platform_task_runner = nullptr,
+      bool* out_preempted = nullptr);
 
   // Gets the layers in the pool that aren't currently used.
   // This method doesn't mark the layers as unused.
@@ -66,7 +83,16 @@ class SurfacePool {
   void RecycleLayers();
 
   // Destroys all the layers in the pool.
-  void DestroyLayers(const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade);
+  //
+  // If `platform_task_runner` is non-null, the Java overlay destruction is
+  // dispatched to `platform_task_runner` using
+  // `fml::PreemptionAction::kRunAsynchronously`, so `DestroyLayers` does not
+  // deadlock if the platform thread is blocked waiting on the raster thread,
+  // while still ensuring the Java overlay views are destroyed once the
+  // platform thread unblocks.
+  void DestroyLayers(
+      const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
+      const fml::RefPtr<fml::TaskRunner>& platform_task_runner = nullptr);
 
   // Sets the frame size used by the layers in the pool.
   // If the current layers in the pool have a different frame size,
@@ -82,6 +108,13 @@ class SurfacePool {
   void TrimLayers();
 
  private:
+  struct SharedPoolState {
+    std::mutex mutex;
+    uint64_t generation = 0;
+    size_t pending_creations = 0;
+    bool has_live_java_overlay = false;
+  };
+
   // The index of the entry in the layers_ vector that determines the beginning
   // of the unused layers. For example, consider the following vector:
   //  _____
@@ -105,12 +138,12 @@ class SurfacePool {
   // The frame size to be used by future layers.
   DlISize requested_frame_size_;
 
-  // Used to guard public methods.
+  // Used to guard public methods. Never held across cross-thread waits on
+  // |platform_task_runner|.
   std::mutex mutex_;
-  bool use_new_surface_methods_ = false;
-
-  void DestroyLayersLocked(
-      const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade);
+  const bool use_new_surface_methods_ = false;
+  const std::shared_ptr<SharedPoolState> state_ =
+      std::make_shared<SharedPoolState>();
 };
 
 }  // namespace flutter

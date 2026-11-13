@@ -26,24 +26,102 @@ std::shared_ptr<OverlayLayer> SurfacePool::GetLayer(
     GrDirectContext* gr_context,
     const AndroidContext& android_context,
     const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-    const std::shared_ptr<AndroidSurfaceFactory>& surface_factory) {
-  std::lock_guard lock(mutex_);
-  if (requested_frame_size_ != current_frame_size_) {
-    if (use_new_surface_methods_) {
-      // The overlay surface is persistent, so resize it in place. Nothing else
-      // resizes the swapchain: |Surface::AcquireFrame| ignores the size it is
-      // handed.
-      for (const std::shared_ptr<OverlayLayer>& layer : layers_) {
-        layer->android_surface->OnScreenSurfaceResize(requested_frame_size_);
+    const std::shared_ptr<AndroidSurfaceFactory>& surface_factory,
+    const fml::RefPtr<fml::TaskRunner>& platform_task_runner,
+    bool* out_preempted) {
+  if (out_preempted) {
+    *out_preempted = false;
+  }
+  const intptr_t gr_context_key = reinterpret_cast<intptr_t>(gr_context);
+
+  bool destroy_for_frame_size_change = false;
+  {
+    std::lock_guard lock(mutex_);
+    if (requested_frame_size_ != current_frame_size_) {
+      if (use_new_surface_methods_) {
+        // The overlay surface is persistent, so resize it in place. Nothing
+        // else resizes the swapchain: |Surface::AcquireFrame| ignores the size
+        // it is handed.
+        for (const std::shared_ptr<OverlayLayer>& layer : layers_) {
+          layer->android_surface->OnScreenSurfaceResize(requested_frame_size_);
+        }
+        if (!layers_.empty()) {
+          current_frame_size_ = requested_frame_size_;
+        }
+      } else if (!layers_.empty()) {
+        destroy_for_frame_size_change = true;
       }
-    } else {
-      // Destroy current layers in the pool if the frame size has changed.
-      DestroyLayersLocked(jni_facade);
     }
   }
-  intptr_t gr_context_key = reinterpret_cast<intptr_t>(gr_context);
-  // Allocate a new surface if there isn't one available.
-  if (available_layer_index_ >= layers_.size()) {
+
+  if (destroy_for_frame_size_change) {
+    // Destroy current layers in the pool if the frame size has changed.
+    DestroyLayers(jni_facade, platform_task_runner);
+  }
+
+  uint64_t start_generation = 0;
+  bool need_new_layer = false;
+  {
+    std::lock_guard lock(mutex_);
+    if (available_layer_index_ >= layers_.size()) {
+      need_new_layer = true;
+      std::lock_guard state_lock(state_->mutex);
+      start_generation = state_->generation;
+      ++state_->pending_creations;
+    }
+  }
+
+  if (need_new_layer) {
+    std::unique_ptr<PlatformViewAndroidJNI::OverlayMetadata> java_metadata;
+    auto state = state_;
+    const bool use_new = use_new_surface_methods_;
+    auto create_java_overlay = [&java_metadata, &jni_facade, state,
+                                start_generation, use_new]() {
+      {
+        std::lock_guard state_lock(state->mutex);
+        if (state->generation != start_generation) {
+          return;
+        }
+      }
+      java_metadata = use_new ? jni_facade->createOverlaySurface2()
+                              : jni_facade->FlutterViewCreateOverlaySurface();
+      if (java_metadata && java_metadata->window) {
+        std::lock_guard state_lock(state->mutex);
+        state->has_live_java_overlay = true;
+      }
+    };
+
+    if (platform_task_runner) {
+      const fml::PreemptibleWaitResult wait_result =
+          fml::TaskRunner::RunNowOrPostTaskAndWaitWithPreemption(
+              platform_task_runner, create_java_overlay,
+              fml::PreemptionAction::kCancelTask);
+      if (wait_result == fml::PreemptibleWaitResult::kPreempted) {
+        std::lock_guard state_lock(state_->mutex);
+        --state_->pending_creations;
+        if (out_preempted) {
+          *out_preempted = true;
+        }
+        return nullptr;
+      }
+    } else {
+      create_java_overlay();
+    }
+
+    std::lock_guard lock(mutex_);
+    {
+      std::lock_guard state_lock(state_->mutex);
+      --state_->pending_creations;
+      if (state_->generation != start_generation) {
+        return nullptr;
+      }
+      if (!java_metadata || !java_metadata->window) {
+        FML_LOG(ERROR)
+            << "Overlay surface creation returned a null native window.";
+        return nullptr;
+      }
+    }
+
     std::unique_ptr<AndroidSurface> android_surface =
         surface_factory->CreateSurface();
 
@@ -51,12 +129,6 @@ std::shared_ptr<OverlayLayer> SurfacePool::GetLayer(
         << "Could not create an OpenGL, Vulkan or Software surface to set up "
            "rendering.";
 
-    std::unique_ptr<PlatformViewAndroidJNI::OverlayMetadata> java_metadata =
-        use_new_surface_methods_
-            ? jni_facade->createOverlaySurface2()
-            : jni_facade->FlutterViewCreateOverlaySurface();
-
-    FML_CHECK(java_metadata->window);
     android_surface->SetNativeWindow(java_metadata->window, jni_facade);
     android_surface->SetupImpellerSurface();
 
@@ -70,8 +142,16 @@ std::shared_ptr<OverlayLayer> SurfacePool::GetLayer(
         );
     layer->gr_context_key = gr_context_key;
     layers_.push_back(layer);
+
+    available_layer_index_++;
+    current_frame_size_ = requested_frame_size_;
+    return layer;
   }
 
+  std::lock_guard lock(mutex_);
+  if (available_layer_index_ >= layers_.size()) {
+    return nullptr;
+  }
   std::shared_ptr<OverlayLayer> layer = layers_[available_layer_index_];
   // Since the surfaces are recycled, it's possible that the GrContext is
   // different.
@@ -99,23 +179,56 @@ bool SurfacePool::HasLayers() {
 }
 
 void SurfacePool::DestroyLayers(
-    const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
-  std::lock_guard lock(mutex_);
-  DestroyLayersLocked(jni_facade);
-}
+    const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
+    const fml::RefPtr<fml::TaskRunner>& platform_task_runner) {
+  std::vector<std::shared_ptr<OverlayLayer>> layers_to_destroy;
+  uint64_t destroy_gen = 0;
+  bool should_destroy_java_overlays = false;
+  {
+    std::lock_guard lock(mutex_);
+    layers_to_destroy = std::move(layers_);
+    layers_.clear();
+    available_layer_index_ = 0;
+    std::lock_guard state_lock(state_->mutex);
+    destroy_gen = ++state_->generation;
+    should_destroy_java_overlays = !layers_to_destroy.empty() ||
+                                   state_->pending_creations > 0 ||
+                                   state_->has_live_java_overlay;
+  }
+  layers_to_destroy.clear();
 
-void SurfacePool::DestroyLayersLocked(
-    const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
-  if (layers_.empty()) {
+  if (!should_destroy_java_overlays) {
     return;
   }
-  if (use_new_surface_methods_) {
-    jni_facade->destroyOverlaySurface2();
+
+  auto destroy_java_overlays = [state = state_, jni_facade,
+                                use_new = use_new_surface_methods_,
+                                destroy_gen]() {
+    {
+      std::lock_guard state_lock(state->mutex);
+      if (!state->has_live_java_overlay || state->generation > destroy_gen) {
+        return;
+      }
+      state->has_live_java_overlay = false;
+    }
+    if (use_new) {
+      jni_facade->destroyOverlaySurface2();
+    } else {
+      jni_facade->FlutterViewDestroyOverlaySurfaces();
+    }
+  };
+
+  if (platform_task_runner) {
+    // DestroyLayers uses kRunAsynchronously so that if the platform thread is
+    // currently blocked waiting on the raster thread, the raster thread does
+    // not deadlock waiting for the platform thread, while still ensuring the
+    // Java overlay views are destroyed once the platform thread unblocks.
+    (void)fml::TaskRunner::RunNowOrPostTaskAndWaitWithPreemption(
+        platform_task_runner, destroy_java_overlays,
+        fml::PreemptionAction::kRunAsynchronously);
   } else {
-    jni_facade->FlutterViewDestroyOverlaySurfaces();
+    destroy_java_overlays();
   }
-  layers_.clear();
-  available_layer_index_ = 0;
 }
 
 std::vector<std::shared_ptr<OverlayLayer>> SurfacePool::GetUnusedLayers() {
@@ -133,6 +246,7 @@ void SurfacePool::SetFrameSize(DlISize frame_size) {
 }
 
 void SurfacePool::ResetLayers() {
+  std::lock_guard lock(mutex_);
   available_layer_index_ = 0;
 }
 
@@ -141,4 +255,5 @@ void SurfacePool::TrimLayers() {
   layers_.erase(layers_.begin() + available_layer_index_, layers_.end());
   available_layer_index_ = 0;
 }
+
 }  // namespace flutter

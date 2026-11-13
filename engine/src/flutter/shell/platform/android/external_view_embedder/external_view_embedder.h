@@ -32,7 +32,8 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
       const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
       std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-      const TaskRunners& task_runners);
+      const TaskRunners& task_runners,
+      fml::closure on_schedule_frame = nullptr);
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -107,6 +108,10 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
   // The task runners.
   const TaskRunners task_runners_;
 
+  // Optional callback invoked on the platform thread to schedule a follow-up
+  // frame if overlay surface creation is preempted.
+  const fml::closure on_schedule_frame_;
+
   // The size of the root canvas.
   DlISize frame_size_;
 
@@ -131,8 +136,6 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
   int64_t previous_frame_view_count_ = 0;
 
   // Destroys the surfaces created from the surface factory.
-  // This method schedules a task on the platform thread, and waits for
-  // the task until it completes.
   void DestroySurfaces();
 
   // Resets the state.
@@ -142,7 +145,8 @@ class AndroidExternalViewEmbedder final : public ExternalViewEmbedder {
   bool FrameHasPlatformLayers();
 
   // Creates a Surface when needed or recycles an existing one.
-  // Finally, draws the picture on the frame's canvas.
+  // Finally, draws the picture on the frame's canvas. Returns nullptr if
+  // overlay surface creation is preempted.
   std::unique_ptr<SurfaceFrame> CreateSurfaceIfNeeded(GrDirectContext* context,
                                                       int64_t view_id,
                                                       EmbedderViewSlice* slice,

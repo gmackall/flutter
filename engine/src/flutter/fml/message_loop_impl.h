@@ -51,6 +51,10 @@ class MessageLoopImpl : public Wakeable,
 
   virtual TaskQueueId GetTaskQueueId() const;
 
+  const std::shared_ptr<TaskRunnerWaitPreemptor>& GetWaitPreemptor() const {
+    return wait_preemptor_;
+  }
+
  protected:
   // Exposed for the embedder shell which allows clients to poll for events
   // instead of dedicating a thread to the message loop.
@@ -68,6 +72,8 @@ class MessageLoopImpl : public Wakeable,
   TaskQueueId queue_id_;
 
   std::atomic_bool terminated_;
+  std::shared_ptr<TaskRunnerWaitPreemptor> wait_preemptor_ =
+      std::make_shared<TaskRunnerWaitPreemptor>();
 
   void FlushTasks(FlushType type);
 

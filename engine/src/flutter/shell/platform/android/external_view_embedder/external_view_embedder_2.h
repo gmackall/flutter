@@ -6,6 +6,8 @@
 #define FLUTTER_SHELL_PLATFORM_ANDROID_EXTERNAL_VIEW_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_2_H_
 
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <unordered_map>
 
 #include "flutter/common/task_runners.h"
@@ -37,7 +39,10 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
       const AndroidContext& android_context,
       std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
       std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-      const TaskRunners& task_runners);
+      const TaskRunners& task_runners,
+      fml::closure on_schedule_frame = nullptr);
+
+  ~AndroidExternalViewEmbedder2() override;
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -114,8 +119,20 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   // The task runners.
   const TaskRunners task_runners_;
 
-  // If the overlay layer is currently shown.
-  std::atomic_bool overlay_layer_is_shown_{false};
+  // Lightweight state shared with end-of-frame tasks posted to the platform
+  // thread so those tasks never capture `this` (avoiding use-after-free if the
+  // embedder is destroyed while platform tasks are queued).
+  struct FrameState {
+    explicit FrameState(fml::closure on_schedule_frame)
+        : on_schedule_frame(std::move(on_schedule_frame)) {}
+
+    const fml::closure on_schedule_frame;
+    std::atomic<uint64_t> surface_generation{0};
+    std::atomic_bool destroyed{false};
+    std::atomic_bool overlay_layer_is_shown{false};
+  };
+
+  const std::shared_ptr<FrameState> state_;
 
   // The size of the root canvas.
   DlISize frame_size_;
@@ -141,8 +158,6 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
   absl::flat_hash_set<int64_t> views_visible_last_frame_;
 
   // Destroys the surfaces created from the surface factory.
-  // This method schedules a task on the platform thread, and waits for
-  // the task until it completes.
   void DestroySurfaces();
 
   // Resets the state.
@@ -150,13 +165,6 @@ class AndroidExternalViewEmbedder2 final : public ExternalViewEmbedder {
 
   // Whether the layer tree in the current frame has platform layers.
   bool FrameHasPlatformLayers();
-
-  // Shows the overlay layer if it has content and the previous frame did not.
-  void ShowOverlayLayerIfNeeded();
-
-  // Hides the overlay layer if it does not have content and the previous
-  // frame did have content.
-  void HideOverlayLayerIfNeeded();
 };
 
 }  // namespace flutter

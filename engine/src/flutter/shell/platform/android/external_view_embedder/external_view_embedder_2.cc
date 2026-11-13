@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.h"
 
 #include <cmath>
+#include <utility>
 
 #include "display_list/dl_color.h"
 #include "flow/view_slicer.h"
@@ -33,20 +34,45 @@ int32_t ToPhysicalPixels(DlScalar size_points, double device_pixel_ratio) {
   return static_cast<int32_t>(std::round(size_points * device_pixel_ratio));
 }
 
+// Shows the overlay layer, unless it is already shown.
+void ShowOverlayLayerIfNeeded(PlatformViewAndroidJNI& jni_facade,
+                              std::atomic_bool& overlay_layer_is_shown) {
+  if (!overlay_layer_is_shown.load()) {
+    jni_facade.showOverlaySurface2();
+    overlay_layer_is_shown.store(true);
+  }
+}
+
+// Hides the overlay layer, unless it is already hidden.
+void HideOverlayLayerIfNeeded(PlatformViewAndroidJNI& jni_facade,
+                              std::atomic_bool& overlay_layer_is_shown) {
+  if (overlay_layer_is_shown.load()) {
+    jni_facade.hideOverlaySurface2();
+    overlay_layer_is_shown.store(false);
+  }
+}
+
 }  // namespace
 
 AndroidExternalViewEmbedder2::AndroidExternalViewEmbedder2(
     const AndroidContext& android_context,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
     std::shared_ptr<AndroidSurfaceFactory> surface_factory,
-    const TaskRunners& task_runners)
+    const TaskRunners& task_runners,
+    fml::closure on_schedule_frame)
     : ExternalViewEmbedder(),
       android_context_(android_context),
       jni_facade_(std::move(jni_facade)),
       surface_factory_(std::move(surface_factory)),
       surface_pool_(
           std::make_unique<SurfacePool>(/*use_new_surface_methods=*/true)),
-      task_runners_(task_runners) {}
+      task_runners_(task_runners),
+      state_(std::make_shared<FrameState>(std::move(on_schedule_frame))) {}
+
+AndroidExternalViewEmbedder2::~AndroidExternalViewEmbedder2() {
+  state_->destroyed.store(true);
+  ++state_->surface_generation;
+}
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder2::PrerollCompositeEmbeddedView(
@@ -93,16 +119,21 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
     std::unique_ptr<SurfaceFrame> frame) {
   TRACE_EVENT0("flutter", "AndroidExternalViewEmbedder2::SubmitFlutterView");
 
+  const uint64_t generation = state_->surface_generation.load();
+
   if (!FrameHasPlatformLayers()) {
     frame->Submit();
     jni_facade_->sealFrameTransactions();
+    // This task must not use `this`: the embedder may be destroyed before the
+    // platform thread gets to run it.
     task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-        [this, jni_facade = jni_facade_,
+        [state = state_, generation, jni_facade = jni_facade_,
          views_visible_last_frame = views_visible_last_frame_]() {
-          // This pointer is guaranteed to not be dangling as long as
-          // DestroySurfaces is called before the embedder is deleted. See
-          // https://github.com/flutter/flutter/pull/176742#discussion_r2415229396.
-          this->HideOverlayLayerIfNeeded();
+          if (!state->destroyed.load() &&
+              state->surface_generation.load() == generation) {
+            HideOverlayLayerIfNeeded(*jni_facade,
+                                     state->overlay_layer_is_shown);
+          }
           for (int64_t view_id : views_visible_last_frame) {
             jni_facade->hidePlatformView2(view_id);
           }
@@ -126,26 +157,28 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
                  view_rects           //
       );
 
-  // If there is no overlay Surface, initialize one on the platform thread. This
-  // will only be done once per application launch, as the singular overlay
-  // surface is never released.
-  if (!surface_pool_->HasLayers()) {
-    std::shared_ptr<fml::CountDownLatch> latch =
-        std::make_shared<fml::CountDownLatch>(1u);
-    task_runners_.GetPlatformTaskRunner()->PostTask(
-        fml::MakeCopyable([&, latch]() {
-          surface_pool_->GetLayer(context, android_context_, jni_facade_,
-                                  surface_factory_);
-          latch->CountDown();
-        }));
-    latch->Wait();
-  }
   surface_pool_->ResetLayers();
 
-  // Create Overlay frame. If overlay surface creation failed,
-  // all this work must be skipped.
+  // If there is no overlay Surface, initialize one on the platform thread via
+  // SurfacePool::GetLayer. If the platform thread is blocked in a
+  // synchronization wait, GetLayer is preempted and returns nullptr.
+  bool overlay_creation_preempted = false;
+  if (!surface_pool_->HasLayers()) {
+    bool was_preempted = false;
+    std::shared_ptr<OverlayLayer> layer = surface_pool_->GetLayer(
+        context, android_context_, jni_facade_, surface_factory_,
+        task_runners_.GetPlatformTaskRunner(), &was_preempted);
+    if (was_preempted) {
+      overlay_creation_preempted = true;
+    }
+    surface_pool_->ResetLayers();
+  }
+
+  bool overlay_layer_has_content_this_frame_ = false;
   std::unique_ptr<SurfaceFrame> overlay_frame;
-  if (surface_pool_->HasLayers()) {
+  if (!overlay_creation_preempted && !state_->destroyed.load() &&
+      state_->surface_generation.load() == generation &&
+      surface_pool_->HasLayers()) {
     for (size_t i = 0; i < composition_order_.size(); i++) {
       int64_t view_id = composition_order_[i];
       std::unordered_map<int64_t, DlRect>::const_iterator overlay =
@@ -155,8 +188,16 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         continue;
       }
       if (overlay_frame == nullptr) {
+        bool was_preempted = false;
         std::shared_ptr<OverlayLayer> layer = surface_pool_->GetLayer(
-            context, android_context_, jni_facade_, surface_factory_);
+            context, android_context_, jni_facade_, surface_factory_,
+            task_runners_.GetPlatformTaskRunner(), &was_preempted);
+        if (layer == nullptr) {
+          if (was_preempted) {
+            overlay_creation_preempted = true;
+          }
+          break;
+        }
         overlay_frame = layer->surface->AcquireFrame(frame_size_);
         overlay_frame->Canvas()->Clear(flutter::DlColor::kTransparent());
       }
@@ -179,29 +220,39 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
       overlay_canvas->RestoreToCount(restore_count);
     }
   }
-  bool overlay_layer_has_content_this_frame_;
   if (overlay_frame != nullptr) {
     overlay_frame->set_submit_info({.frame_boundary = false});
     overlay_frame->Submit();
     overlay_layer_has_content_this_frame_ = true;
-  } else {
-    overlay_layer_has_content_this_frame_ = false;
   }
+
+  const bool should_schedule_follow_up_frame =
+      overlay_creation_preempted && !overlay_layers.empty();
 
   frame->Submit();
   // Every path that posts a platform task calling swapTransaction() must call
   // sealFrameTransactions() once to keep the per-frame queue paired 1:1.
   jni_facade_->sealFrameTransactions();
+  // This task must not use `this`: the embedder may be destroyed before the
+  // platform thread gets to run it.
   task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-      [&, composition_order = composition_order_, view_params = view_params_,
+      [state = state_, generation, should_schedule_follow_up_frame,
+       composition_order = composition_order_, view_params = view_params_,
        jni_facade = jni_facade_, device_pixel_ratio = device_pixel_ratio_,
        slices = std::move(slices_),
        views_visible_last_frame = views_visible_last_frame_,
        overlay_layer_has_content_this_frame_]() mutable -> void {
-        if (overlay_layer_has_content_this_frame_) {
-          ShowOverlayLayerIfNeeded();
-        } else {
-          HideOverlayLayerIfNeeded();
+        const bool generation_valid =
+            !state->destroyed.load() &&
+            state->surface_generation.load() == generation;
+        if (generation_valid) {
+          if (overlay_layer_has_content_this_frame_) {
+            ShowOverlayLayerIfNeeded(*jni_facade,
+                                     state->overlay_layer_is_shown);
+          } else {
+            HideOverlayLayerIfNeeded(*jni_facade,
+                                     state->overlay_layer_is_shown);
+          }
         }
 
         for (int64_t view_id : composition_order) {
@@ -229,7 +280,12 @@ void AndroidExternalViewEmbedder2::SubmitFlutterView(
         }
 
         jni_facade->swapTransaction();
-        jni_facade_->onEndFrame2();
+        jni_facade->onEndFrame2();
+
+        if (should_schedule_follow_up_frame && generation_valid &&
+            state->on_schedule_frame) {
+          state->on_schedule_frame();
+        }
       }));
 
   views_visible_last_frame_.clear();
@@ -308,31 +364,10 @@ void AndroidExternalViewEmbedder2::Teardown() {
 
 // |ExternalViewEmbedder|
 void AndroidExternalViewEmbedder2::DestroySurfaces() {
-  if (!surface_pool_->HasLayers()) {
-    return;
-  }
-  fml::AutoResetWaitableEvent latch;
-  fml::TaskRunner::RunNowOrPostTask(task_runners_.GetPlatformTaskRunner(),
-                                    [&]() {
-                                      surface_pool_->DestroyLayers(jni_facade_);
-                                      latch.Signal();
-                                    });
-  latch.Wait();
-  overlay_layer_is_shown_.store(false);
-}
-
-void AndroidExternalViewEmbedder2::ShowOverlayLayerIfNeeded() {
-  if (!overlay_layer_is_shown_.load()) {
-    jni_facade_->showOverlaySurface2();
-    overlay_layer_is_shown_.store(true);
-  }
-}
-
-void AndroidExternalViewEmbedder2::HideOverlayLayerIfNeeded() {
-  if (overlay_layer_is_shown_.load()) {
-    jni_facade_->hideOverlaySurface2();
-    overlay_layer_is_shown_.store(false);
-  }
+  ++state_->surface_generation;
+  state_->overlay_layer_is_shown.store(false);
+  surface_pool_->DestroyLayers(jni_facade_,
+                               task_runners_.GetPlatformTaskRunner());
 }
 
 }  // namespace flutter
