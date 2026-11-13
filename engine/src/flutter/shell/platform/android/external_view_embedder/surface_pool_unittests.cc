@@ -211,7 +211,7 @@ TEST(SurfacePool, DestroyLayersNew) {
         EXPECT_CALL(*android_surface_mock, IsValid()).WillOnce(Return(true));
         return android_surface_mock;
       });
-  pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory);
+  ASSERT_NE(nullptr, pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory));
 
   EXPECT_CALL(*jni_mock, destroyOverlaySurface2());
 
@@ -248,7 +248,7 @@ TEST(SurfacePool, DestroyLayers) {
         EXPECT_CALL(*android_surface_mock, IsValid()).WillOnce(Return(true));
         return android_surface_mock;
       });
-  pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory);
+  ASSERT_NE(nullptr, pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory));
 
   EXPECT_CALL(*jni_mock, FlutterViewDestroyOverlaySurfaces());
 
@@ -287,7 +287,7 @@ TEST(SurfacePool, DestroyLayersFrameSizeChanged) {
 
   ASSERT_FALSE(pool->HasLayers());
 
-  pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory);
+  ASSERT_NE(nullptr, pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory));
 
   ASSERT_TRUE(pool->HasLayers());
 
@@ -298,7 +298,7 @@ TEST(SurfacePool, DestroyLayersFrameSizeChanged) {
       .WillOnce(Return(
           ByMove(std::make_unique<PlatformViewAndroidJNI::OverlayMetadata>(
               1, window))));
-  pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory);
+  ASSERT_NE(nullptr, pool->GetLayer(gr_context.get(), *android_context, jni_mock, surface_factory));
 
   ASSERT_TRUE(pool->GetUnusedLayers().empty());
   ASSERT_TRUE(pool->HasLayers());
