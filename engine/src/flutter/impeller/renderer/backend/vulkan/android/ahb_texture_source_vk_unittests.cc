@@ -12,6 +12,9 @@
 #include "impeller/renderer/backend/vulkan/context_vk.h"
 #include "impeller/renderer/backend/vulkan/surface_context_vk.h"
 #include "impeller/renderer/backend/vulkan/test/mock_vulkan.h"
+#include "impeller/renderer/backend/vulkan/texture_vk.h"
+#include "impeller/renderer/render_pass.h"
+#include "impeller/renderer/render_target.h"
 #include "impeller/toolkit/android/hardware_buffer.h"
 #include "impeller/toolkit/android/surface_transaction.h"
 
@@ -191,6 +194,55 @@ TEST(AndroidVulkanTest, TextureSourceDeleteAfterContextDelete) {
   // Delete the AHBTextureSourceVK and verify that the destructor does not call
   // Vulkan APIs on a VkDevice that is no longer valid.
   texture.reset();
+}
+
+TEST(AndroidVulkanTest,
+     TextureSourceWithCachedFrameDataDeleteAfterContextDelete) {
+  auto ahb_desc = HardwareBufferDescriptor::MakeForSwapchainImage({16, 16});
+  auto ahb = std::make_unique<HardwareBuffer>(ahb_desc);
+  ASSERT_TRUE(ahb->IsValid());
+
+  auto context = MockVulkanContextBuilder()
+                     .SetDeviceExtensions(kAndroidDeviceExtensions)
+                     .Build();
+  ASSERT_TRUE(context);
+
+  auto source = std::make_shared<AHBTextureSourceVK>(
+      context, std::move(ahb), /*is_swapchain_image=*/true);
+  ASSERT_TRUE(source->IsValid());
+
+  {
+    auto texture_vk = std::make_shared<TextureVK>(context, source);
+    ColorAttachment color0;
+    color0.texture = texture_vk;
+    color0.load_action = LoadAction::kClear;
+    color0.store_action = StoreAction::kStore;
+
+    RenderTarget render_target;
+    render_target.SetColorAttachment(color0, 0u);
+
+    auto command_buffer = context->CreateCommandBuffer();
+    ASSERT_TRUE(command_buffer);
+    auto render_pass = command_buffer->CreateRenderPass(render_target);
+    ASSERT_TRUE(render_pass);
+    ASSERT_TRUE(render_pass->EncodeCommands());
+  }
+
+  // Rendering into the texture populates TextureSourceVK's cached framebuffer
+  // and render pass handles.
+  EXPECT_NE(source->GetCachedFrameData(SampleCount::kCount1).framebuffer,
+            nullptr);
+  EXPECT_NE(source->GetCachedFrameData(SampleCount::kCount1).render_pass,
+            nullptr);
+
+  // Delete the context and its VkDevice while `source` is still alive.
+  context->Shutdown();
+  context.reset();
+
+  // Deleting `source` must release cached framebuffer and render pass handles
+  // as well as image/memory handles without calling Vulkan APIs on the
+  // destroyed VkDevice.
+  source.reset();
 }
 
 }  // namespace impeller::android::testing

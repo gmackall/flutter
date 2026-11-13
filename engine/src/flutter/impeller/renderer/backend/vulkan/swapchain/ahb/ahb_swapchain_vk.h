@@ -17,6 +17,10 @@ namespace android::testing {
 FML_TEST_CLASS(AndroidAHBSwapchainTest, AHBSwapchainDtorCallsWaitIdle);
 FML_TEST_CLASS(AndroidAHBSwapchainTest,
                AHBSwapchainNoFenceWaitAfterAcquireNextImageFailure);
+FML_TEST_CLASS(AndroidAHBSwapchainTest,
+               LateTransactionCompletionAfterSwapchainAndContextTeardown);
+FML_TEST_CLASS(AndroidAHBSwapchainTest,
+               OutOfOrderTransactionCompletionsRecycleBothTextures);
 }  // namespace android::testing
 
 using CreateTransactionCB = std::function<android::SurfaceTransaction()>;
@@ -65,6 +69,10 @@ class AHBSwapchainVK final : public SwapchainVK {
                   AHBSwapchainDtorCallsWaitIdle);
   FML_FRIEND_TEST(android::testing::AndroidAHBSwapchainTest,
                   AHBSwapchainNoFenceWaitAfterAcquireNextImageFailure);
+  FML_FRIEND_TEST(android::testing::AndroidAHBSwapchainTest,
+                  LateTransactionCompletionAfterSwapchainAndContextTeardown);
+  FML_FRIEND_TEST(android::testing::AndroidAHBSwapchainTest,
+                  OutOfOrderTransactionCompletionsRecycleBothTextures);
 
   std::weak_ptr<Context> context_;
   std::shared_ptr<android::SurfaceControl> surface_control_;

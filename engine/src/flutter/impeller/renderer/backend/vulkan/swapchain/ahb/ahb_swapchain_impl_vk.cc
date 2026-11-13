@@ -84,6 +84,11 @@ AHBSwapchainImplVK::AHBSwapchainImplVK(
     const ISize& size,
     bool enable_msaa)
     : surface_control_(std::move(surface_control)), cb_(cb) {
+  auto strong_context = context.lock();
+  if (!strong_context) {
+    return;
+  }
+  device_holder_ = ContextVK::Cast(*strong_context).GetDeviceHolder();
   desc_ = android::HardwareBufferDescriptor::MakeForSwapchainImage(size);
   pool_ = std::make_shared<AHBTexturePoolVK>(context, desc_);
   if (!pool_->IsValid()) {
@@ -93,8 +98,8 @@ AHBSwapchainImplVK::AHBSwapchainImplVK(
       context, ToSwapchainTextureDescriptor(desc_), enable_msaa);
 
   for (auto i = 0u; i < kMaxPendingPresents; i++) {
-    auto sync = std::make_unique<AHBFrameSynchronizerVK>(
-        ContextVK::Cast(*context.lock()).GetDeviceHolder()->GetDevice());
+    auto sync =
+        std::make_unique<AHBFrameSynchronizerVK>(device_holder_->GetDevice());
     if (!sync->IsValid()) {
       return;
     }
@@ -125,12 +130,10 @@ const android::HardwareBufferDescriptor& AHBSwapchainImplVK::GetDescriptor()
 }
 
 void AHBSwapchainImplVK::WaitIdle() const {
-  if (transients_) {
-    if (auto context = transients_->GetContext().lock()) {
-      auto result = ContextVK::Cast(*context).GetDevice().waitIdle();
-      if (result != vk::Result::eSuccess) {
-        FML_LOG(INFO) << "Device waitIdle failed: " << vk::to_string(result);
-      }
+  if (device_holder_ && device_holder_->GetDevice()) {
+    auto result = device_holder_->GetDevice().waitIdle();
+    if (result != vk::Result::eSuccess) {
+      FML_LOG(INFO) << "Device waitIdle failed: " << vk::to_string(result);
     }
   }
 }
@@ -228,14 +231,40 @@ bool AHBSwapchainImplVK::Present(
     return false;
   }
   const uint64_t present_id = next_present_id_++;
-  return transaction.Apply([texture, present_id, weak = weak_from_this()](
-                               ASurfaceTransactionStats* stats) {
-    auto thiz = weak.lock();
-    if (!thiz) {
-      return;
+  {
+    Lock lock(currently_displayed_texture_mutex_);
+    pending_presents_.emplace_back(present_id, texture);
+  }
+  // Do not capture `texture` in the transaction completion callback: Android
+  // delivers `ASurfaceTransaction_OnComplete` on a binder thread and may retain
+  // the callback past swapchain and engine teardown, whereas
+  // `ASurfaceTransaction_setBuffer` already acquires its own reference to the
+  // underlying `AHardwareBuffer`. Keeping in-flight textures in
+  // `pending_presents_` ensures `~AHBSwapchainImplVK` destroys their Vulkan
+  // resources after `WaitIdle()` while the `VkDevice` is still alive.
+  const bool applied = transaction.Apply(
+      [present_id, weak = weak_from_this()](ASurfaceTransactionStats* stats) {
+        auto thiz = weak.lock();
+        if (!thiz) {
+          return;
+        }
+        thiz->OnTextureUpdatedOnSurfaceControl(stats, present_id);
+      });
+  if (!applied) {
+    std::shared_ptr<AHBTextureSourceVK> removed;
+    {
+      Lock lock(currently_displayed_texture_mutex_);
+      for (auto it = pending_presents_.begin(); it != pending_presents_.end();
+           ++it) {
+        if (it->first == present_id) {
+          removed = std::move(it->second);
+          pending_presents_.erase(it);
+          break;
+        }
+      }
     }
-    thiz->OnTextureUpdatedOnSurfaceControl(texture, stats, present_id);
-  });
+  }
+  return applied;
 }
 
 void AHBSwapchainImplVK::AddFinalCommandBuffer(
@@ -360,9 +389,24 @@ bool AHBSwapchainImplVK::ImportRenderReady(
 }
 
 void AHBSwapchainImplVK::OnTextureUpdatedOnSurfaceControl(
-    std::shared_ptr<AHBTextureSourceVK> texture,
     ASurfaceTransactionStats* stats,
     uint64_t present_id) {
+  std::shared_ptr<AHBTextureSourceVK> texture;
+  {
+    Lock lock(currently_displayed_texture_mutex_);
+    for (auto it = pending_presents_.begin(); it != pending_presents_.end();
+         ++it) {
+      if (it->first == present_id) {
+        texture = std::move(it->second);
+        pending_presents_.erase(it);
+        break;
+      }
+    }
+  }
+  if (!texture) {
+    return;
+  }
+
   auto control = surface_control_.lock();
   if (!control) {
     return;

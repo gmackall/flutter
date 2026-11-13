@@ -177,6 +177,10 @@ class TextureSourceVK {
 
   explicit TextureSourceVK(TextureDescriptor desc);
 
+  void ResetCachedFrameData();
+
+  void ReleaseCachedFrameData();
+
  private:
   struct CachedFrameDataEntry {
     SampleCount sample_count = SampleCount::kCount1;

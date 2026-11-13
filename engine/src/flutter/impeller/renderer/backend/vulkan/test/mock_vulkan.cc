@@ -543,8 +543,17 @@ VkResult vkAllocateMemory(VkDevice device,
                           const VkMemoryAllocateInfo* pAllocateInfo,
                           const VkAllocationCallbacks* pAllocator,
                           VkDeviceMemory* pMemory) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkAllocateMemory");
   *pMemory = reinterpret_cast<VkDeviceMemory>(0xCAFEB0BA);
   return VK_SUCCESS;
+}
+
+void vkFreeMemory(VkDevice device,
+                  VkDeviceMemory memory,
+                  const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkFreeMemory");
 }
 
 VkResult vkBindImageMemory(VkDevice device,
@@ -602,6 +611,13 @@ VkResult vkCreateRenderPass(VkDevice device,
   MockDevice* mock_device = MockDevice::Unwrap(device);
   mock_device->AddCalledFunction("vkCreateRenderPass");
   return VK_SUCCESS;
+}
+
+void vkDestroyRenderPass(VkDevice device,
+                         VkRenderPass renderPass,
+                         const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkDestroyRenderPass");
 }
 
 VkResult vkCreateDescriptorSetLayout(
@@ -791,6 +807,8 @@ VkResult vkCreateFence(VkDevice device,
 VkResult vkDestroyFence(VkDevice device,
                         VkFence fence,
                         const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkDestroyFence");
   delete reinterpret_cast<MockFence*>(fence);
   return VK_SUCCESS;
 }
@@ -1024,7 +1042,18 @@ VkResult vkCreateSemaphore(VkDevice device,
 void vkDestroySemaphore(VkDevice device,
                         VkSemaphore semaphore,
                         const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkDestroySemaphore");
   delete reinterpret_cast<MockSemaphore*>(semaphore);
+}
+
+VkResult vkGetSemaphoreFdKHR(VkDevice device,
+                             const VkSemaphoreGetFdInfoKHR* pGetFdInfo,
+                             int* pFd) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkGetSemaphoreFdKHR");
+  *pFd = -1;
+  return VK_SUCCESS;
 }
 
 VkResult vkAcquireNextImageKHR(VkDevice device,
@@ -1054,6 +1083,8 @@ VkResult vkCreateFramebuffer(VkDevice device,
 void vkDestroyFramebuffer(VkDevice device,
                           VkFramebuffer framebuffer,
                           const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = MockDevice::Unwrap(device);
+  mock_device->AddCalledFunction("vkDestroyFramebuffer");
   delete reinterpret_cast<MockFramebuffer*>(framebuffer);
 }
 
@@ -1164,6 +1195,8 @@ PFN_vkVoidFunction GetMockVulkanProcAddress(VkInstance instance,
         vkGetImageMemoryRequirements2KHR);
   } else if (strcmp("vkAllocateMemory", pName) == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(vkAllocateMemory);
+  } else if (strcmp("vkFreeMemory", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkFreeMemory);
   } else if (strcmp("vkBindImageMemory", pName) == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(vkBindImageMemory);
   } else if (strcmp("vkCreateImageView", pName) == 0) {
@@ -1180,6 +1213,8 @@ PFN_vkVoidFunction GetMockVulkanProcAddress(VkInstance instance,
     return reinterpret_cast<PFN_vkVoidFunction>(vkBindBufferMemory);
   } else if (strcmp("vkCreateRenderPass", pName) == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(vkCreateRenderPass);
+  } else if (strcmp("vkDestroyRenderPass", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyRenderPass);
   } else if (strcmp("vkCreateDescriptorSetLayout", pName) == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(vkCreateDescriptorSetLayout);
   } else if (strcmp("vkCreatePipelineLayout", pName) == 0) {
@@ -1267,6 +1302,8 @@ PFN_vkVoidFunction GetMockVulkanProcAddress(VkInstance instance,
     return reinterpret_cast<PFN_vkVoidFunction>(vkCreateSemaphore);
   } else if (strcmp("vkDestroySemaphore", pName) == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(vkDestroySemaphore);
+  } else if (strcmp("vkGetSemaphoreFdKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkGetSemaphoreFdKHR);
   } else if (strcmp("vkDestroySurfaceKHR", pName) == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(vkDestroySurfaceKHR);
   } else if (strcmp("vkAcquireNextImageKHR", pName) == 0) {

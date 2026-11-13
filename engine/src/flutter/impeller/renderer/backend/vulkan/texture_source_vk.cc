@@ -89,4 +89,20 @@ FramebufferAndRenderPass TextureSourceVK::GetCachedFrameData(
   return {};
 }
 
+void TextureSourceVK::ResetCachedFrameData() {
+  frame_data_.clear();
+}
+
+void TextureSourceVK::ReleaseCachedFrameData() {
+  for (auto& entry : frame_data_) {
+    if (entry.data.framebuffer) {
+      entry.data.framebuffer->Release();
+    }
+    if (entry.data.render_pass) {
+      entry.data.render_pass->Release();
+    }
+  }
+  frame_data_.clear();
+}
+
 }  // namespace impeller
