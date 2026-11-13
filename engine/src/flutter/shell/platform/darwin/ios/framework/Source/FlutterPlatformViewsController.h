@@ -86,6 +86,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)submitFrame:(std::unique_ptr<flutter::SurfaceFrame>)frame
      withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext;
 
+/// @brief Encode rendering for the Flutter overlay views and queue up perform platform view
+/// mutations, invoking `onScheduleFrame` on the platform thread if overlay layer creation was
+/// preempted.
+///
+/// Called from the raster thread.
+- (BOOL)submitFrame:(std::unique_ptr<flutter::SurfaceFrame>)frame
+     withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext
+    onScheduleFrame:(fml::closure)onScheduleFrame;
+
 /// @brief Handler for platform view message channels.
 - (void)onMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result;
 
@@ -147,6 +156,11 @@ NS_ASSUME_NONNULL_BEGIN
 ///
 /// Only accessed from the platform thread.
 - (NSArray<NSNumber*>*)previousCompositionOrder;
+
+/// @brief Populate any missing overlay layers. Returns NO if the platform thread wait was
+/// preempted.
+- (BOOL)createMissingOverlays:(size_t)requiredOverlayLayers
+               withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext;
 
 @end
 

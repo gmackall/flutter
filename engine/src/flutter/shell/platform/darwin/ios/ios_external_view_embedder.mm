@@ -13,8 +13,11 @@ namespace flutter {
 
 IOSExternalViewEmbedder::IOSExternalViewEmbedder(
     __weak FlutterPlatformViewsController* platform_views_controller,
-    const std::shared_ptr<IOSContext>& context)
-    : platform_views_controller_(platform_views_controller), ios_context_(context) {
+    const std::shared_ptr<IOSContext>& context,
+    fml::closure on_schedule_frame)
+    : platform_views_controller_(platform_views_controller),
+      ios_context_(context),
+      on_schedule_frame_(std::move(on_schedule_frame)) {
   FML_CHECK(ios_context_);
 }
 
@@ -73,7 +76,9 @@ void IOSExternalViewEmbedder::SubmitFlutterView(
   // Properly support multi-view in the future.
   FML_DCHECK(flutter_view_id == kFlutterImplicitViewId);
   FML_CHECK(platform_views_controller_);
-  [platform_views_controller_ submitFrame:std::move(frame) withIosContext:ios_context_];
+  [platform_views_controller_ submitFrame:std::move(frame)
+                           withIosContext:ios_context_
+                          onScheduleFrame:on_schedule_frame_];
   TRACE_EVENT0("flutter", "IOSExternalViewEmbedder::DidSubmitFrame");
 }
 

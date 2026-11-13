@@ -12,8 +12,8 @@
 #include "flutter/flow/view_slicer.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/make_copyable.h"
-#include "flutter/fml/synchronization/count_down_latch.h"
 #import "flutter/shell/platform/darwin/common/InternalFlutterSwiftCommon/InternalFlutterSwiftCommon.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterFMLTaskRunner+FML.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterOverlayView.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterView.h"
 #include "flutter/shell/platform/darwin/ios/framework/Source/overlay_layer_pool.h"
@@ -164,8 +164,10 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
 
 /// Populate any missing overlay layers.
 ///
-/// This requires posting a task to the platform thread and blocking on its completion.
-- (void)createMissingOverlays:(size_t)requiredOverlayLayers
+/// This requires posting a task to the platform thread and blocking on its completion, unless the
+/// platform thread is blocked in a synchronization wait, in which case the wait is preempted and
+/// this method returns NO.
+- (BOOL)createMissingOverlays:(size_t)requiredOverlayLayers
                withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext;
 
 /// Update the buffers and mutate the platform views in CATransaction on the platform thread.
@@ -747,6 +749,14 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
 
 - (BOOL)submitFrame:(std::unique_ptr<flutter::SurfaceFrame>)background_frame
      withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext {
+  return [self submitFrame:std::move(background_frame)
+            withIosContext:iosContext
+           onScheduleFrame:nullptr];
+}
+
+- (BOOL)submitFrame:(std::unique_ptr<flutter::SurfaceFrame>)background_frame
+     withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext
+    onScheduleFrame:(fml::closure)onScheduleFrame {
   TRACE_EVENT0("flutter", "PlatformViewsController::SubmitFrame");
 
   // No platform views to render.
@@ -796,7 +806,9 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
   // If there are not sufficient overlay layers, we must construct them on the platform
   // thread, at least until we've refactored iOS surface creation to use IOSurfaces
   // instead of CALayers.
-  [self createMissingOverlays:requiredOverlayLayers withIosContext:iosContext];
+  BOOL overlaysCreated = [self createMissingOverlays:requiredOverlayLayers
+                                      withIosContext:iosContext];
+  BOOL shouldScheduleFollowUpFrame = !overlaysCreated;
 
   int64_t overlayId = 0;
   for (int64_t viewId : self.compositionOrder) {
@@ -857,13 +869,18 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
                                  viewsToRecomposite = self.viewsToRecomposite,              //
                                  compositionOrder = self.compositionOrder,                  //
                                  unusedLayers = std::move(unusedLayers),                    //
-                                 surfaceFrames = std::move(surfaceFrames)]() mutable {
+                                 surfaceFrames = std::move(surfaceFrames),                  //
+                                 shouldScheduleFollowUpFrame,                               //
+                                 onScheduleFrame = std::move(onScheduleFrame)]() mutable {
     [self performSubmit:platformViewLayers
         currentCompositionParams:currentCompositionParams
               viewsToRecomposite:viewsToRecomposite
                 compositionOrder:compositionOrder
                     unusedLayers:unusedLayers
                    surfaceFrames:surfaceFrames];
+    if (shouldScheduleFollowUpFrame && onScheduleFrame) {
+      onScheduleFrame();
+    }
   });
 
   [self.taskRunner runNowOrPostTask:^{
@@ -872,29 +889,28 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
   return didEncode;
 }
 
-- (void)createMissingOverlays:(size_t)requiredOverlayLayers
+- (BOOL)createMissingOverlays:(size_t)requiredOverlayLayers
                withIosContext:(const std::shared_ptr<flutter::IOSContext>&)iosContext {
   TRACE_EVENT0("flutter", "PlatformViewsController::CreateMissingLayers");
 
   if (requiredOverlayLayers <= self.layerPool->size()) {
-    return;
+    return YES;
   }
   auto missingLayerCount = requiredOverlayLayers - self.layerPool->size();
 
   // If the raster thread isn't merged, create layers on the platform thread and block until
-  // complete. The self-capture here is fine since this is effectively synchronous (we block on the
-  // latch right below).
-  auto latch = std::make_shared<fml::CountDownLatch>(1u);
-  [self.taskRunner runNowOrPostTask:^{
-    for (auto i = 0u; i < missingLayerCount; i++) {
-      [self createLayerWithIosContext:iosContext
-                          pixelFormat:((FlutterView*)self.flutterView).pixelFormat];
-    }
-    latch->CountDown();
-  }];
-  if (![[NSThread currentThread] isMainThread]) {
-    latch->Wait();
-  }
+  // complete, unless the platform thread is blocked in a synchronization wait (e.g. waiting on
+  // the raster thread), in which case this wait is preempted and the task is cancelled.
+  fml::PreemptibleWaitResult result = fml::TaskRunner::RunNowOrPostTaskAndWaitWithPreemption(
+      [self.taskRunner taskRunner],
+      [&]() {
+        for (auto i = 0u; i < missingLayerCount; i++) {
+          [self createLayerWithIosContext:iosContext
+                              pixelFormat:((FlutterView*)self.flutterView).pixelFormat];
+        }
+      },
+      fml::PreemptionAction::kCancelTask);
+  return result == fml::PreemptibleWaitResult::kCompleted;
 }
 
 - (void)performResize:(const flutter::DlISize&)frameSize {

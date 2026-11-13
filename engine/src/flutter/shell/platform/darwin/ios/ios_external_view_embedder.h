@@ -14,7 +14,8 @@ class IOSExternalViewEmbedder : public ExternalViewEmbedder {
  public:
   IOSExternalViewEmbedder(
       __weak FlutterPlatformViewsController* platform_views_controller,
-      const std::shared_ptr<IOSContext>& context);
+      const std::shared_ptr<IOSContext>& context,
+      fml::closure on_schedule_frame = nullptr);
 
   // |ExternalViewEmbedder|
   virtual ~IOSExternalViewEmbedder() override;
@@ -22,6 +23,7 @@ class IOSExternalViewEmbedder : public ExternalViewEmbedder {
  private:
   __weak FlutterPlatformViewsController* platform_views_controller_;
   std::shared_ptr<IOSContext> ios_context_;
+  fml::closure on_schedule_frame_;
 
   // |ExternalViewEmbedder|
   DlCanvas* GetRootCanvas() override;

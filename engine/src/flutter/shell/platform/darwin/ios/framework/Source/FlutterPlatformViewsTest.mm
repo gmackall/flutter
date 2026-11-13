@@ -13,9 +13,12 @@
 #include <memory>
 
 #include "flutter/display_list/effects/dl_image_filters.h"
+#include "flutter/fml/synchronization/waitable_event.h"
+#include "flutter/fml/thread.h"
 #import "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
 #import "flutter/shell/platform/darwin/ios/framework/Headers/FlutterViewController.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterEngine+Test.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterFMLTaskRunner+FML.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterPlatformViewsController.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterPlatformViewsTestHelper.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterPlatformViews_Internal.h"
@@ -4787,6 +4790,126 @@ static UIGestureRecognizer* FindForwardingGestureRecognizer(UIView* view) {
       CGPointMake(rect.GetLeft() + rect.GetWidth() / 2, rect.GetTop() + rect.GetHeight() / 2);
   int alpha = [self alphaOfPoint:center onView:flutterView];
   XCTAssertEqual(alpha, 255);
+}
+
+- (void)testCreateMissingOverlaysPreemptedWhenPlatformThreadWaiting {
+  FlutterPlatformViewsController* flutterPlatformViewsController =
+      CreateTestPlatformViewsController(self.name);
+  fml::Thread platformThread("test_platform_thread");
+  flutterPlatformViewsController.taskRunner =
+      [[FlutterFMLTaskRunner alloc] initWithTaskRunner:platformThread.GetTaskRunner()];
+
+  fml::AutoResetWaitableEvent platformEnteredWait;
+  fml::AutoResetWaitableEvent unblockPlatform;
+  platformThread.GetTaskRunner()->PostTask([&]() {
+    platformEnteredWait.Signal();
+    unblockPlatform.Wait();
+  });
+  platformEnteredWait.Wait();
+
+  // While the platform thread is blocked inside WaitableEvent::Wait(), calling
+  // createMissingOverlays:withIosContext: from another thread should be preempted instead of
+  // deadlocking.
+  BOOL created =
+      [flutterPlatformViewsController createMissingOverlays:1
+                                             withIosContext:std::make_shared<FakeIOSContext>()];
+  XCTAssertFalse(created);
+
+  unblockPlatform.Signal();
+}
+
+- (void)testSubmitFramePreemptsMissingOverlayCreationAndSchedulesFollowUpFrame {
+  FlutterPlatformViewsController* flutterPlatformViewsController =
+      CreateTestPlatformViewsController(self.name);
+  fml::Thread rasterThread("test_raster_thread");
+
+  FlutterPlatformViewsTestMockFlutterPlatformFactory* factory =
+      [[FlutterPlatformViewsTestMockFlutterPlatformFactory alloc] init];
+  [flutterPlatformViewsController
+                   registerViewFactory:factory
+                                withId:@"MockFlutterPlatformView"
+      gestureRecognizersBlockingPolicy:FlutterPlatformViewGestureRecognizersBlockingPolicyEager];
+  FlutterResult result = ^(id result) {
+  };
+  [flutterPlatformViewsController
+      onMethodCall:[FlutterMethodCall methodCallWithMethodName:@"create"
+                                                     arguments:@{
+                                                       @"id" : @2,
+                                                       @"viewType" : @"MockFlutterPlatformView",
+                                                       @"gestureBlockingPolicy" : @"eager"
+                                                     }]
+            result:result];
+
+  UIView* flutterView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 500, 500)];
+  flutterPlatformViewsController.flutterView = flutterView;
+
+  std::atomic<bool> scheduleFrameCalled{false};
+  fml::AutoResetWaitableEvent rasterSubmitFinished;
+
+  // On the platform thread (current thread), enter a WaitableEvent::Wait() while the raster thread
+  // submits a frame that requires an overlay layer on top of platform view 2.
+  rasterThread.GetTaskRunner()->PostTask([&]() {
+    [flutterPlatformViewsController beginFrameWithSize:flutter::DlISize(500, 500)];
+    flutter::MutatorsStack stack;
+    flutter::DlMatrix finalMatrix;
+    auto embeddedViewParams = std::make_unique<flutter::EmbeddedViewParams>(
+        finalMatrix, flutter::DlSize(300, 300), stack);
+    [flutterPlatformViewsController prerollCompositeEmbeddedView:2
+                                                      withParams:std::move(embeddedViewParams)];
+
+    flutter::DlCanvas* overlayCanvas =
+        [flutterPlatformViewsController compositeEmbeddedViewWithId:2];
+    flutter::DlPaint paint;
+    overlayCanvas->DrawRect(flutter::DlRect::MakeXYWH(50, 50, 100, 100), paint);
+
+    auto mockSurface = CreateTestSurfaceFrame();
+    [flutterPlatformViewsController submitFrame:std::move(mockSurface)
+                                 withIosContext:std::make_shared<FakeIOSContext>()
+                                onScheduleFrame:[&]() { scheduleFrameCalled.store(true); }];
+    rasterSubmitFinished.Signal();
+  });
+
+  // This Wait() enters a ScopedTaskRunnerWaitPreemption on the platform thread's TaskRunner, which
+  // allows the raster thread's createMissingOverlays:withIosContext: wait to be preempted instead
+  // of deadlocking.
+  rasterSubmitFinished.Wait();
+
+  // Flush the queued performSubmit + onScheduleFrame task posted to the platform thread.
+  while (!scheduleFrameCalled.load()) {
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
+  }
+  XCTAssertTrue(scheduleFrameCalled.load());
+}
+
+- (void)testCreateMissingOverlaysInsideSyncSwitchPreemptedByPlatformSetSwitch {
+  FlutterPlatformViewsController* flutterPlatformViewsController =
+      CreateTestPlatformViewsController(self.name);
+  fml::Thread platformThread("test_platform_thread");
+  flutterPlatformViewsController.taskRunner =
+      [[FlutterFMLTaskRunner alloc] initWithTaskRunner:platformThread.GetTaskRunner()];
+
+  auto iosContext = std::make_shared<FakeIOSContext>();
+  auto syncSwitch = iosContext->GetIsGpuDisabledSyncSwitch();
+
+  fml::AutoResetWaitableEvent platformPostedSetSwitch;
+  fml::AutoResetWaitableEvent platformFinishedSetSwitch;
+  BOOL created = YES;
+
+  // Simulate the raster thread holding the shared lock on GetIsGpuDisabledSyncSwitch() inside
+  // submitFrame:withIosContext: while the platform thread calls SetSwitch(true) (as in
+  // PlatformViewIOS::SetGpuAvailability).
+  syncSwitch->Execute(fml::SyncSwitch::Handlers().SetIfFalse([&]() {
+    platformThread.GetTaskRunner()->PostTask([&]() {
+      platformPostedSetSwitch.Signal();
+      syncSwitch->SetSwitch(true);
+      platformFinishedSetSwitch.Signal();
+    });
+    platformPostedSetSwitch.Wait();
+    created = [flutterPlatformViewsController createMissingOverlays:1 withIosContext:iosContext];
+  }));
+
+  platformFinishedSetSwitch.Wait();
+  XCTAssertFalse(created);
 }
 
 @end
