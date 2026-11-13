@@ -13,6 +13,8 @@ const std::vector<std::string> kAndroidDeviceExtensions = {
     "VK_KHR_external_memory",
     "VK_EXT_queue_family_foreign",
     "VK_KHR_dedicated_allocation",
+    "VK_KHR_external_semaphore",
+    "VK_KHR_external_semaphore_fd",
 };
 
 }  // namespace impeller::android::testing
