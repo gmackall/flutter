@@ -293,11 +293,20 @@ AHBTextureSourceVK::AHBTextureSourceVK(
 
 // |TextureSourceVK|
 AHBTextureSourceVK::~AHBTextureSourceVK() {
-  // The ASurfaceTransaction completion callback may hold the last reference
-  // to the AHBTextureSourceVK and can be deleted after the ContextVK and
-  // VkDevice have been destroyed.  If the VkDevice is gone, then do not call
-  // APIs to delete Vulkan objects.
-  if (auto device = device_holder_.lock(); !device) {
+  // An AHBTextureSourceVK may outlive the ContextVK and VkDevice (for example,
+  // if held across threads during teardown). Hold a strong reference to the
+  // DeviceHolderVK while destroying Vulkan handles (including cached
+  // framebuffer and render pass handles in TextureSourceVK) if the device is
+  // still alive; otherwise release the handles without calling Vulkan APIs on
+  // an invalid VkDevice.
+  if (std::shared_ptr<DeviceHolderVK> device = device_holder_.lock()) {
+    ResetCachedFrameData();
+    image_view_.reset();
+    image_.reset();
+    device_memory_.reset();
+    yuv_conversion_.reset();
+  } else {
+    ReleaseCachedFrameData();
     image_view_.release();
     image_.release();
     device_memory_.release();

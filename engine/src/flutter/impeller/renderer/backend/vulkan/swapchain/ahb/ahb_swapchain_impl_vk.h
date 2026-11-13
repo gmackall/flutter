@@ -7,10 +7,13 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "flutter/fml/closure.h"
 #include "impeller/base/thread.h"
 #include "impeller/renderer/backend/vulkan/android/ahb_texture_source_vk.h"
+#include "impeller/renderer/backend/vulkan/device_holder_vk.h"
 #include "impeller/renderer/backend/vulkan/swapchain/ahb/ahb_texture_pool_vk.h"
 #include "impeller/renderer/backend/vulkan/swapchain/ahb/external_semaphore_vk.h"
 #include "impeller/renderer/backend/vulkan/swapchain/swapchain_transients_vk.h"
@@ -117,6 +120,9 @@ class AHBSwapchainImplVK final
  private:
   using AutoSemaSignaler = std::shared_ptr<fml::ScopedCleanupClosure>;
 
+  // Declared first so it outlives all Vulkan child objects owned by this
+  // swapchain impl.
+  std::shared_ptr<DeviceHolderVK> device_holder_;
   std::weak_ptr<android::SurfaceControl> surface_control_;
   android::HardwareBufferDescriptor desc_;
   std::shared_ptr<AHBTexturePoolVK> pool_;
@@ -127,6 +133,8 @@ class AHBSwapchainImplVK final
   Mutex currently_displayed_texture_mutex_;
   std::shared_ptr<AHBTextureSourceVK> currently_displayed_texture_
       IPLR_GUARDED_BY(currently_displayed_texture_mutex_);
+  std::vector<std::pair<uint64_t, std::shared_ptr<AHBTextureSourceVK>>>
+      pending_presents_ IPLR_GUARDED_BY(currently_displayed_texture_mutex_);
   uint64_t last_completed_present_id_
       IPLR_GUARDED_BY(currently_displayed_texture_mutex_) = 0;
 
@@ -157,10 +165,8 @@ class AHBSwapchainImplVK final
   std::shared_ptr<ExternalSemaphoreVK> SubmitSignalForPresentReady(
       const std::shared_ptr<AHBTextureSourceVK>& texture) const;
 
-  void OnTextureUpdatedOnSurfaceControl(
-      std::shared_ptr<AHBTextureSourceVK> texture,
-      ASurfaceTransactionStats* stats,
-      uint64_t present_id);
+  void OnTextureUpdatedOnSurfaceControl(ASurfaceTransactionStats* stats,
+                                        uint64_t present_id);
 };
 
 }  // namespace impeller

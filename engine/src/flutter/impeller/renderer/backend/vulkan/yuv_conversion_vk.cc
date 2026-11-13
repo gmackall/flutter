@@ -28,7 +28,9 @@ YUVConversionVK::YUVConversionVK(
 }
 
 YUVConversionVK::~YUVConversionVK() {
-  if (auto device = device_holder_.lock(); !device) {
+  if (std::shared_ptr<DeviceHolderVK> device = device_holder_.lock()) {
+    conversion_.reset();
+  } else {
     conversion_.release();
   }
 }
