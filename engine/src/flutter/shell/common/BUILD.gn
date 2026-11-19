@@ -370,5 +370,20 @@ if (enable_unittests) {
         "//flutter/third_party/swiftshader",
       ]
     }
+
+    if (!is_win && !is_fuchsia) {
+      sources += [
+        "//flutter/shell/platform/android/android_sync_text_input_bridge.cc",
+        "//flutter/shell/platform/android/android_sync_text_input_bridge.h",
+        "//flutter/shell/platform/android/android_sync_text_input_bridge_unittests.cc",
+      ]
+    }
+
+    if (is_linux) {
+      # The real-isolate FFI test looks up InternalFlutterAndroidSyncIme* via
+      # DynamicLibrary.process(), which requires -rdynamic (Linux host) rather
+      # than macOS's exclusive exported_symbols_mac.sym allowlist.
+      sources += [ "android_sync_text_input_bridge_isolate_unittests.cc" ]
+    }
   }
 }

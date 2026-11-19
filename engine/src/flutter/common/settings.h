@@ -388,6 +388,12 @@ struct Settings {
 
   MergedPlatformUIThread merged_platform_ui_thread =
       MergedPlatformUIThread::kEnabled;
+
+  // Enable synchronous Android text input (IME) backed by Dart as the single
+  // source of truth when platform and UI threads are merged. Opt-in via
+  // --enable-android-sync-text-input=true or the Android manifest metadata
+  // io.flutter.embedding.android.EnableSyncTextInput.
+  bool enable_android_sync_text_input = false;
 };
 
 }  // namespace flutter

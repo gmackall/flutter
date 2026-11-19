@@ -12,8 +12,10 @@ import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RestrictTo;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.Log;
+import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.plugin.common.JSONMethodCodec;
 import io.flutter.plugin.common.MethodCall;
@@ -50,6 +52,7 @@ public class TextInputChannel {
   private static final String TAG = "TextInputChannel";
 
   @NonNull public final MethodChannel channel;
+  @Nullable private final FlutterJNI flutterJNI;
   @Nullable private TextInputMethodHandler textInputMethodHandler;
 
   @NonNull @VisibleForTesting
@@ -171,8 +174,25 @@ public class TextInputChannel {
    * <p>See {@link DartExecutor}.
    */
   public TextInputChannel(@NonNull DartExecutor dartExecutor) {
+    this(dartExecutor, null);
+  }
+
+  /**
+   * Constructs a {@code TextInputChannel} associated with {@code flutterJNI} for synchronous IME
+   * dispatch when enabled.
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  public TextInputChannel(@NonNull DartExecutor dartExecutor, @Nullable FlutterJNI flutterJNI) {
     this.channel = new MethodChannel(dartExecutor, "flutter/textinput", JSONMethodCodec.INSTANCE);
+    this.flutterJNI = flutterJNI;
     channel.setMethodCallHandler(parsingMethodHandler);
+  }
+
+  /** Returns the {@link FlutterJNI} backing this channel, if constructed with one. */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  @Nullable
+  public FlutterJNI getFlutterJNI() {
+    return flutterJNI;
   }
 
   /**

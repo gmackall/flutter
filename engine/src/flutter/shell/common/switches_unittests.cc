@@ -210,6 +210,27 @@ TEST(SwitchesTest, RequireMergedPlatformUIThreadAllowsMergeAfterLaunch) {
 }
 #endif  // !OS_FUCHSIA
 
+TEST(SwitchesTest, EnableAndroidSyncTextInputFlag) {
+  Settings default_settings =
+      SettingsFromCommandLine(fml::CommandLineFromInitializerList({"command"}));
+  EXPECT_FALSE(default_settings.enable_android_sync_text_input);
+
+  Settings disabled_settings = SettingsFromCommandLine(
+      fml::CommandLineFromInitializerList(
+          {"command", "--enable-android-sync-text-input=false"}));
+  EXPECT_FALSE(disabled_settings.enable_android_sync_text_input);
+
+  Settings enabled_settings = SettingsFromCommandLine(
+      fml::CommandLineFromInitializerList(
+          {"command", "--enable-android-sync-text-input=true"}));
+  EXPECT_TRUE(enabled_settings.enable_android_sync_text_input);
+
+  Settings bare_flag_settings = SettingsFromCommandLine(
+      fml::CommandLineFromInitializerList(
+          {"command", "--enable-android-sync-text-input"}));
+  EXPECT_TRUE(bare_flag_settings.enable_android_sync_text_input);
+}
+
 }  // namespace testing
 }  // namespace flutter
 

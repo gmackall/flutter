@@ -183,6 +183,7 @@ bool PlatformConfiguration::SendFocusEvent(const ViewFocusEvent& event) {
 }
 
 bool PlatformConfiguration::SetEngineId(int64_t engine_id) {
+  engine_id_ = engine_id;
   std::shared_ptr<tonic::DartState> dart_state =
       set_engine_id_.dart_state().lock();
   if (!dart_state) {

@@ -228,6 +228,17 @@ public final class FlutterEngineFlags {
       new Flag("--enable-hcpp-and-surface-control=", "EnableHcpp", true);
 
   /**
+   * Enables or disables synchronous Android text input (IME) backed directly by Dart.
+   *
+   * <p>Accepts {@code true} or {@code false} (default).
+   *
+   * <p>Allowed in release to opt-in to Dart-backed synchronous text input in production. Settable
+   * via the manifest and command line.
+   */
+  private static final Flag ENABLE_SYNC_TEXT_INPUT =
+      new Flag("--enable-android-sync-text-input=", "EnableSyncTextInput", true);
+
+  /**
    * Enables the Flutter GPU backend.
    *
    * <p>Allowed in release for developers to use the Flutter GPU backend in production. Settable via
@@ -493,7 +504,8 @@ public final class FlutterEngineFlags {
               IMPELLER_USE_SDFS,
               IMPELLER_OPENGL_GPU_TRACING,
               IMPELLER_VULKAN_GPU_TRACING,
-              ENABLE_HCPP));
+              ENABLE_HCPP,
+              ENABLE_SYNC_TEXT_INPUT));
 
   // Flags that have been turned off.
   private static final List<Flag> DISABLED_FLAGS =

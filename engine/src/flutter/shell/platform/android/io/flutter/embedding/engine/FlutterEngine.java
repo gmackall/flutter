@@ -372,7 +372,7 @@ public class FlutterEngine implements ViewUtils.DisplayUpdater {
     settingsChannel = new SettingsChannel(dartExecutor);
     spellCheckChannel = new SpellCheckChannel(dartExecutor);
     systemChannel = new SystemChannel(dartExecutor);
-    textInputChannel = new TextInputChannel(dartExecutor);
+    textInputChannel = new TextInputChannel(dartExecutor, flutterJNI);
 
     if (deferredComponentManager != null) {
       deferredComponentManager.setDeferredComponentChannel(deferredComponentChannel);
@@ -514,6 +514,7 @@ public class FlutterEngine implements ViewUtils.DisplayUpdater {
     dartExecutor.onDetachedFromJNI();
     flutterJNI.removeEngineLifecycleListener(engineLifecycleListener);
     flutterJNI.setDeferredComponentManager(null);
+    flutterJNI.setSyncTextInputEditingStateListener(null);
     flutterJNI.detachFromNativeAndReleaseResources();
     if (FlutterInjector.instance().deferredComponentManager() != null) {
       FlutterInjector.instance().deferredComponentManager().destroy();

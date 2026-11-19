@@ -51,6 +51,8 @@ class MockableJNIEnv : public JNIEnv {
     // Replace the JNIEnv's function table with wrappers that invoke the
     // mockable virtual methods in this class.
     functions = &jni_;
+    jni_.CallBooleanMethod = WrapCallBooleanMethod;
+    jni_.CallBooleanMethodV = WrapCallBooleanMethodV;
     jni_.CallObjectMethod = WrapCallObjectMethod;
     jni_.CallObjectMethodV = WrapCallObjectMethodV;
     jni_.CallVoidMethod = WrapCallVoidMethod;
@@ -76,6 +78,7 @@ class MockableJNIEnv : public JNIEnv {
     jni_.GetIntArrayRegion = WrapGetIntArrayRegion;
   }
 
+  virtual jboolean CallBooleanMethodV(jobject, jmethodID, va_list) = 0;
   virtual jobject CallObjectMethodV(jobject, jmethodID, va_list) = 0;
   virtual void CallVoidMethodV(jobject, jmethodID, va_list) = 0;
   virtual void DeleteGlobalRef(jobject) = 0;
@@ -99,6 +102,23 @@ class MockableJNIEnv : public JNIEnv {
   virtual void GetIntArrayRegion(jintArray, jsize, jsize, jint*) = 0;
 
  private:
+  static jboolean WrapCallBooleanMethod(JNIEnv* env,
+                                        jobject obj,
+                                        jmethodID methodID,
+                                        ...) {
+    va_list args;
+    va_start(args, methodID);
+    jboolean result = WrapCallBooleanMethodV(env, obj, methodID, args);
+    va_end(args);
+    return result;
+  }
+  static jboolean WrapCallBooleanMethodV(JNIEnv* env,
+                                         jobject obj,
+                                         jmethodID methodID,
+                                         va_list args) {
+    return static_cast<MockableJNIEnv*>(env)->CallBooleanMethodV(obj, methodID,
+                                                                 args);
+  }
   static jobject WrapCallObjectMethod(JNIEnv* env,
                                       jobject obj,
                                       jmethodID methodID,
@@ -217,6 +237,10 @@ class MockableJNIEnv : public JNIEnv {
 
 class MockJNIEnv : public MockableJNIEnv {
  public:
+  MOCK_METHOD(jboolean,
+              CallBooleanMethodV,
+              (jobject, jmethodID, va_list),
+              (override));
   MOCK_METHOD(jobject,
               CallObjectMethodV,
               (jobject, jmethodID, va_list),

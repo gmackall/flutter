@@ -20,6 +20,7 @@
 #include "flutter/shell/platform/android/android_rendering_selector.h"
 #include "flutter/shell/platform/android/android_surface_dynamic_impeller.h"
 #include "flutter/shell/platform/android/android_surface_gl_impeller.h"
+#include "flutter/shell/platform/android/android_sync_text_input_bridge.h"
 #include "flutter/shell/platform/android/image_external_texture_gl_impeller.h"
 #include "flutter/shell/platform/android/surface_texture_external_texture_gl_impeller.h"
 #include "flutter/shell/platform/android/surface_texture_external_texture_vk_impeller.h"
@@ -324,6 +325,9 @@ void PlatformViewAndroid::HandlePlatformMessage(
 
 // |PlatformView|
 void PlatformViewAndroid::OnPreEngineRestart() const {
+  if (engine_id_.has_value()) {
+    AndroidSyncTextInputRegistry::Instance().ClearDartHandler(*engine_id_);
+  }
   jni_facade_->FlutterViewOnPreEngineRestart();
 }
 
@@ -615,6 +619,10 @@ bool PlatformViewAndroid::IsSurfaceControlEnabled() const {
 void PlatformViewAndroid::SetupImpellerContext() {
   android_context_->SetupImpellerContext();
   android_surface_->SetupImpellerSurface();
+}
+
+void PlatformViewAndroid::SetEngineId(int64_t engine_id) {
+  engine_id_ = engine_id;
 }
 
 }  // namespace flutter

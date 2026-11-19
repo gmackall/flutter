@@ -359,5 +359,34 @@ TEST(FindFirstLoadableLibraryTest, EmptyReturnsNull) {
             nullptr);
 }
 
+TEST_F(PlatformViewAndroidJNIImplTest,
+       HandleSyncTextInputEditingStateClearsException) {
+  MockJNIEnvProvider env_provider;
+  MockJNIEnv& mock_env = env_provider.env();
+
+  const jobject kFlutterJniObj = reinterpret_cast<jobject>(0x4004);
+  EXPECT_CALL(mock_env, GetObjectRefType(_))
+      .WillRepeatedly(Return(JNILocalRefType));
+  EXPECT_CALL(mock_env, NewWeakGlobalRef(kFlutterJniObj))
+      .WillOnce(Return(reinterpret_cast<jweak>(kFlutterJniObj)));
+  EXPECT_CALL(mock_env, DeleteWeakGlobalRef(_)).WillRepeatedly(Return());
+  EXPECT_CALL(mock_env, NewLocalRef(_)).WillRepeatedly(ReturnArg<0>());
+  EXPECT_CALL(mock_env, DeleteLocalRef(_)).WillRepeatedly(Return());
+  EXPECT_CALL(mock_env, CallBooleanMethodV(kFlutterJniObj, _, _))
+      .WillOnce(Return(JNI_TRUE))
+      .WillOnce(Return(JNI_FALSE));
+  EXPECT_CALL(mock_env, ExceptionCheck())
+      .WillOnce(Return(JNI_FALSE))
+      .WillOnce(Return(JNI_TRUE));
+  EXPECT_CALL(mock_env, ExceptionDescribe()).Times(1);
+  EXPECT_CALL(mock_env, ExceptionClear()).Times(1);
+
+  fml::jni::JavaObjectWeakGlobalRef flutter_jni_ref(&mock_env, kFlutterJniObj);
+  PlatformViewAndroidJNIImpl android_jni(flutter_jni_ref);
+
+  EXPECT_TRUE(android_jni.HandleSyncTextInputEditingState(1, 3, 2, 2, -1, -1));
+  EXPECT_FALSE(android_jni.HandleSyncTextInputEditingState(1, 3, 2, 2, -1, -1));
+}
+
 }  // namespace testing
 }  // namespace flutter

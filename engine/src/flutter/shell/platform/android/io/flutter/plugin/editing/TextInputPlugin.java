@@ -11,7 +11,9 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.LocaleList;
+import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
 import android.util.SparseArray;
@@ -32,11 +34,14 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.inputmethod.EditorInfoCompat;
 import io.flutter.Log;
 import io.flutter.embedding.android.KeyboardManager;
+import io.flutter.embedding.engine.FlutterEngine;
+import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel.TextEditState;
 import io.flutter.plugin.platform.PlatformViewsController;
 import io.flutter.plugin.platform.PlatformViewsController2;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 
@@ -49,16 +54,42 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   @NonNull private final AutofillManager afm;
   @NonNull private final ScribeChannel scribeChannel;
   @NonNull private final TextInputChannel textInputChannel;
+  @NonNull private final Handler mainHandler = new Handler(Looper.getMainLooper());
+  @Nullable private final FlutterJNI lifecycleFlutterJNI;
+  @Nullable private final SyncTextInputBridge syncBridge;
+  @NonNull private final SyncTextInputProtocol.DirectBufferPool syncRequestBufferPool =
+      new SyncTextInputProtocol.DirectBufferPool();
   @NonNull private InputTarget inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
   @Nullable private TextInputChannel.Configuration configuration;
   @Nullable private SparseArray<TextInputChannel.Configuration> autofillConfiguration;
   @NonNull private ListenableEditingState mEditable;
   private boolean mRestartInputPending;
   @Nullable private InputConnection lastInputConnection;
+  @Nullable private FlutterInputConnection activeSyncInputConnection;
   @NonNull private PlatformViewsController platformViewsController;
   @NonNull private PlatformViewsController2 platformViewsController2;
   @Nullable private Rect lastClientRect;
   private ImeSyncDeferringInsetsCallback imeSyncCallback;
+
+  // Sync-mode lifecycle and reentrancy state.
+  private boolean destroyed = false;
+  private boolean syncModeEverActive = false;
+  private int engineGeneration = 0;
+  private int inImeCallbackDepth = 0;
+  private long syncNotifySeq = 0;
+  private boolean pendingSelectionUpdate = false;
+  private boolean pendingMonitorUpdate = false;
+  private int pendingSelStart = -1;
+  private int pendingSelEnd = -1;
+  private int pendingCompStart = -1;
+  private int pendingCompEnd = -1;
+  private boolean pendingTextChanged = false;
+  private boolean pendingRestartInput = false;
+  private int pendingRestartClientId = 0;
+  private int lastReportedSelStart = Integer.MIN_VALUE;
+  private int lastReportedSelEnd = Integer.MIN_VALUE;
+  private int lastReportedCompStart = Integer.MIN_VALUE;
+  private int lastReportedCompEnd = Integer.MIN_VALUE;
 
   // Initialize the "last seen" text editing values to a non-null value.
   private TextEditState mLastKnownFrameworkTextEditingState;
@@ -69,6 +100,97 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   // details.
   private boolean isInputConnectionLocked;
 
+  private final FlutterEngine.EngineLifecycleListener engineLifecycleListener =
+      new FlutterEngine.EngineLifecycleListener() {
+        @Override
+        public void onPreEngineRestart() {
+          handlePreEngineRestart();
+        }
+
+        @Override
+        public void onEngineWillDestroy() {
+          // Invoked from FlutterJNI.detachFromNativeAndReleaseResources() before native teardown.
+          handleEngineWillDestroy();
+        }
+      };
+
+  private final FlutterJNI.SyncTextInputEditingStateListener syncEditingStateListener =
+      new FlutterJNI.SyncTextInputEditingStateListener() {
+        @Override
+        public boolean onSyncTextInputEditingState(
+            int clientId,
+            int flags,
+            int selectionStart,
+            int selectionEnd,
+            int composingStart,
+            int composingEnd) {
+          return handleSyncTextInputEditingState(
+              clientId, flags, selectionStart, selectionEnd, composingStart, composingEnd);
+        }
+      };
+
+  private final FlutterInputConnection.Host syncInputConnectionHost =
+      new FlutterInputConnection.Host() {
+        @Override
+        public boolean isConnectionActive(@NonNull FlutterInputConnection connection) {
+          return !destroyed
+              && activeSyncInputConnection == connection
+              && engineGeneration == connection.getEngineGeneration()
+              && inputTarget.type == InputTarget.Type.FRAMEWORK_CLIENT
+              && inputTarget.id == connection.getClientId();
+        }
+
+        @Override
+        public boolean isSyncModeActive() {
+          return TextInputPlugin.this.isSyncModeActive();
+        }
+
+        @Override
+        public void enterImeCallback() {
+          TextInputPlugin.this.enterImeCallback();
+        }
+
+        @Override
+        public void exitImeCallback() {
+          TextInputPlugin.this.exitImeCallback();
+        }
+
+        @Override
+        public long getSyncNotifySeq() {
+          return syncNotifySeq;
+        }
+
+        @NonNull
+        @Override
+        public SyncTextInputProtocol.DirectBufferPool getRequestBufferPool() {
+          return syncRequestBufferPool;
+        }
+
+        @Nullable
+        @Override
+        public SyncTextInputProtocol.Response dispatchSyncRequest(
+            @NonNull ByteBuffer buffer, int length) {
+          return TextInputPlugin.this.dispatchSyncRequest(buffer, length);
+        }
+
+        @Override
+        public void onMutationResponse(
+            @NonNull FlutterInputConnection connection,
+            @NonNull SyncTextInputProtocol.Response response,
+            long notifySeqBefore,
+            boolean suppressSelectionUpdate) {
+          TextInputPlugin.this.handleSyncMutationResponse(
+              connection, response, notifySeqBefore, suppressSelectionUpdate);
+        }
+
+        @Override
+        public void onConnectionClosed(@NonNull FlutterInputConnection connection) {
+          if (activeSyncInputConnection == connection) {
+            activeSyncInputConnection = null;
+          }
+        }
+      };
+
   @SuppressLint("NewApi")
   public TextInputPlugin(
       @NonNull View view,
@@ -76,7 +198,37 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       @NonNull ScribeChannel scribeChannel,
       @NonNull PlatformViewsController platformViewsController,
       @NonNull PlatformViewsController2 platformViewsController2) {
+    this(
+        view,
+        textInputChannel,
+        scribeChannel,
+        platformViewsController,
+        platformViewsController2,
+        createSyncBridge(textInputChannel));
+  }
+
+  @VisibleForTesting
+  @SuppressLint("NewApi")
+  TextInputPlugin(
+      @NonNull View view,
+      @NonNull TextInputChannel textInputChannel,
+      @NonNull ScribeChannel scribeChannel,
+      @NonNull PlatformViewsController platformViewsController,
+      @NonNull PlatformViewsController2 platformViewsController2,
+      @Nullable SyncTextInputBridge syncBridge) {
     mView = view;
+    this.syncBridge = syncBridge;
+    final FlutterJNI channelJni = textInputChannel.getFlutterJNI();
+    if (channelJni != null) {
+      this.lifecycleFlutterJNI = channelJni;
+      channelJni.addEngineLifecycleListener(engineLifecycleListener);
+    } else {
+      this.lifecycleFlutterJNI = null;
+    }
+    if (syncBridge != null) {
+      syncBridge.setEditingStateListener(syncEditingStateListener);
+    }
+
     // Create a default object.
     mEditable = new ListenableEditingState(null, mView);
     mImm = (InputMethodManager) view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -100,7 +252,11 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
             @Override
             public void onImeVisibilityChanged(boolean visible) {
               if (!visible) {
-                mImm.restartInput(mView);
+                if (inImeCallbackDepth > 0) {
+                  postIfSameGeneration(() -> mImm.restartInput(mView));
+                } else {
+                  mImm.restartInput(mView);
+                }
               }
             }
           });
@@ -227,6 +383,414 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     }
   }
 
+  @Nullable
+  private static SyncTextInputBridge createSyncBridge(@NonNull TextInputChannel textInputChannel) {
+    final FlutterJNI jni = textInputChannel.getFlutterJNI();
+    return jni != null ? new SyncTextInputBridge.FlutterJNIBridge(jni) : null;
+  }
+
+  boolean isSyncModeActive() {
+    final boolean active = !destroyed && syncBridge != null && syncBridge.isSyncTextInputEnabled();
+    if (active) {
+      syncModeEverActive = true;
+    }
+    return active;
+  }
+
+  @VisibleForTesting
+  FlutterEngine.EngineLifecycleListener getEngineLifecycleListenerForTesting() {
+    return engineLifecycleListener;
+  }
+
+  @VisibleForTesting
+  FlutterJNI.SyncTextInputEditingStateListener getSyncEditingStateListenerForTesting() {
+    return syncEditingStateListener;
+  }
+
+  private void closeActiveSyncConnection(boolean notifyDart) {
+    final FlutterInputConnection conn = activeSyncInputConnection;
+    if (conn == null) {
+      return;
+    }
+    activeSyncInputConnection = null;
+    if (notifyDart && !conn.isClosed() && isSyncModeActive()) {
+      enterImeCallback();
+      try {
+        final ByteBuffer buf =
+            syncRequestBufferPool.acquire(SyncTextInputProtocol.REQUEST_HEADER_BYTES);
+        try {
+          SyncTextInputProtocol.putHeader(
+              buf, SyncTextInputProtocol.OP_CLOSE_CONNECTION, conn.getClientId());
+          final SyncTextInputProtocol.Response response = dispatchSyncRequest(buf, buf.position());
+          if (response != null && response.isOk() && response.isCommitted()) {
+            pendingTextChanged |= response.isTextChanged();
+          }
+        } finally {
+          syncRequestBufferPool.release(buf);
+        }
+      } finally {
+        conn.markClosedLocally();
+        exitImeCallback();
+      }
+    } else {
+      conn.markClosedLocally();
+    }
+  }
+
+  private void clearPendingImeUpdates() {
+    pendingSelectionUpdate = false;
+    pendingMonitorUpdate = false;
+    pendingSelStart = -1;
+    pendingSelEnd = -1;
+    pendingCompStart = -1;
+    pendingCompEnd = -1;
+    pendingTextChanged = false;
+    pendingRestartInput = false;
+    pendingRestartClientId = 0;
+  }
+
+  private void resetLastReportedSelection() {
+    lastReportedSelStart = Integer.MIN_VALUE;
+    lastReportedSelEnd = Integer.MIN_VALUE;
+    lastReportedCompStart = Integer.MIN_VALUE;
+    lastReportedCompEnd = Integer.MIN_VALUE;
+  }
+
+  private void updateLastReportedSelection(
+      int selStart, int selEnd, int compStart, int compEnd) {
+    lastReportedSelStart = selStart;
+    lastReportedSelEnd = selEnd;
+    if (compStart >= 0 && compEnd >= 0 && compStart != compEnd) {
+      lastReportedCompStart = Math.min(compStart, compEnd);
+      lastReportedCompEnd = Math.max(compStart, compEnd);
+    } else {
+      lastReportedCompStart = -1;
+      lastReportedCompEnd = -1;
+    }
+  }
+
+  private void postIfSameGeneration(@NonNull Runnable action) {
+    final int gen = engineGeneration;
+    mainHandler.post(
+        () -> {
+          if (!destroyed && engineGeneration == gen) {
+            action.run();
+          }
+        });
+  }
+
+  private void postRestartInputForClient(int clientId) {
+    final int gen = engineGeneration;
+    mainHandler.post(
+        () -> {
+          if (!destroyed
+              && engineGeneration == gen
+              && inputTarget.type == InputTarget.Type.FRAMEWORK_CLIENT
+              && inputTarget.id == clientId) {
+            mImm.restartInput(mView);
+          }
+        });
+  }
+
+  private void enterImeCallback() {
+    inImeCallbackDepth++;
+  }
+
+  private void exitImeCallback() {
+    if (inImeCallbackDepth <= 0) {
+      return;
+    }
+    inImeCallbackDepth--;
+    if (inImeCallbackDepth == 0) {
+      flushPendingImeUpdates();
+    }
+  }
+
+  @Nullable
+  private SyncTextInputProtocol.Response dispatchSyncRequest(
+      @NonNull ByteBuffer buffer, int length) {
+    if (destroyed || syncBridge == null) {
+      return null;
+    }
+    final byte[] raw = syncBridge.dispatchSyncTextInput(buffer, length);
+    return SyncTextInputProtocol.decodeResponse(raw);
+  }
+
+  @Nullable
+  private SyncTextInputProtocol.Response queryInitialState(int clientId) {
+    final ByteBuffer buf =
+        syncRequestBufferPool.acquire(SyncTextInputProtocol.REQUEST_HEADER_BYTES);
+    try {
+      SyncTextInputProtocol.putHeader(buf, SyncTextInputProtocol.OP_QUERY_INITIAL_STATE, clientId);
+      return dispatchSyncRequest(buf, buf.position());
+    } finally {
+      syncRequestBufferPool.release(buf);
+    }
+  }
+
+  @Nullable
+  private SyncTextInputProtocol.Response queryFullState(int clientId) {
+    final ByteBuffer buf =
+        syncRequestBufferPool.acquire(SyncTextInputProtocol.REQUEST_HEADER_BYTES);
+    try {
+      SyncTextInputProtocol.putHeader(buf, SyncTextInputProtocol.OP_GET_FULL_STATE, clientId);
+      return dispatchSyncRequest(buf, buf.position());
+    } finally {
+      syncRequestBufferPool.release(buf);
+    }
+  }
+
+  @Nullable
+  private SyncTextInputProtocol.Response queryCursorAnchorState(int clientId) {
+    final ByteBuffer buf =
+        syncRequestBufferPool.acquire(SyncTextInputProtocol.REQUEST_HEADER_BYTES);
+    try {
+      SyncTextInputProtocol.putHeader(
+          buf, SyncTextInputProtocol.OP_GET_CURSOR_ANCHOR_STATE, clientId);
+      return dispatchSyncRequest(buf, buf.position());
+    } finally {
+      syncRequestBufferPool.release(buf);
+    }
+  }
+
+  @Nullable
+  private SyncTextInputProtocol.Response dispatchAutofillCurrentClient(
+      int clientId, @NonNull String text) {
+    final int strBytes = SyncTextInputProtocol.encodedStringBytes(text);
+    if (strBytes < 0) {
+      return null;
+    }
+    final ByteBuffer buf =
+        syncRequestBufferPool.acquire(SyncTextInputProtocol.REQUEST_HEADER_BYTES + strBytes);
+    try {
+      SyncTextInputProtocol.putHeader(
+          buf, SyncTextInputProtocol.OP_AUTOFILL_CURRENT_CLIENT, clientId);
+      SyncTextInputProtocol.putUtf16String(buf, text);
+      return dispatchSyncRequest(buf, buf.position());
+    } finally {
+      syncRequestBufferPool.release(buf);
+    }
+  }
+
+  private void handleSyncMutationResponse(
+      @Nullable FlutterInputConnection connection,
+      @NonNull SyncTextInputProtocol.Response response,
+      long notifySeqBefore,
+      boolean suppressSelectionUpdate) {
+    if (!response.isCommitted() || response.isBatchActive()) {
+      return;
+    }
+    if (response.isClientChanged()) {
+      // The framework switched focus or cleared the client inside the edit callback; the
+      // incoming setClient / clearClient message will reset the IMM cleanly.
+      return;
+    }
+    if (!response.isStateChanged()
+        && !response.isDiverged()
+        && !response.isComposingChangedByFramework()) {
+      return;
+    }
+
+    pendingTextChanged |= response.isTextChanged();
+
+    if (response.isComposingChangedByFramework()) {
+      pendingRestartInput = true;
+      pendingRestartClientId =
+          connection != null ? connection.getClientId() : inputTarget.id;
+    } else if (!suppressSelectionUpdate || response.isDiverged()) {
+      if (syncNotifySeq == notifySeqBefore) {
+        pendingSelectionUpdate = true;
+        pendingSelStart = response.selectionStart;
+        pendingSelEnd = response.selectionEnd;
+        pendingCompStart = response.composingStart;
+        pendingCompEnd = response.composingEnd;
+      }
+    } else {
+      pendingMonitorUpdate = true;
+    }
+  }
+
+  private void flushPendingImeUpdates() {
+    final boolean restartInput = pendingRestartInput;
+    final int restartClientId = pendingRestartClientId;
+    final boolean selectionUpdate = pendingSelectionUpdate;
+    final boolean monitorUpdate = pendingMonitorUpdate;
+    final int selStart = pendingSelStart;
+    final int selEnd = pendingSelEnd;
+    final int compStart = pendingCompStart;
+    final int compEnd = pendingCompEnd;
+    final boolean textChanged = pendingTextChanged;
+
+    clearPendingImeUpdates();
+
+    if (destroyed
+        || inputTarget.type != InputTarget.Type.FRAMEWORK_CLIENT
+        || (!restartInput && !selectionUpdate && !textChanged && !monitorUpdate)) {
+      return;
+    }
+
+    final FlutterInputConnection activeConn = activeSyncInputConnection;
+    final boolean needAutofill = textChanged && needsAutofill();
+    final boolean needExtracted =
+        !restartInput && activeConn != null && activeConn.isMonitoringExtractedText();
+    final boolean needCursor =
+        !restartInput && activeConn != null && activeConn.isMonitoringCursorUpdates();
+
+    SyncTextInputProtocol.Response fullState = null;
+    SyncTextInputProtocol.Response cursorAnchorState = null;
+    if (needAutofill || needExtracted) {
+      fullState = queryFullState(inputTarget.id);
+    } else if (needCursor) {
+      cursorAnchorState = queryCursorAnchorState(inputTarget.id);
+    }
+
+    if (needAutofill && fullState != null && fullState.isOk() && fullState.text != null) {
+      notifyValueChanged(fullState.text);
+    }
+
+    if (activeConn == null) {
+      return;
+    }
+
+    if (restartInput) {
+      postRestartInputForClient(restartClientId);
+      return;
+    }
+
+    if (selectionUpdate) {
+      updateLastReportedSelection(selStart, selEnd, compStart, compEnd);
+      mImm.updateSelection(mView, selStart, selEnd, compStart, compEnd);
+    }
+
+    if (fullState != null && fullState.isOk()) {
+      if (needExtracted) {
+        activeConn.sendExtractedTextUpdate(fullState);
+      }
+      if (needCursor) {
+        activeConn.sendCursorAnchorUpdate(fullState, /*textIsFullDocument=*/ true);
+      }
+    } else if (needCursor && cursorAnchorState != null && cursorAnchorState.isOk()) {
+      activeConn.sendCursorAnchorUpdate(cursorAnchorState, /*textIsFullDocument=*/ false);
+    }
+  }
+
+  private boolean handleSyncTextInputEditingState(
+      int clientId,
+      int flags,
+      int selectionStart,
+      int selectionEnd,
+      int composingStart,
+      int composingEnd) {
+    if (!isSyncModeActive()
+        || inputTarget.type != InputTarget.Type.FRAMEWORK_CLIENT
+        || inputTarget.id != clientId) {
+      return false;
+    }
+
+    syncNotifySeq++;
+    final boolean textChanged = (flags & SyncTextInputProtocol.NOTIFY_FLAG_TEXT_CHANGED) != 0;
+    final boolean composingChanged =
+        (flags & SyncTextInputProtocol.NOTIFY_FLAG_COMPOSING_CHANGED) != 0;
+    final boolean needsRestart = composingChanged;
+
+    if (inImeCallbackDepth > 0) {
+      pendingTextChanged |= textChanged;
+      if (needsRestart) {
+        pendingRestartInput = true;
+        pendingRestartClientId = clientId;
+      } else {
+        pendingSelectionUpdate = true;
+        pendingSelStart = selectionStart;
+        pendingSelEnd = selectionEnd;
+        pendingCompStart = composingStart;
+        pendingCompEnd = composingEnd;
+      }
+      return true;
+    }
+
+    final FlutterInputConnection activeConn = activeSyncInputConnection;
+    final boolean needAutofill = textChanged && needsAutofill();
+    final boolean needExtracted =
+        !needsRestart && activeConn != null && activeConn.isMonitoringExtractedText();
+    final boolean needCursor =
+        !needsRestart && activeConn != null && activeConn.isMonitoringCursorUpdates();
+
+    SyncTextInputProtocol.Response fullState = null;
+    SyncTextInputProtocol.Response cursorAnchorState = null;
+    if (needAutofill || needExtracted) {
+      fullState = queryFullState(clientId);
+    } else if (needCursor) {
+      cursorAnchorState = queryCursorAnchorState(clientId);
+    }
+
+    if (needAutofill && fullState != null && fullState.isOk() && fullState.text != null) {
+      notifyValueChanged(fullState.text);
+    }
+
+    if (activeConn == null) {
+      return true;
+    }
+
+    if (needsRestart) {
+      Log.i(TAG, "Composing region changed by the framework. Restarting the input method.");
+      postRestartInputForClient(clientId);
+      return true;
+    }
+
+    updateLastReportedSelection(selectionStart, selectionEnd, composingStart, composingEnd);
+    mImm.updateSelection(mView, selectionStart, selectionEnd, composingStart, composingEnd);
+
+    if (fullState != null && fullState.isOk()) {
+      if (needExtracted) {
+        activeConn.sendExtractedTextUpdate(fullState);
+      }
+      if (needCursor) {
+        activeConn.sendCursorAnchorUpdate(fullState, /*textIsFullDocument=*/ true);
+      }
+    } else if (needCursor && cursorAnchorState != null && cursorAnchorState.isOk()) {
+      activeConn.sendCursorAnchorUpdate(cursorAnchorState, /*textIsFullDocument=*/ false);
+    }
+    return true;
+  }
+
+  private void handlePreEngineRestart() {
+    engineGeneration++;
+    mainHandler.removeCallbacksAndMessages(null);
+    if (!syncModeEverActive && activeSyncInputConnection == null) {
+      return;
+    }
+    closeActiveSyncConnection(/*notifyDart=*/ false);
+    clearPendingImeUpdates();
+    resetLastReportedSelection();
+    mEditable.removeEditingStateListener(this);
+    notifyViewExited();
+    configuration = null;
+    updateAutofillConfigurationIfNeeded(null);
+    inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
+    lastInputConnection = null;
+    mLastKnownFrameworkTextEditingState = null;
+    mRestartInputPending = false;
+    unlockPlatformViewInputConnection();
+    lastClientRect = null;
+    if (inImeCallbackDepth > 0) {
+      postIfSameGeneration(() -> mImm.restartInput(mView));
+    } else {
+      mImm.restartInput(mView);
+    }
+  }
+
+  private void handleEngineWillDestroy() {
+    destroyed = true;
+    engineGeneration++;
+    mainHandler.removeCallbacksAndMessages(null);
+    if (syncBridge != null) {
+      syncBridge.clearEditingStateListener(syncEditingStateListener);
+    }
+    closeActiveSyncConnection(/*notifyDart=*/ false);
+    clearPendingImeUpdates();
+    resetLastReportedSelection();
+  }
+
   /**
    * Detaches the text input plugin from the platform views controller.
    *
@@ -234,6 +798,10 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
    */
   @SuppressLint("NewApi")
   public void destroy() {
+    handleEngineWillDestroy();
+    if (lifecycleFlutterJNI != null) {
+      lifecycleFlutterJNI.removeEngineLifecycleListener(engineLifecycleListener);
+    }
     platformViewsController.detachTextInputPlugin();
     platformViewsController2.detachTextInputPlugin();
     textInputChannel.setTextInputMethodHandler(null);
@@ -316,6 +884,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   public InputConnection createInputConnection(
       @NonNull View view, @NonNull KeyboardManager keyboardManager, @NonNull EditorInfo outAttrs) {
     if (inputTarget.type == InputTarget.Type.NO_TARGET) {
+      closeActiveSyncConnection(/*notifyDart=*/ true);
       lastInputConnection = null;
       return null;
     }
@@ -383,6 +952,86 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     // outAttrs.setSupportedHandwritingGestures and
     // outAttrs.setSupportedHandwritingGesturePreviews.
     // https://github.com/flutter/flutter/issues/156018
+
+    if (isSyncModeActive()) {
+      mEditable.removeEditingStateListener(this);
+      final boolean obscureText =
+          configuration.obscureText
+              || (configuration.inputType != null && configuration.inputType.isPassword);
+      SyncTextInputProtocol.Response initialState;
+      boolean restartAfterCreate = false;
+      int restartAfterCreateClientId = 0;
+      enterImeCallback();
+      try {
+        closeActiveSyncConnection(/*notifyDart=*/ true);
+        // Drop any stale selection/restart updates queued by closing the prior connection;
+        // EditorInfo populated from queryInitialState below carries the authoritative state.
+        pendingSelectionUpdate = false;
+        pendingMonitorUpdate = false;
+        pendingRestartInput = false;
+        pendingRestartClientId = 0;
+        final long notifySeqBeforeQuery = syncNotifySeq;
+        initialState = queryInitialState(inputTarget.id);
+        if (syncNotifySeq != notifySeqBeforeQuery) {
+          // A microtask flushed during queryInitialState updated the framework value after
+          // initialState was encoded. Capture any composing-driven restart so we post it once the
+          // new InputConnection is installed (flushPendingImeUpdates exits early while
+          // activeSyncInputConnection is null); otherwise do one bounded re-query so EditorInfo
+          // carries the newer text/selection.
+          if (pendingRestartInput) {
+            restartAfterCreate = true;
+            restartAfterCreateClientId = pendingRestartClientId;
+            pendingRestartInput = false;
+            pendingRestartClientId = 0;
+          } else {
+            final SyncTextInputProtocol.Response refreshed = queryInitialState(inputTarget.id);
+            if (refreshed != null && refreshed.isOk()) {
+              initialState = refreshed;
+            }
+          }
+          pendingSelectionUpdate = false;
+          pendingMonitorUpdate = false;
+        }
+      } finally {
+        exitImeCallback();
+      }
+      if (initialState != null && initialState.isOk()) {
+        outAttrs.initialSelStart = initialState.selectionStart;
+        outAttrs.initialSelEnd = initialState.selectionEnd;
+        updateLastReportedSelection(
+            initialState.selectionStart,
+            initialState.selectionEnd,
+            initialState.composingStart,
+            initialState.composingEnd);
+        if (!obscureText
+            && initialState.hasText()
+            && initialState.text != null
+            && initialState.intResult >= 0) {
+          EditorInfoCompat.setInitialSurroundingSubText(
+              outAttrs, initialState.text, initialState.intResult);
+        }
+      } else {
+        outAttrs.initialSelStart = -1;
+        outAttrs.initialSelEnd = -1;
+        resetLastReportedSelection();
+      }
+      final FlutterInputConnection connection =
+          new FlutterInputConnection(
+              view,
+              inputTarget.id,
+              engineGeneration,
+              textInputChannel,
+              keyboardManager,
+              outAttrs,
+              obscureText,
+              syncInputConnectionHost);
+      activeSyncInputConnection = connection;
+      lastInputConnection = connection;
+      if (restartAfterCreate) {
+        postRestartInputForClient(restartAfterCreateClientId);
+      }
+      return connection;
+    }
 
     InputConnectionAdaptor connection =
         new InputConnectionAdaptor(
@@ -454,6 +1103,10 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @VisibleForTesting
   void showTextInput(View view) {
+    if (inImeCallbackDepth > 0) {
+      postIfSameGeneration(() -> showTextInput(view));
+      return;
+    }
     if (configuration == null
         || configuration.inputType == null
         || configuration.inputType.type != TextInputChannel.TextInputType.NONE) {
@@ -465,6 +1118,10 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   private void hideTextInput(View view) {
+    if (inImeCallbackDepth > 0) {
+      postIfSameGeneration(() -> hideTextInput(view));
+      return;
+    }
     notifyViewExited();
     // Note: when a virtual display is used, a race condition may lead to us hiding the keyboard
     // here just after a platform view has shown it.
@@ -477,8 +1134,19 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @VisibleForTesting
   void setTextInputClient(int client, TextInputChannel.Configuration configuration) {
+    if (inImeCallbackDepth > 0) {
+      postIfSameGeneration(() -> setTextInputClient(client, configuration));
+      return;
+    }
+    if (destroyed) {
+      return;
+    }
+    // Close any active sync connection first so any flushed batch notifies autofill before exit.
+    closeActiveSyncConnection(/*notifyDart=*/ true);
     // Call notifyViewExited on the previous field.
     notifyViewExited();
+    clearPendingImeUpdates();
+    resetLastReportedSelection();
     this.configuration = configuration;
     inputTarget = new InputTarget(InputTarget.Type.FRAMEWORK_CLIENT, client);
 
@@ -488,15 +1156,26 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
             configuration.autofill != null ? configuration.autofill.editState : null, mView);
     updateAutofillConfigurationIfNeeded(configuration);
 
-    // setTextInputClient will be followed by a call to setTextInputEditingState.
-    // Do a restartInput at that time.
-    mRestartInputPending = true;
     unlockPlatformViewInputConnection();
     lastClientRect = null;
-    mEditable.addEditingStateListener(this);
+    if (isSyncModeActive()) {
+      mLastKnownFrameworkTextEditingState = null;
+      // In sync mode Dart is the single source of truth and createInputConnection queries initial
+      // state directly, so restartInput immediately instead of waiting for setEditingState.
+      mRestartInputPending = false;
+      mImm.restartInput(mView);
+    } else {
+      // setTextInputClient will be followed by a call to setTextInputEditingState.
+      // Do a restartInput at that time.
+      mRestartInputPending = true;
+      mEditable.addEditingStateListener(this);
+    }
   }
 
   private void setPlatformViewTextInputClient(int platformViewId, boolean usesVirtualDisplay) {
+    closeActiveSyncConnection(/*notifyDart=*/ true);
+    clearPendingImeUpdates();
+    resetLastReportedSelection();
     if (usesVirtualDisplay) {
       // We need to make sure that the Flutter view is focused so that no imm operations get short
       // circuited.
@@ -532,6 +1211,39 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   // latest TextEditState from the framework.
   @VisibleForTesting
   void setTextInputEditingState(View view, TextInputChannel.TextEditState state) {
+    if (isSyncModeActive()) {
+      // In sync mode Dart is the single source of truth, and async TextInput.setEditingState
+      // messages may arrive stale (e.g. a fallback queued during focus before setClient ran).
+      // Treat this channel call as a hint and re-query Dart's live selection/composing state,
+      // reporting to IMM only if it differs from what was last reported.
+      if (inputTarget.type == InputTarget.Type.FRAMEWORK_CLIENT
+          && activeSyncInputConnection != null) {
+        enterImeCallback();
+        try {
+          final long notifySeqBefore = syncNotifySeq;
+          final SyncTextInputProtocol.Response live = queryCursorAnchorState(inputTarget.id);
+          if (syncNotifySeq == notifySeqBefore
+              && live != null
+              && live.isOk()
+              && (live.selectionStart != lastReportedSelStart
+                  || live.selectionEnd != lastReportedSelEnd
+                  || live.composingStart != lastReportedCompStart
+                  || live.composingEnd != lastReportedCompEnd)) {
+            handleSyncTextInputEditingState(
+                inputTarget.id,
+                /*flags=*/ 0,
+                live.selectionStart,
+                live.selectionEnd,
+                live.composingStart,
+                live.composingEnd);
+          }
+        } finally {
+          exitImeCallback();
+        }
+      }
+      return;
+    }
+
     if (!mRestartInputPending
         && mLastKnownFrameworkTextEditingState != null
         && mLastKnownFrameworkTextEditingState.hasComposing()) {
@@ -601,6 +1313,10 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @VisibleForTesting
   void clearTextInputClient() {
+    if (inImeCallbackDepth > 0) {
+      postIfSameGeneration(this::clearTextInputClient);
+      return;
+    }
     if (inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW) {
       // This only applies to platform views that use a virtual display.
       // Focus changes in the framework tree have no guarantees on the order focus nodes are
@@ -618,6 +1334,9 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       // notified before focus nodes that gained focus as part of the same focus event.
       return;
     }
+    closeActiveSyncConnection(/*notifyDart=*/ true);
+    clearPendingImeUpdates();
+    resetLastReportedSelection();
     mEditable.removeEditingStateListener(this);
     notifyViewExited();
     configuration = null;
@@ -666,11 +1385,13 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       return false;
     }
 
-    // Send the KeyEvent as an IME KeyEvent. If the input connection is an
-    // InputConnectionAdaptor then call its handleKeyEvent method (because
-    // this method will be called by the keyboard manager, and
-    // InputConnectionAdaptor#sendKeyEvent forwards the key event back to the
-    // keyboard manager).
+    // Send the KeyEvent as an IME KeyEvent. If the input connection is a
+    // FlutterInputConnection or InputConnectionAdaptor then call its handleKeyEvent
+    // method (because this method will be called by the keyboard manager, and
+    // sendKeyEvent forwards the key event back to the keyboard manager).
+    if (lastInputConnection instanceof FlutterInputConnection) {
+      return ((FlutterInputConnection) lastInputConnection).handleKeyEvent(keyEvent);
+    }
     return (lastInputConnection instanceof InputConnectionAdaptor)
         ? ((InputConnectionAdaptor) lastInputConnection).handleKeyEvent(keyEvent)
         : lastInputConnection.sendKeyEvent(keyEvent);
@@ -858,7 +1579,16 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
             0,
             lastClientRect.width(),
             lastClientRect.height());
-        child.setAutofillValue(AutofillValue.forText(mEditable));
+        if (isSyncModeActive() && inputTarget.type == InputTarget.Type.FRAMEWORK_CLIENT) {
+          final SyncTextInputProtocol.Response fullState = queryFullState(inputTarget.id);
+          final String currentText =
+              fullState != null && fullState.isOk() && fullState.text != null
+                  ? fullState.text
+                  : (autofill.editState != null ? autofill.editState.text : "");
+          child.setAutofillValue(AutofillValue.forText(currentText));
+        } else {
+          child.setAutofillValue(AutofillValue.forText(mEditable));
+        }
       } else {
         child.setDimens(0, 0, 0, 0, 1, 1);
         child.setAutofillValue(AutofillValue.forText(autofill.editState.text));
@@ -877,6 +1607,8 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
     final TextInputChannel.Configuration.Autofill currentAutofill = configuration.autofill;
     final HashMap<String, TextInputChannel.TextEditState> editingValues = new HashMap<>();
+    final boolean syncActive =
+        isSyncModeActive() && inputTarget.type == InputTarget.Type.FRAMEWORK_CLIENT;
     for (int i = 0; i < values.size(); i++) {
       int virtualId = values.keyAt(i);
 
@@ -891,15 +1623,37 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
           new TextInputChannel.TextEditState(value, value.length(), value.length(), -1, -1);
 
       if (autofill.uniqueIdentifier.equals(currentAutofill.uniqueIdentifier)) {
-        // Autofilling the current client is the same as handling user input
-        // from the virtual keyboard. Setting the editable to newState and an
-        // update will be sent to the framework.
-        mEditable.setEditingState(newState);
+        if (syncActive) {
+          enterImeCallback();
+          try {
+            final long notifySeqBefore = syncNotifySeq;
+            final SyncTextInputProtocol.Response response =
+                dispatchAutofillCurrentClient(inputTarget.id, value);
+            if (response != null && response.isOk()) {
+              handleSyncMutationResponse(
+                  activeSyncInputConnection,
+                  response,
+                  notifySeqBefore,
+                  /*suppressSelectionUpdate=*/ false);
+            } else {
+              editingValues.put(autofill.uniqueIdentifier, newState);
+            }
+          } finally {
+            exitImeCallback();
+          }
+        } else {
+          // Autofilling the current client is the same as handling user input
+          // from the virtual keyboard. Setting the editable to newState and an
+          // update will be sent to the framework.
+          mEditable.setEditingState(newState);
+        }
       } else {
         editingValues.put(autofill.uniqueIdentifier, newState);
       }
     }
-    textInputChannel.updateEditingStateWithTag(inputTarget.id, editingValues);
+    if (!syncActive || !editingValues.isEmpty()) {
+      textInputChannel.updateEditingStateWithTag(inputTarget.id, editingValues);
+    }
   }
   // -------- End: Autofill -------
 }

@@ -285,6 +285,11 @@ DEF_SWITCH(kEnableAndroidHcppAndSurfaceControl,
            "enable-hcpp-and-surface-control",
            "Enable the HCPP platform view mode and SurfaceControl backed "
            "swapchain when supported.")
+DEF_SWITCH(kEnableAndroidSyncTextInput,
+           "enable-android-sync-text-input",
+           "Enable synchronous Android text input (IME) backed by Dart state "
+           "without a Java Editable mirror when threads are merged. "
+           "Defaults to false.")
 DEF_SWITCH(kEnableFlutterGpu,
            "enable-flutter-gpu",
            "Whether Flutter GPU is enabled.")

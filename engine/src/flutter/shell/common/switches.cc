@@ -527,6 +527,17 @@ Settings SettingsFromCommandLine(const fml::CommandLine& command_line,
     }
   }
 
+  {
+    std::string enable_sync_text_input_value;
+    if (command_line.GetOptionValue(
+            FlagForSwitch(Switch::kEnableAndroidSyncTextInput),
+            &enable_sync_text_input_value)) {
+      settings.enable_android_sync_text_input =
+          enable_sync_text_input_value.empty() ||
+          "true" == enable_sync_text_input_value;
+    }
+  }
+
   constexpr std::string_view kMergedThreadEnabled = "enabled";
   constexpr std::string_view kMergedThreadDisabled = "disabled";
   constexpr std::string_view kMergedThreadMergeAfterLaunch = "mergeAfterLaunch";

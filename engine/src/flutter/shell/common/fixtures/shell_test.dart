@@ -654,3 +654,111 @@ void hitTestOutsidePlatformViewMain() {
     return HitTestResponse.empty;
   };
 }
+
+typedef _SyncImeDispatchNative = Int32 Function(Pointer<Uint8>, Int32, Pointer<Void>);
+typedef _SyncImeIsSupportedNative = Int32 Function(Int64);
+typedef _SyncImeIsSupportedDart = int Function(int);
+typedef _SyncImeRegisterNative =
+    Int32 Function(Int64, Pointer<NativeFunction<_SyncImeDispatchNative>>);
+typedef _SyncImeRegisterDart = int Function(int, Pointer<NativeFunction<_SyncImeDispatchNative>>);
+typedef _SyncImeReserveNative = Pointer<Uint8> Function(Pointer<Void>, Int32);
+typedef _SyncImeReserveDart = Pointer<Uint8> Function(Pointer<Void>, int);
+typedef _SyncImeNotifyNative =
+    Int32 Function(Int64, Int32, Int32, Int32, Int32, Int32, Int32);
+typedef _SyncImeNotifyDart = int Function(int, int, int, int, int, int, int);
+
+NativeCallable<_SyncImeDispatchNative>? _syncImeTestCallable;
+
+@pragma('vm:entry-point')
+void syncImeRegisterAndEcho() {
+  final DynamicLibrary lib = DynamicLibrary.process();
+  final _SyncImeIsSupportedDart isSupported = lib
+      .lookupFunction<_SyncImeIsSupportedNative, _SyncImeIsSupportedDart>(
+        'InternalFlutterAndroidSyncImeIsSupported',
+      );
+  final _SyncImeRegisterDart registerHandler = lib
+      .lookupFunction<_SyncImeRegisterNative, _SyncImeRegisterDart>(
+        'InternalFlutterAndroidSyncImeRegisterHandler',
+      );
+  final _SyncImeReserveDart reserveResponse = lib
+      .lookupFunction<_SyncImeReserveNative, _SyncImeReserveDart>(
+        'InternalFlutterAndroidSyncImeReserveResponse',
+      );
+  final _SyncImeNotifyDart notifyEditingState = lib
+      .lookupFunction<_SyncImeNotifyNative, _SyncImeNotifyDart>(
+        'InternalFlutterAndroidSyncImeNotifyEditingState',
+      );
+
+  final int engineId = PlatformDispatcher.instance.engineId!;
+  expect(isSupported(engineId), 1);
+
+  _syncImeTestCallable?.close();
+  _syncImeTestCallable = NativeCallable<_SyncImeDispatchNative>.isolateLocal(
+    (Pointer<Uint8> requestData, int requestLength, Pointer<Void> responseContext) {
+      final Uint8List req = requestLength > 0
+          ? requestData.asTypedList(requestLength)
+          : Uint8List(0);
+      final Pointer<Uint8> out = reserveResponse(responseContext, requestLength);
+      if (out == nullptr) {
+        return -1;
+      }
+      if (requestLength > 0) {
+        final Uint8List outList = out.asTypedList(requestLength);
+        for (int i = 0; i < requestLength; i++) {
+          outList[i] = req[i] ^ 0x5A;
+        }
+        if (req[0] == 0xAA) {
+          Future<void>.microtask(() {
+            notifyEditingState(engineId, 7, 1, 2, 3, -1, -1);
+          });
+        }
+      }
+      return 1;
+    },
+    exceptionalReturn: -1,
+  );
+
+  expect(registerHandler(engineId, _syncImeTestCallable!.nativeFunction), 1);
+  notifyNative();
+}
+
+@pragma('vm:entry-point')
+void syncImeRegisterAndCheckOwnership() {
+  final DynamicLibrary lib = DynamicLibrary.process();
+  final _SyncImeRegisterDart registerHandler = lib
+      .lookupFunction<_SyncImeRegisterNative, _SyncImeRegisterDart>(
+        'InternalFlutterAndroidSyncImeRegisterHandler',
+      );
+  final _SyncImeReserveDart reserveResponse = lib
+      .lookupFunction<_SyncImeReserveNative, _SyncImeReserveDart>(
+        'InternalFlutterAndroidSyncImeReserveResponse',
+      );
+  final _SyncImeNotifyDart notifyEditingState = lib
+      .lookupFunction<_SyncImeNotifyNative, _SyncImeNotifyDart>(
+        'InternalFlutterAndroidSyncImeNotifyEditingState',
+      );
+
+  final int engineId = PlatformDispatcher.instance.engineId!;
+  final int otherEngineId = engineId == 2001 ? 2002 : 2001;
+
+  _syncImeTestCallable?.close();
+  _syncImeTestCallable = NativeCallable<_SyncImeDispatchNative>.isolateLocal(
+    (Pointer<Uint8> requestData, int requestLength, Pointer<Void> responseContext) {
+      final Pointer<Uint8> out = reserveResponse(responseContext, 1);
+      if (out == nullptr) {
+        return -1;
+      }
+      out[0] = engineId & 0xFF;
+      return 1;
+    },
+    exceptionalReturn: -1,
+  );
+
+  // Registering own engine succeeds.
+  expect(registerHandler(engineId, _syncImeTestCallable!.nativeFunction), 1);
+  // Registering, clearing, or notifying an unowned engine must fail.
+  expect(registerHandler(otherEngineId, _syncImeTestCallable!.nativeFunction), 0);
+  expect(registerHandler(otherEngineId, nullptr), 0);
+  expect(notifyEditingState(otherEngineId, 1, 0, 0, 0, -1, -1), 0);
+  notifyNative();
+}

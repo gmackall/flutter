@@ -25,6 +25,7 @@
 #include "flutter/shell/platform/android/android_image_generator.h"
 #include "flutter/shell/platform/android/android_rendering_selector.h"
 #include "flutter/shell/platform/android/android_shell_holder.h"
+#include "flutter/shell/platform/android/android_sync_text_input_bridge.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
 
@@ -77,6 +78,35 @@ static PlatformData GetDefaultPlatformData() {
   PlatformData platform_data;
   platform_data.lifecycle_state = "AppLifecycleState.detached";
   return platform_data;
+}
+
+static uint64_t RegisterSyncTextInputShellEntry(
+    int64_t engine_id,
+    bool sync_flag_enabled,
+    const TaskRunners& task_runners,
+    const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade) {
+  fml::RefPtr<fml::TaskRunner> platform_runner =
+      task_runners.GetPlatformTaskRunner();
+  fml::RefPtr<fml::TaskRunner> ui_runner = task_runners.GetUITaskRunner();
+  std::weak_ptr<PlatformViewAndroidJNI> weak_jni = jni_facade;
+  return AndroidSyncTextInputRegistry::Instance().RegisterShell(
+      engine_id, sync_flag_enabled,
+      [platform_runner, ui_runner]() {
+        return platform_runner && ui_runner &&
+               platform_runner->RunsTasksOnCurrentThread() &&
+               ui_runner->RunsTasksOnCurrentThread();
+      },
+      [weak_jni](int32_t client_id, int32_t flags, int32_t selection_start,
+                 int32_t selection_end, int32_t composing_start,
+                 int32_t composing_end) {
+        auto jni = weak_jni.lock();
+        if (!jni) {
+          return false;
+        }
+        return jni->HandleSyncTextInputEditingState(
+            client_id, flags, selection_start, selection_end, composing_start,
+            composing_end);
+      });
 }
 
 AndroidShellHolder::AndroidShellHolder(
@@ -190,14 +220,18 @@ AndroidShellHolder::AndroidShellHolder(
     std::unique_ptr<Shell> shell,
     std::unique_ptr<APKAssetProvider> apk_asset_provider,
     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-    AndroidRenderingAPI rendering_api)
+    AndroidRenderingAPI rendering_api,
+    int64_t engine_id,
+    uint64_t sync_ime_shell_token)
     : settings_(settings),
       jni_facade_(jni_facade),
       platform_view_(platform_view),
       thread_host_(thread_host),
       shell_(std::move(shell)),
       apk_asset_provider_(std::move(apk_asset_provider)),
-      android_rendering_api_(rendering_api) {
+      android_rendering_api_(rendering_api),
+      engine_id_(engine_id),
+      sync_ime_shell_token_(sync_ime_shell_token) {
   FML_DCHECK(jni_facade);
   FML_DCHECK(shell_);
   FML_DCHECK(shell_->IsSetup());
@@ -207,6 +241,11 @@ AndroidShellHolder::AndroidShellHolder(
 }
 
 AndroidShellHolder::~AndroidShellHolder() {
+  if (engine_id_.has_value() && sync_ime_shell_token_ != 0) {
+    AndroidSyncTextInputRegistry::Instance().UnregisterShell(
+        *engine_id_, sync_ime_shell_token_);
+    sync_ime_shell_token_ = 0;
+  }
   shell_.reset();
   thread_host_.reset();
 }
@@ -248,9 +287,17 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
       android_platform_view->GetAndroidContext();
   FML_DCHECK(android_context);
 
+  uint64_t sync_ime_shell_token = 0;
+
   // This is a synchronous call, so the captures don't have race checks.
+  const bool enable_sync_ime =
+      GetSettings().enable_android_sync_text_input &&
+      GetSettings().merged_platform_ui_thread !=
+          Settings::MergedPlatformUIThread::kDisabled;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, android_context, &weak_platform_view](Shell& shell) {
+      [&jni_facade, android_context, &weak_platform_view,
+       &sync_ime_shell_token, engine_id, enable_sync_ime](
+          Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -258,7 +305,10 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
             jni_facade,              // JNI interop
             android_context          // Android context
         );
+        platform_view_android->SetEngineId(engine_id);
         weak_platform_view = platform_view_android->GetWeakPtr();
+        sync_ime_shell_token = RegisterSyncTextInputShellEntry(
+            engine_id, enable_sync_ime, shell.GetTaskRunners(), jni_facade);
         return platform_view_android;
       };
 
@@ -277,11 +327,18 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
   std::unique_ptr<flutter::Shell> shell =
       shell_->Spawn(std::move(config.value()), initial_route,
                     on_create_platform_view, on_create_rasterizer);
+  if (!shell) {
+    if (sync_ime_shell_token != 0) {
+      AndroidSyncTextInputRegistry::Instance().UnregisterShell(
+          engine_id, sync_ime_shell_token);
+    }
+    return nullptr;
+  }
 
   return std::unique_ptr<AndroidShellHolder>(new AndroidShellHolder(
       GetSettings(), jni_facade, thread_host_, std::move(shell),
       apk_asset_provider_->Clone(), weak_platform_view,
-      android_context->RenderingApi()));
+      android_context->RenderingApi(), engine_id, sync_ime_shell_token));
 }
 
 void AndroidShellHolder::Launch(
@@ -300,8 +357,29 @@ void AndroidShellHolder::Launch(
     return;
   }
   config->SetEngineId(engine_id);
+  RegisterSyncTextInputShell(engine_id);
   UpdateDisplayMetrics();
   shell_->RunEngine(std::move(config.value()));
+}
+
+void AndroidShellHolder::RegisterSyncTextInputShell(int64_t engine_id) {
+  if (engine_id_.has_value() && sync_ime_shell_token_ != 0) {
+    AndroidSyncTextInputRegistry::Instance().UnregisterShell(
+        *engine_id_, sync_ime_shell_token_);
+    sync_ime_shell_token_ = 0;
+  }
+  engine_id_ = engine_id;
+  if (platform_view_) {
+    platform_view_->SetEngineId(engine_id);
+  }
+  if (shell_) {
+    const bool enable_sync_ime =
+        settings_.enable_android_sync_text_input &&
+        settings_.merged_platform_ui_thread !=
+            Settings::MergedPlatformUIThread::kDisabled;
+    sync_ime_shell_token_ = RegisterSyncTextInputShellEntry(
+        engine_id, enable_sync_ime, shell_->GetTaskRunners(), jni_facade_);
+  }
 }
 
 Rasterizer::Screenshot AndroidShellHolder::Screenshot(
@@ -366,6 +444,25 @@ void AndroidShellHolder::UpdateDisplayMetrics() {
 
 bool AndroidShellHolder::IsSurfaceControlEnabled() {
   return GetPlatformView()->IsSurfaceControlEnabled();
+}
+
+bool AndroidShellHolder::IsSyncTextInputEnabled() const {
+  if (!IsValid() || !engine_id_.has_value()) {
+    return false;
+  }
+  return AndroidSyncTextInputRegistry::Instance().IsActiveForPlatform(
+      *engine_id_);
+}
+
+bool AndroidShellHolder::DispatchSyncTextInput(
+    const uint8_t* request_data,
+    int32_t request_length,
+    std::vector<uint8_t>* response_out) const {
+  if (!IsValid() || !engine_id_.has_value()) {
+    return false;
+  }
+  return AndroidSyncTextInputRegistry::Instance().DispatchToDart(
+      *engine_id_, request_data, request_length, response_out);
 }
 
 }  // namespace flutter

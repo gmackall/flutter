@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -594,6 +595,8 @@ class PlatformConfiguration final {
 
   Dart_Handle on_error() { return on_error_.Get(); }
 
+  std::optional<int64_t> engine_id() const { return engine_id_; }
+
  private:
   FML_FRIEND_TEST(testing::PlatformConfigurationTest, BeginFrameMonotonic);
 
@@ -628,6 +631,8 @@ class PlatformConfiguration final {
   int next_response_id_ = 1;
   std::unordered_map<int, fml::RefPtr<PlatformMessageResponse>>
       pending_responses_;
+
+  std::optional<int64_t> engine_id_;
 };
 
 //----------------------------------------------------------------------------

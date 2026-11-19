@@ -5,7 +5,10 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_ANDROID_SHELL_HOLDER_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_ANDROID_SHELL_HOLDER_H_
 
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "flutter/fml/macros.h"
 #include "flutter/shell/common/run_configuration.h"
@@ -94,6 +97,12 @@ class AndroidShellHolder {
 
   bool IsSurfaceControlEnabled();
 
+  bool IsSyncTextInputEnabled() const;
+
+  bool DispatchSyncTextInput(const uint8_t* request_data,
+                             int32_t request_length,
+                             std::vector<uint8_t>* response_out) const;
+
   Rasterizer::Screenshot Screenshot(Rasterizer::ScreenshotType type,
                                     bool base64_encode);
 
@@ -119,6 +128,8 @@ class AndroidShellHolder {
   uint64_t next_pointer_flow_id_ = 0;
   std::unique_ptr<APKAssetProvider> apk_asset_provider_;
   const AndroidRenderingAPI android_rendering_api_;
+  std::optional<int64_t> engine_id_;
+  uint64_t sync_ime_shell_token_ = 0;
 
   //----------------------------------------------------------------------------
   /// @brief      Constructor with its components injected.
@@ -137,8 +148,11 @@ class AndroidShellHolder {
                      std::unique_ptr<Shell> shell,
                      std::unique_ptr<APKAssetProvider> apk_asset_provider,
                      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+                     AndroidRenderingAPI rendering_api,
+                     int64_t engine_id,
+                     uint64_t sync_ime_shell_token);
   static void ThreadDestructCallback(void* value);
+  void RegisterSyncTextInputShell(int64_t engine_id);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,
       const std::string& libraryUrl,

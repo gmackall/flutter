@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -135,6 +136,8 @@ class PlatformViewAndroid final : public PlatformView {
   // |PlatformView|
   void SetupImpellerContext() override;
 
+  void SetEngineId(int64_t engine_id);
+
  private:
   const std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   std::shared_ptr<AndroidContext> android_context_;
@@ -151,6 +154,7 @@ class PlatformViewAndroid final : public PlatformView {
   const std::shared_ptr<std::atomic<uint64_t>> surface_generation_ =
       std::make_shared<std::atomic<uint64_t>>(0);
   bool android_meets_hcpp_criteria_ = false;
+  std::optional<int64_t> engine_id_;
 
   // |PlatformView|
   void UpdateSemantics(

@@ -305,6 +305,19 @@ class PlatformViewAndroidJNI {
                                               int configuration_id) const = 0;
 
   virtual void MaybeResizeSurfaceView(int32_t width, int32_t height) const = 0;
+
+  //----------------------------------------------------------------------------
+  /// @brief      Notifies the Android text input plugin synchronously of a
+  ///             programmatic editing state update from Dart.
+  ///
+  /// @note       Must be called from the merged platform/UI thread.
+  ///
+  virtual bool HandleSyncTextInputEditingState(int32_t client_id,
+                                               int32_t flags,
+                                               int32_t selection_start,
+                                               int32_t selection_end,
+                                               int32_t composing_start,
+                                               int32_t composing_end) = 0;
 };
 
 }  // namespace flutter

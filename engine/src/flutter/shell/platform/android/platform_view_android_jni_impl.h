@@ -159,6 +159,13 @@ class PlatformViewAndroidJNIImpl final : public PlatformViewAndroidJNI {
 
   void MaybeResizeSurfaceView(int32_t width, int32_t height) const override;
 
+  bool HandleSyncTextInputEditingState(int32_t client_id,
+                                       int32_t flags,
+                                       int32_t selection_start,
+                                       int32_t selection_end,
+                                       int32_t composing_start,
+                                       int32_t composing_end) override;
+
  private:
   // Reference to FlutterJNI object.
   const fml::jni::JavaObjectWeakGlobalRef java_object_;

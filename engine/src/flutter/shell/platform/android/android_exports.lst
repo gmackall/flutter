@@ -9,6 +9,7 @@
     JNI_OnLoad;
     _binary_icudtl_dat_start;
     _binary_icudtl_dat_size;
+    InternalFlutterAndroidSyncIme*;
     InternalFlutterGpu*;
     kInternalFlutterGpu*;
   local:

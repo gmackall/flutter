@@ -23,6 +23,7 @@
 #include "flutter/impeller/toolkit/android/proc_table.h"
 #include "flutter/lib/ui/plugins/callback_cache.h"
 #include "flutter/shell/platform/android/android_shell_holder.h"
+#include "flutter/shell/platform/android/android_sync_text_input_bridge.h"
 #include "flutter/shell/platform/android/apk_asset_provider.h"
 #include "flutter/shell/platform/android/flutter_main.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
@@ -104,6 +105,8 @@ static jfieldID g_jni_shell_holder_field = nullptr;
     "()Lio/flutter/embedding/engine/FlutterOverlaySurface;")                  \
   V(g_destroy_overlay_surfaces_method, destroyOverlaySurfaces, "()V")         \
   V(g_maybe_resize_surface_view, maybeResizeSurfaceView, "(II)V")             \
+  V(g_handle_sync_text_input_editing_state_method,                            \
+    handleSyncTextInputEditingState, "(IIIIII)Z")                             \
   //
 
 #define FLUTTER_DECLARE_JNI(global_field, jni_name, jni_arg) \
@@ -444,6 +447,70 @@ static bool IsSurfaceControlEnabled(JNIEnv* env,
                                     jobject jcaller,
                                     jlong shell_holder) {
   return ANDROID_SHELL_HOLDER->IsSurfaceControlEnabled();
+}
+
+static jboolean IsSyncTextInputEnabled(JNIEnv* env,
+                                       jobject jcaller,
+                                       jlong shell_holder) {
+  if (shell_holder == 0) {
+    return JNI_FALSE;
+  }
+  return ANDROID_SHELL_HOLDER->IsSyncTextInputEnabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+static jbyteArray DispatchSyncTextInput(JNIEnv* env,
+                                        jobject jcaller,
+                                        jlong shell_holder,
+                                        jobject java_request,
+                                        jint request_length) {
+  if (shell_holder == 0 || request_length < 0 ||
+      request_length > kMaxSyncImePayloadBytes) {
+    return nullptr;
+  }
+
+  const uint8_t* request_data = nullptr;
+  if (request_length > 0) {
+    if (java_request == nullptr) {
+      return nullptr;
+    }
+    const jlong capacity = env->GetDirectBufferCapacity(java_request);
+    if (capacity < request_length) {
+      return nullptr;
+    }
+    request_data =
+        static_cast<const uint8_t*>(env->GetDirectBufferAddress(java_request));
+    if (request_data == nullptr) {
+      return nullptr;
+    }
+  }
+
+  std::vector<uint8_t> response;
+  if (!ANDROID_SHELL_HOLDER->DispatchSyncTextInput(request_data, request_length,
+                                                   &response)) {
+    return nullptr;
+  }
+  if (response.size() > static_cast<size_t>(kMaxSyncImePayloadBytes)) {
+    return nullptr;
+  }
+
+  const jsize response_size = static_cast<jsize>(response.size());
+  jbyteArray result = env->NewByteArray(response_size);
+  if (result == nullptr) {
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+    }
+    return nullptr;
+  }
+  if (response_size > 0) {
+    env->SetByteArrayRegion(result, 0, response_size,
+                            reinterpret_cast<const jbyte*>(response.data()));
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      env->DeleteLocalRef(result);
+      return nullptr;
+    }
+  }
+  return result;
 }
 
 static jobject GetBitmap(JNIEnv* env, jobject jcaller, jlong shell_holder) {
@@ -956,6 +1023,16 @@ bool RegisterApi(JNIEnv* env) {
           .name = "nativeIsSurfaceControlEnabled",
           .signature = "(J)Z",
           .fnPtr = reinterpret_cast<void*>(&IsSurfaceControlEnabled),
+      },
+      {
+          .name = "nativeIsSyncTextInputEnabled",
+          .signature = "(J)Z",
+          .fnPtr = reinterpret_cast<void*>(&IsSyncTextInputEnabled),
+      },
+      {
+          .name = "nativeDispatchSyncTextInput",
+          .signature = "(JLjava/nio/ByteBuffer;I)[B",
+          .fnPtr = reinterpret_cast<void*>(&DispatchSyncTextInput),
       }};
 
   if (env->RegisterNatives(g_flutter_jni_class->obj(), flutter_jni_methods,
@@ -2474,6 +2551,37 @@ void PlatformViewAndroidJNIImpl::MaybeResizeSurfaceView(int32_t width,
   env->CallVoidMethod(java_object.obj(), g_maybe_resize_surface_view, width,
                       height);
   FML_CHECK(fml::jni::CheckException(env));
+}
+
+bool PlatformViewAndroidJNIImpl::HandleSyncTextInputEditingState(
+    int32_t client_id,
+    int32_t flags,
+    int32_t selection_start,
+    int32_t selection_end,
+    int32_t composing_start,
+    int32_t composing_end) {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+
+  auto java_object = java_object_.get(env);
+  if (java_object.is_null()) {
+    return false;
+  }
+
+  const jboolean handled = env->CallBooleanMethod(
+      java_object.obj(), g_handle_sync_text_input_editing_state_method,
+      static_cast<jint>(client_id), static_cast<jint>(flags),
+      static_cast<jint>(selection_start), static_cast<jint>(selection_end),
+      static_cast<jint>(composing_start), static_cast<jint>(composing_end));
+  // Intentionally log and clear rather than FML_CHECK: this method is invoked
+  // synchronously from Dart via FFI, and returning false allows Dart to fall
+  // back to the asynchronous TextInput.setEditingState channel instead of
+  // aborting the process if an Android platform/OEM IME throws unexpectedly.
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return false;
+  }
+  return handled == JNI_TRUE;
 }
 
 }  // namespace flutter

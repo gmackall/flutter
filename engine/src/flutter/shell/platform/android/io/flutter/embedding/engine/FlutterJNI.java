@@ -21,6 +21,7 @@ import android.view.SurfaceHolder;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RestrictTo;
 import androidx.annotation.UiThread;
 import androidx.annotation.VisibleForTesting;
 import com.getkeepsafe.relinker.ReLinker;
@@ -402,6 +403,8 @@ public class FlutterJNI {
 
   @Nullable private SettingsChannel settingsChannel;
 
+  @Nullable private SyncTextInputEditingStateListener syncTextInputEditingStateListener;
+
   @NonNull
   private final Set<EngineLifecycleListener> engineLifecycleListeners = new CopyOnWriteArraySet<>();
 
@@ -501,9 +504,10 @@ public class FlutterJNI {
    *
    * <p>This method must not be invoked if {@code FlutterJNI} is not already attached to native.
    *
-   * <p>Invoking this method will result in the release of all native-side resources that were set
-   * up during {@link #attachToNative()} or {@link #spawn(String, String, String, List, long)}, or
-   * accumulated thereafter.
+   * <p>Invoking this method notifies registered {@link EngineLifecycleListener}s via {@link
+   * EngineLifecycleListener#onEngineWillDestroy()} prior to tearing down the native shell, and
+   * releases all native-side resources that were set up during {@link #attachToNative()} or {@link
+   * #spawn(String, String, String, List, long)}, or accumulated thereafter.
    *
    * <p>It is permissible to re-attach this instance to native after detaching it from native.
    */
@@ -511,6 +515,9 @@ public class FlutterJNI {
   public void detachFromNativeAndReleaseResources() {
     ensureRunningOnMainThread();
     ensureAttachedToNative();
+    for (EngineLifecycleListener listener : engineLifecycleListeners) {
+      listener.onEngineWillDestroy();
+    }
     shellHolderLock.writeLock().lock();
     try {
       nativeDestroy(nativeShellHolderId);
@@ -1782,4 +1789,92 @@ public class FlutterJNI {
   }
 
   private native boolean nativeIsSurfaceControlEnabled(long nativeShellHolderId);
+
+  /** Listener for synchronous programmatic editing state updates dispatched from Dart. */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  public interface SyncTextInputEditingStateListener {
+    boolean onSyncTextInputEditingState(
+        int clientId,
+        int flags,
+        int selectionStart,
+        int selectionEnd,
+        int composingStart,
+        int composingEnd);
+  }
+
+  /**
+   * Registers or clears the listener that handles synchronous Dart-to-Android text editing state
+   * notifications.
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  @UiThread
+  public void setSyncTextInputEditingStateListener(
+      @Nullable SyncTextInputEditingStateListener listener) {
+    ensureRunningOnMainThread();
+    syncTextInputEditingStateListener = listener;
+  }
+
+  /**
+   * Clears the synchronous editing state listener only if it is still {@code listener}, so
+   * tearing down a previous {@link io.flutter.plugin.editing.TextInputPlugin} on a reused engine
+   * does not unhook a newer plugin's listener.
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  @UiThread
+  public void clearSyncTextInputEditingStateListener(
+      @NonNull SyncTextInputEditingStateListener listener) {
+    ensureRunningOnMainThread();
+    if (syncTextInputEditingStateListener == listener) {
+      syncTextInputEditingStateListener = null;
+    }
+  }
+
+  // Called by native.
+  @SuppressWarnings("unused")
+  @UiThread
+  private boolean handleSyncTextInputEditingState(
+      int clientId,
+      int flags,
+      int selectionStart,
+      int selectionEnd,
+      int composingStart,
+      int composingEnd) {
+    ensureRunningOnMainThread();
+    if (syncTextInputEditingStateListener == null) {
+      return false;
+    }
+    return syncTextInputEditingStateListener.onSyncTextInputEditingState(
+        clientId, flags, selectionStart, selectionEnd, composingStart, composingEnd);
+  }
+
+  /**
+   * Returns true if synchronous Android text input is enabled for this engine and a Dart handler is
+   * currently registered on the merged platform/UI thread.
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  @UiThread
+  public boolean isSyncTextInputEnabled() {
+    ensureRunningOnMainThread();
+    return isAttached() && nativeIsSyncTextInputEnabled(nativeShellHolderId);
+  }
+
+  /**
+   * Synchronously dispatches a binary IME request buffer to the Dart framework and returns the
+   * encoded response bytes, or null if sync text input is inactive or failed.
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+  @Nullable
+  @UiThread
+  public byte[] dispatchSyncTextInput(@NonNull ByteBuffer request, int length) {
+    ensureRunningOnMainThread();
+    if (!isAttached()) {
+      return null;
+    }
+    return nativeDispatchSyncTextInput(nativeShellHolderId, request, length);
+  }
+
+  private native boolean nativeIsSyncTextInputEnabled(long nativeShellHolderId);
+
+  private native byte[] nativeDispatchSyncTextInput(
+      long nativeShellHolderId, @NonNull ByteBuffer request, int length);
 }

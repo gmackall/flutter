@@ -18,6 +18,7 @@ import 'dart:ui' show FlutterView, FontWeight, Locale, Offset, Rect, Size, TextA
 import 'package:flutter/foundation.dart';
 import 'package:vector_math/vector_math_64.dart' show Matrix4;
 
+import '_android_sync_text_input.dart';
 import 'autofill.dart';
 import 'binding.dart';
 import 'clipboard.dart' show Clipboard;
@@ -1869,6 +1870,7 @@ class TextInputConnection {
   /// [TextInputConnection] should clean current client connection.
   void connectionClosedReceived() {
     TextInput._instance._currentConnection = null;
+    AndroidSyncTextInput.instance.onClientDetached();
     assert(!attached);
   }
 }
@@ -1937,6 +1939,35 @@ void _reportError(
   );
 }
 
+class _TextInputSyncDelegate implements AndroidSyncTextInputDelegate {
+  const _TextInputSyncDelegate(this._textInput);
+
+  final TextInput _textInput;
+
+  @override
+  int? get currentClientId => _textInput._currentConnection?._id;
+
+  @override
+  TextInputClient? get currentClient => _textInput._currentConnection?._client;
+
+  @override
+  TextInputConfiguration? get currentConfiguration =>
+      _textInput._currentConnection == null ? null : _textInput._currentConfiguration;
+
+  @override
+  void dispatchEditingValue(TextEditingValue value) {
+    _textInput._updateEditingValue(value, exclude: _PlatformTextInputControl.instance);
+  }
+
+  @override
+  void dispatchEditingValueWithDeltas(List<TextEditingDelta> deltas) {
+    final TextInputClient? client = _textInput._currentConnection?._client;
+    if (client is DeltaTextInputClient) {
+      client.updateEditingValueWithDeltas(deltas);
+    }
+  }
+}
+
 /// An low-level interface to the system's text input control.
 ///
 /// To start interacting with the system's text input control, call [attach] to
@@ -1994,6 +2025,7 @@ class TextInput {
   TextInput._() {
     _channel = SystemChannels.textInput;
     _channel.setMethodCallHandler(_loudlyHandleTextInputInvocation);
+    AndroidSyncTextInput.instance.delegate = _TextInputSyncDelegate(this);
   }
 
   /// Set the [MethodChannel] used to communicate with the system's text input
@@ -2126,6 +2158,7 @@ class TextInput {
     _currentConnection = connection;
     _currentConfiguration = configuration;
     _lastConnection = connection;
+    AndroidSyncTextInput.instance.onClientAttached(connection._id, connection._client);
     _setClient(connection._client, configuration);
   }
 
@@ -2367,10 +2400,12 @@ class TextInput {
       control.detach(client);
     }
     _currentConnection = null;
+    AndroidSyncTextInput.instance.onClientDetached();
     _scheduleHide();
   }
 
   void _updateConfig(TextInputConfiguration configuration) {
+    _currentConfiguration = configuration;
     for (final TextInputControl control in _inputControls) {
       control.updateConfig(configuration);
     }
@@ -2705,6 +2740,20 @@ class _PlatformTextInputControl with TextInputControl {
 
   @override
   void setEditingState(TextEditingValue value) {
+    final TextInputConnection? connection = TextInput._instance._currentConnection;
+    if (connection != null) {
+      final int clientId = connection._id;
+      final AndroidSyncTextInput sync = AndroidSyncTextInput.instance;
+      sync.recordClientEditingState(clientId, value);
+      if (sync.isInSyncImeCallbackFor(clientId)) {
+        return;
+      }
+      if (sync.isActive &&
+          identical(_channel, SystemChannels.textInput) &&
+          sync.notifyProgrammaticEditingState(clientId, value)) {
+        return;
+      }
+    }
     _channel
         .invokeMethod<void>('TextInput.setEditingState', value.toJSON())
         .then(
