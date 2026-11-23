@@ -7,15 +7,21 @@
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <memory>
 #include <optional>
-
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "common/settings.h"
 #include "flutter/fml/cpu_affinity.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/memory/task_runner_checker.h"
 #include "flutter/fml/message_loop.h"
 #include "flutter/lib/ui/painting/image_generator_registry.h"
 #include "flutter/shell/common/rasterizer.h"
@@ -23,12 +29,91 @@
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/platform/android/android_display.h"
 #include "flutter/shell/platform/android/android_image_generator.h"
+#include "flutter/shell/platform/android/android_performance_hint_manager.h"
 #include "flutter/shell/platform/android/android_rendering_selector.h"
 #include "flutter/shell/platform/android/android_shell_holder.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
+
+namespace {
+
+constexpr double kDefaultRefreshRate = 60.0;
+
+int64_t RefreshRateToTargetDurationNs(double refresh_rate) {
+  if (!std::isfinite(refresh_rate) || refresh_rate <= 0.0) {
+    return 0;
+  }
+  return static_cast<int64_t>(1e9 / refresh_rate);
+}
+
+struct CapturedThreadIds {
+  std::atomic<int32_t> ui_tid{0};
+  std::atomic<int32_t> raster_tid{0};
+};
+
+FrameBuiltCallback WrapFrameBuiltCallback(
+    FrameBuiltCallback prev_callback,
+    std::weak_ptr<AndroidPerformanceHintManager> weak_ui_hint,
+    fml::TaskQueueId raster_queue_id) {
+  return [prev_callback = std::move(prev_callback),
+          weak_ui_hint = std::move(weak_ui_hint), raster_queue_id](
+             fml::TimePoint build_start, fml::TimePoint build_end) {
+    if (prev_callback) {
+      prev_callback(build_start, build_end);
+    }
+    // When RasterThreadMerger has merged the raster queue onto the current
+    // UI/platform thread (legacy Hybrid Composition), skip ADPF reporting
+    // rather than reporting only the UI portion of the merged thread's work.
+    if (raster_queue_id.is_valid() &&
+        fml::MessageLoop::IsInitializedForCurrentThread() &&
+        fml::TaskRunnerChecker::RunsOnTheSameThread(
+            fml::MessageLoop::GetCurrentTaskQueueId(), raster_queue_id)) {
+      return;
+    }
+    auto ui_hint = weak_ui_hint.lock();
+    if (!ui_hint) {
+      return;
+    }
+    const int64_t build_start_ns = build_start.ToEpochDelta().ToNanoseconds();
+    const int64_t build_ns = (build_end - build_start).ToNanoseconds();
+    if (build_start_ns > 0 && build_ns > 0) {
+      ui_hint->ReportActualWorkDuration(build_start_ns, build_ns, build_ns);
+    }
+  };
+}
+
+FrameRasterizedCallback WrapFrameRasterizedCallback(
+    FrameRasterizedCallback prev_callback,
+    std::weak_ptr<AndroidPerformanceHintManager> weak_raster_hint,
+    int32_t captured_raster_tid) {
+  return [prev_callback = std::move(prev_callback),
+          weak_raster_hint = std::move(weak_raster_hint),
+          captured_raster_tid](const FrameTiming& timing) {
+    if (prev_callback) {
+      prev_callback(timing);
+    }
+    // Skip reporting when RasterThreadMerger merges the rasterizer onto the
+    // platform thread during legacy Hybrid Composition.
+    if (captured_raster_tid > 0 && gettid() != captured_raster_tid) {
+      return;
+    }
+    const int64_t raster_start_ns =
+        timing.Get(FrameTiming::kRasterStart).ToEpochDelta().ToNanoseconds();
+    const int64_t raster_ns = (timing.Get(FrameTiming::kRasterFinish) -
+                               timing.Get(FrameTiming::kRasterStart))
+                                  .ToNanoseconds();
+    if (raster_start_ns > 0 && raster_ns > 0) {
+      if (auto raster_hint = weak_raster_hint.lock()) {
+        raster_hint->ReportActualWorkDuration(raster_start_ns, raster_ns,
+                                              raster_ns);
+      }
+    }
+  };
+}
+
+}  // namespace
 
 /// Inheriting ThreadConfigurer and use Android platform thread API to configure
 /// the thread priorities
@@ -82,7 +167,8 @@ static PlatformData GetDefaultPlatformData() {
 AndroidShellHolder::AndroidShellHolder(
     const flutter::Settings& settings,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
-    AndroidRenderingAPI android_rendering_api)
+    AndroidRenderingAPI android_rendering_api,
+    PerformanceHintManagerFactory performance_hint_manager_factory)
     : settings_(settings),
       jni_facade_(jni_facade),
       android_rendering_api_(android_rendering_api) {
@@ -95,8 +181,23 @@ AndroidShellHolder::AndroidShellHolder(
     mask |= ThreadHost::Type::kUi;
   }
 
-  flutter::ThreadHost::ThreadHostConfig host_config(
-      thread_label, mask, AndroidPlatformThreadConfigSetter);
+  std::shared_ptr<CapturedThreadIds> captured_tids;
+  fml::Thread::ThreadConfigSetter config_setter =
+      AndroidPlatformThreadConfigSetter;
+  if (settings_.enable_android_performance_hints) {
+    captured_tids = std::make_shared<CapturedThreadIds>();
+    config_setter = [captured_tids](const fml::Thread::ThreadConfig& config) {
+      AndroidPlatformThreadConfigSetter(config);
+      if (config.priority == fml::Thread::ThreadPriority::kDisplay) {
+        captured_tids->ui_tid.store(gettid(), std::memory_order_release);
+      } else if (config.priority == fml::Thread::ThreadPriority::kRaster) {
+        captured_tids->raster_tid.store(gettid(), std::memory_order_release);
+      }
+    };
+  }
+
+  flutter::ThreadHost::ThreadHostConfig host_config(thread_label, mask,
+                                                    config_setter);
   host_config.ui_config = fml::Thread::ThreadConfig(
       flutter::ThreadHost::ThreadHostConfig::MakeThreadName(
           flutter::ThreadHost::Type::kUi, thread_label),
@@ -110,12 +211,68 @@ AndroidShellHolder::AndroidShellHolder(
           flutter::ThreadHost::Type::kIo, thread_label),
       fml::Thread::ThreadPriority::kNormal);
 
+  // fml::Thread's constructor blocks until the spawned thread has initialized
+  // its message loop and executed config_setter, so captured_tids is populated
+  // when ThreadHost returns.
   thread_host_ = std::make_shared<ThreadHost>(host_config);
+
+  int32_t captured_raster_tid = 0;
+  if (settings_.enable_android_performance_hints) {
+    const int32_t captured_ui_tid =
+        captured_tids->ui_tid.load(std::memory_order_acquire);
+    captured_raster_tid =
+        captured_tids->raster_tid.load(std::memory_order_acquire);
+    FML_DCHECK(captured_raster_tid > 0);
+    FML_DCHECK(settings_.merged_platform_ui_thread ==
+                   Settings::MergedPlatformUIThread::kEnabled ||
+               captured_ui_tid > 0);
+
+    int64_t target_duration_ns = RefreshRateToTargetDurationNs(
+        jni_facade ? jni_facade->GetDisplayRefreshRate() : 0.0);
+    if (target_duration_ns <= 0) {
+      target_duration_ns = RefreshRateToTargetDurationNs(kDefaultRefreshRate);
+    }
+
+    auto create_hint_manager = [&performance_hint_manager_factory](
+                                   const std::vector<int32_t>& tids,
+                                   int64_t target_ns) {
+      return performance_hint_manager_factory
+                 ? performance_hint_manager_factory(tids, target_ns)
+                 : AndroidPerformanceHintManager::Create(tids, target_ns);
+    };
+
+    const bool platform_ui_merged =
+        (settings_.merged_platform_ui_thread ==
+             Settings::MergedPlatformUIThread::kEnabled ||
+         settings_.merged_platform_ui_thread ==
+             Settings::MergedPlatformUIThread::kMergeAfterLaunch);
+    std::vector<int32_t> ui_tids;
+    if (captured_ui_tid > 0) {
+      ui_tids.push_back(captured_ui_tid);
+    }
+    if (platform_ui_merged) {
+      const int32_t platform_tid = gettid();
+      if (std::find(ui_tids.begin(), ui_tids.end(), platform_tid) ==
+          ui_tids.end()) {
+        ui_tids.push_back(platform_tid);
+      }
+    }
+    if (!ui_tids.empty()) {
+      ui_performance_hint_manager_ =
+          create_hint_manager(ui_tids, target_duration_ns);
+    }
+    if (captured_raster_tid > 0) {
+      raster_performance_hint_manager_ =
+          create_hint_manager({captured_raster_tid}, target_duration_ns);
+    }
+  }
 
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, &weak_platform_view, rendering_api](Shell& shell) {
+      [&jni_facade, &weak_platform_view, rendering_api,
+       ui_hint = ui_performance_hint_manager_,
+       raster_hint = raster_performance_hint_manager_](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -123,6 +280,7 @@ AndroidShellHolder::AndroidShellHolder(
             jni_facade,              // JNI interop
             rendering_api            // rendering API
         );
+        platform_view_android->SetPerformanceHintManagers(ui_hint, raster_hint);
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };
@@ -155,10 +313,25 @@ AndroidShellHolder::AndroidShellHolder(
                                     io_runner         // io
   );
 
+  flutter::Settings shell_settings = settings_;
+  if (ui_performance_hint_manager_) {
+    const fml::TaskQueueId raster_queue_id =
+        raster_runner ? raster_runner->GetTaskQueueId()
+                      : fml::TaskQueueId::Invalid();
+    shell_settings.frame_built_callback =
+        WrapFrameBuiltCallback(std::move(shell_settings.frame_built_callback),
+                               ui_performance_hint_manager_, raster_queue_id);
+  }
+  if (raster_performance_hint_manager_) {
+    shell_settings.frame_rasterized_callback = WrapFrameRasterizedCallback(
+        std::move(shell_settings.frame_rasterized_callback),
+        raster_performance_hint_manager_, captured_raster_tid);
+  }
+
   shell_ =
       Shell::Create(GetDefaultPlatformData(),  // window data
                     task_runners,              // task runners
-                    settings_,                 // settings
+                    shell_settings,            // settings
                     on_create_platform_view,   // platform view create callback
                     on_create_rasterizer       // rasterizer create callback
       );
@@ -190,14 +363,20 @@ AndroidShellHolder::AndroidShellHolder(
     std::unique_ptr<Shell> shell,
     std::unique_ptr<APKAssetProvider> apk_asset_provider,
     const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-    AndroidRenderingAPI rendering_api)
+    AndroidRenderingAPI rendering_api,
+    const std::shared_ptr<AndroidPerformanceHintManager>&
+        ui_performance_hint_manager,
+    const std::shared_ptr<AndroidPerformanceHintManager>&
+        raster_performance_hint_manager)
     : settings_(settings),
       jni_facade_(jni_facade),
       platform_view_(platform_view),
       thread_host_(thread_host),
       shell_(std::move(shell)),
       apk_asset_provider_(std::move(apk_asset_provider)),
-      android_rendering_api_(rendering_api) {
+      android_rendering_api_(rendering_api),
+      ui_performance_hint_manager_(ui_performance_hint_manager),
+      raster_performance_hint_manager_(raster_performance_hint_manager) {
   FML_DCHECK(jni_facade);
   FML_DCHECK(shell_);
   FML_DCHECK(shell_->IsSetup());
@@ -208,6 +387,10 @@ AndroidShellHolder::AndroidShellHolder(
 
 AndroidShellHolder::~AndroidShellHolder() {
   shell_.reset();
+  // Close ADPF hint sessions before joining and destroying the ThreadHost's OS
+  // threads so their TIDs are unregistered before they exit.
+  ui_performance_hint_manager_.reset();
+  raster_performance_hint_manager_.reset();
   thread_host_.reset();
 }
 
@@ -250,7 +433,9 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
 
   // This is a synchronous call, so the captures don't have race checks.
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, android_context, &weak_platform_view](Shell& shell) {
+      [&jni_facade, android_context, &weak_platform_view,
+       ui_hint = ui_performance_hint_manager_,
+       raster_hint = raster_performance_hint_manager_](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
         platform_view_android = std::make_unique<PlatformViewAndroid>(
             shell,                   // delegate
@@ -258,6 +443,7 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
             jni_facade,              // JNI interop
             android_context          // Android context
         );
+        platform_view_android->SetPerformanceHintManagers(ui_hint, raster_hint);
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };
@@ -281,7 +467,8 @@ std::unique_ptr<AndroidShellHolder> AndroidShellHolder::Spawn(
   return std::unique_ptr<AndroidShellHolder>(new AndroidShellHolder(
       GetSettings(), jni_facade, thread_host_, std::move(shell),
       apk_asset_provider_->Clone(), weak_platform_view,
-      android_context->RenderingApi()));
+      android_context->RenderingApi(), ui_performance_hint_manager_,
+      raster_performance_hint_manager_));
 }
 
 void AndroidShellHolder::Launch(
@@ -362,6 +549,20 @@ void AndroidShellHolder::UpdateDisplayMetrics() {
   std::vector<std::unique_ptr<Display>> displays;
   displays.push_back(std::make_unique<AndroidDisplay>(jni_facade_));
   shell_->OnDisplayUpdates(std::move(displays));
+
+  if ((ui_performance_hint_manager_ || raster_performance_hint_manager_) &&
+      jni_facade_) {
+    const int64_t target_ns =
+        RefreshRateToTargetDurationNs(jni_facade_->GetDisplayRefreshRate());
+    if (target_ns > 0) {
+      if (ui_performance_hint_manager_) {
+        ui_performance_hint_manager_->UpdateTargetWorkDuration(target_ns);
+      }
+      if (raster_performance_hint_manager_) {
+        raster_performance_hint_manager_->UpdateTargetWorkDuration(target_ns);
+      }
+    }
+  }
 }
 
 bool AndroidShellHolder::IsSurfaceControlEnabled() {

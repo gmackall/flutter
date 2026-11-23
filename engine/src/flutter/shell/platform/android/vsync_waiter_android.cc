@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/android/vsync_waiter_android.h"
 
+#include <atomic>
 #include <cmath>
 #include <utility>
 
@@ -12,6 +13,7 @@
 #include "flutter/fml/platform/android/jni_util.h"
 #include "flutter/fml/platform/android/scoped_java_ref.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/shell/platform/android/android_performance_hint_manager.h"
 #include "impeller/toolkit/android/choreographer.h"
 
 namespace flutter {
@@ -19,14 +21,46 @@ namespace flutter {
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_vsync_waiter_class = nullptr;
 static jmethodID g_async_wait_for_vsync_method_ = nullptr;
 static std::atomic_uint g_refresh_rate_ = 60;
+static std::atomic_bool g_refresh_rate_updated_ = false;
 
-VsyncWaiterAndroid::VsyncWaiterAndroid(const flutter::TaskRunners& task_runners)
-    : VsyncWaiter(task_runners) {}
+VsyncWaiterAndroid::VsyncWaiterAndroid(
+    const flutter::TaskRunners& task_runners,
+    std::shared_ptr<AndroidPerformanceHintManager> ui_performance_hint_manager,
+    std::shared_ptr<AndroidPerformanceHintManager>
+        raster_performance_hint_manager)
+    : VsyncWaiter(task_runners),
+      ui_performance_hint_manager_(std::move(ui_performance_hint_manager)),
+      raster_performance_hint_manager_(
+          std::move(raster_performance_hint_manager)) {}
 
 VsyncWaiterAndroid::~VsyncWaiterAndroid() = default;
 
+void VsyncWaiterAndroid::NotifyPerformanceHintManagers() {
+  if (!ui_performance_hint_manager_ && !raster_performance_hint_manager_) {
+    return;
+  }
+  if (!g_refresh_rate_updated_.load(std::memory_order_acquire)) {
+    return;
+  }
+  const uint32_t refresh_rate = g_refresh_rate_.load(std::memory_order_relaxed);
+  if (refresh_rate == 0 || refresh_rate == last_notified_refresh_rate_.load(
+                                               std::memory_order_relaxed)) {
+    return;
+  }
+  last_notified_refresh_rate_.store(refresh_rate, std::memory_order_relaxed);
+  const int64_t target_duration_ns = static_cast<int64_t>(1e9 / refresh_rate);
+  if (ui_performance_hint_manager_) {
+    ui_performance_hint_manager_->UpdateTargetWorkDuration(target_duration_ns);
+  }
+  if (raster_performance_hint_manager_) {
+    raster_performance_hint_manager_->UpdateTargetWorkDuration(
+        target_duration_ns);
+  }
+}
+
 // |VsyncWaiter|
 void VsyncWaiterAndroid::AwaitVSync() {
+  NotifyPerformanceHintManagers();
   const static bool use_choreographer =
       impeller::android::Choreographer::IsAvailableOnPlatform();
   if (use_choreographer) {
@@ -114,11 +148,23 @@ void VsyncWaiterAndroid::ConsumePendingCallback(
 }
 
 // static
+void VsyncWaiterAndroid::SetRefreshRateForTesting(float refresh_rate) {
+  if (refresh_rate <= 0) {
+    g_refresh_rate_.store(60, std::memory_order_relaxed);
+    g_refresh_rate_updated_.store(false, std::memory_order_release);
+    return;
+  }
+  OnUpdateRefreshRate(nullptr, nullptr, refresh_rate);
+}
+
+// static
 void VsyncWaiterAndroid::OnUpdateRefreshRate(JNIEnv* env,
                                              jclass jcaller,
                                              jfloat refresh_rate) {
   FML_DCHECK(refresh_rate > 0);
-  g_refresh_rate_ = static_cast<uint>(refresh_rate);
+  g_refresh_rate_.store(static_cast<uint>(refresh_rate),
+                        std::memory_order_relaxed);
+  g_refresh_rate_updated_.store(true, std::memory_order_release);
 }
 
 // static

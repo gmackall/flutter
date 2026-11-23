@@ -239,6 +239,10 @@ struct Settings {
   // Enable android surface control swapchains where supported.
   bool enable_surface_control = false;
 
+  // Enable Android Dynamic Performance Framework (ADPF) performance hint
+  // sessions on supported Android devices (API 35+).
+  bool enable_android_performance_hints = true;
+
   // Whether to lazily initialize impeller PSO state.
   bool impeller_enable_lazy_shader_mode = false;
 
