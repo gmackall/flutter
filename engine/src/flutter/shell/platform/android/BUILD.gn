@@ -52,6 +52,7 @@ executable("flutter_shell_native_unittests") {
     "android_context_dynamic_impeller_unittests.cc",
     "android_context_gl_impeller_unittests.cc",
     "android_image_generator_unittests.cc",
+    "android_performance_hint_manager_unittests.cc",
     "android_shell_holder_unittests.cc",
     "apk_asset_provider_unittests.cc",
     "flutter_shell_native_unittests.cc",
