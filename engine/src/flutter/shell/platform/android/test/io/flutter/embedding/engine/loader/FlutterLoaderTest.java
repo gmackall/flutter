@@ -513,6 +513,75 @@ public class FlutterLoaderTest {
   }
 
   @Test
+  public void itSetsAndroidPerformanceHintsFromMetaData() {
+    testFlagFromMetadataPresent(
+        "io.flutter.embedding.android.EnableAndroidPerformanceHints",
+        false,
+        "--enable-android-performance-hints=false");
+    testFlagFromMetadataPresentInReleaseMode(
+        "io.flutter.embedding.android.EnableAndroidPerformanceHints",
+        false,
+        "--enable-android-performance-hints=false");
+    testFlagFromMetadataPresentInReleaseMode(
+        "io.flutter.embedding.android.EnableAndroidPerformanceHints",
+        true,
+        "--enable-android-performance-hints=true");
+  }
+
+  @Test
+  public void itAllowsCommandLineToOverrideAndroidPerformanceHintsMetaData() {
+    final String expectedFromMetadata = "--enable-android-performance-hints=true";
+    final String expectedFromCommandLine = "--enable-android-performance-hints=false";
+
+    FlutterJNI mockFlutterJNI = mock(FlutterJNI.class);
+    FlutterLoader flutterLoader = new FlutterLoader(mockFlutterJNI);
+    Bundle metaData = new Bundle();
+    metaData.putBoolean("io.flutter.embedding.android.EnableAndroidPerformanceHints", true);
+    ctx.getApplicationInfo().metaData = metaData;
+
+    FlutterLoader.Settings settings = new FlutterLoader.Settings();
+    flutterLoader.startInitialization(ctx, settings);
+    flutterLoader.ensureInitializationComplete(ctx, new String[] {expectedFromCommandLine});
+    shadowMainLooper().idle();
+
+    ArgumentCaptor<String[]> shellArgsCaptor = ArgumentCaptor.forClass(String[].class);
+    verify(mockFlutterJNI, times(1))
+        .init(
+            eq(ctx),
+            shellArgsCaptor.capture(),
+            anyString(),
+            anyString(),
+            anyString(),
+            anyLong(),
+            anyInt());
+    List<String> arguments = Arrays.asList(shellArgsCaptor.getValue());
+    assertTrue(arguments.contains(expectedFromMetadata));
+    assertTrue(arguments.contains(expectedFromCommandLine));
+    assertTrue(
+        arguments.indexOf(expectedFromMetadata) < arguments.indexOf(expectedFromCommandLine));
+  }
+
+  @Test
+  public void
+      itSetsAndroidPerformanceHintsDisabledCommandLineFlagFromManifestMetadataInReleaseMode() {
+    testMultipleFlagsFromManifestMetadata(
+        "[\"--enable-android-performance-hints=false\"]",
+        new String[] {"--enable-android-performance-hints=false"},
+        true,
+        true);
+  }
+
+  @Test
+  public void
+      itSetsAndroidPerformanceHintsEnabledCommandLineFlagFromManifestMetadataInReleaseMode() {
+    testMultipleFlagsFromManifestMetadata(
+        "[\"--enable-android-performance-hints=true\"]",
+        new String[] {"--enable-android-performance-hints=true"},
+        true,
+        true);
+  }
+
+  @Test
   public void itSetsShaderInitModeFromMetaData() {
     FlutterJNI mockFlutterJNI = mock(FlutterJNI.class);
     FlutterLoader flutterLoader = new FlutterLoader(mockFlutterJNI);

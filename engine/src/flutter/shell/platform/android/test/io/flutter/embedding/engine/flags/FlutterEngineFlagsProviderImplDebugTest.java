@@ -133,6 +133,21 @@ public class FlutterEngineFlagsProviderImplDebugTest {
   }
 
   @Test
+  public void getFlags_processesEnableAndroidPerformanceHintsExtras() {
+    Intent enableIntent = new Intent();
+    enableIntent.putExtra("enable-android-performance-hints", true);
+    List<String> enableArgs = FlutterEngineFlagsProviderImpl.INSTANCE.getFlags(enableIntent);
+    assertEquals(1, enableArgs.size());
+    assertTrue(enableArgs.contains("--enable-android-performance-hints=true"));
+
+    Intent disableIntent = new Intent();
+    disableIntent.putExtra("enable-android-performance-hints", false);
+    List<String> disableArgs = FlutterEngineFlagsProviderImpl.INSTANCE.getFlags(disableIntent);
+    assertEquals(1, disableArgs.size());
+    assertTrue(disableArgs.contains("--enable-android-performance-hints=false"));
+  }
+
+  @Test
   public void getFlags_doesNotPropagateMissingExtras() {
     Intent intent = new Intent();
     List<String> args = FlutterEngineFlagsProviderImpl.INSTANCE.getFlags(intent);

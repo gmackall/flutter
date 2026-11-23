@@ -156,6 +156,56 @@ TEST(SwitchesTest, NoEnableHcppAndSurfaceControl) {
   }
 }
 
+TEST(SwitchesTest, EnableAndroidPerformanceHints) {
+  {
+    // default (absent)
+    fml::CommandLine command_line =
+        fml::CommandLineFromInitializerList({"command"});
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_TRUE(settings.enable_android_performance_hints);
+  }
+  {
+    // disable
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-android-performance-hints=false"});
+    EXPECT_TRUE(command_line.HasOption("enable-android-performance-hints"));
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_FALSE(settings.enable_android_performance_hints);
+  }
+  {
+    // enable with value
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-android-performance-hints=true"});
+    EXPECT_TRUE(command_line.HasOption("enable-android-performance-hints"));
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_TRUE(settings.enable_android_performance_hints);
+  }
+  {
+    // enable without value
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-android-performance-hints"});
+    EXPECT_TRUE(command_line.HasOption("enable-android-performance-hints"));
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_TRUE(settings.enable_android_performance_hints);
+  }
+  {
+    // repeated flag: last value wins (true -> false)
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-android-performance-hints=true",
+         "--enable-android-performance-hints=false"});
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_FALSE(settings.enable_android_performance_hints);
+  }
+  {
+    // repeated flag: last value wins (false -> true)
+    fml::CommandLine command_line = fml::CommandLineFromInitializerList(
+        {"command", "--enable-android-performance-hints=false",
+         "--enable-android-performance-hints=true"});
+    Settings settings = SettingsFromCommandLine(command_line);
+    EXPECT_TRUE(settings.enable_android_performance_hints);
+  }
+}
+
 TEST(SwitchesTest, ProfileStartup) {
   {
     fml::CommandLine command_line =
