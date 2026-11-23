@@ -5,7 +5,10 @@
 #ifndef FLUTTER_SHELL_PLATFORM_ANDROID_ANDROID_SHELL_HOLDER_H_
 #define FLUTTER_SHELL_PLATFORM_ANDROID_ANDROID_SHELL_HOLDER_H_
 
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <vector>
 
 #include "flutter/fml/macros.h"
 #include "flutter/shell/common/run_configuration.h"
@@ -17,6 +20,8 @@
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
+
+class AndroidPerformanceHintManager;
 
 //----------------------------------------------------------------------------
 /// @brief      This is the Android owner of the core engine Shell.
@@ -37,9 +42,16 @@ namespace flutter {
 ///
 class AndroidShellHolder {
  public:
-  AndroidShellHolder(const flutter::Settings& settings,
-                     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
-                     AndroidRenderingAPI android_rendering_api);
+  using PerformanceHintManagerFactory =
+      std::function<std::unique_ptr<AndroidPerformanceHintManager>(
+          const std::vector<int32_t>& tids,
+          int64_t target_duration_ns)>;
+
+  AndroidShellHolder(
+      const flutter::Settings& settings,
+      std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
+      AndroidRenderingAPI android_rendering_api,
+      PerformanceHintManagerFactory performance_hint_manager_factory = nullptr);
 
   ~AndroidShellHolder();
 
@@ -119,6 +131,9 @@ class AndroidShellHolder {
   uint64_t next_pointer_flow_id_ = 0;
   std::unique_ptr<APKAssetProvider> apk_asset_provider_;
   const AndroidRenderingAPI android_rendering_api_;
+  std::shared_ptr<AndroidPerformanceHintManager> ui_performance_hint_manager_;
+  std::shared_ptr<AndroidPerformanceHintManager>
+      raster_performance_hint_manager_;
 
   //----------------------------------------------------------------------------
   /// @brief      Constructor with its components injected.
@@ -137,7 +152,11 @@ class AndroidShellHolder {
                      std::unique_ptr<Shell> shell,
                      std::unique_ptr<APKAssetProvider> apk_asset_provider,
                      const fml::WeakPtr<PlatformViewAndroid>& platform_view,
-                     AndroidRenderingAPI rendering_api);
+                     AndroidRenderingAPI rendering_api,
+                     const std::shared_ptr<AndroidPerformanceHintManager>&
+                         ui_performance_hint_manager,
+                     const std::shared_ptr<AndroidPerformanceHintManager>&
+                         raster_performance_hint_manager);
   static void ThreadDestructCallback(void* value);
   std::optional<RunConfiguration> BuildRunConfiguration(
       const std::string& entrypoint,

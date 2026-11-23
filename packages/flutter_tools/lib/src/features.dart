@@ -29,6 +29,7 @@ const allFlutterFeatures = <Feature>[
   riscv64,
   macOSArm64Only,
   hcpp,
+  androidPerformanceHints,
   toolExtensionsFeature,
 ];
 
@@ -107,6 +108,10 @@ abstract class FeatureFlags {
 
   /// Whether the HCPP platform view rendering mode is enabled by default.
   bool get isHcppEnabled;
+
+  /// Whether Android Dynamic Performance Framework (ADPF) performance hints are
+  /// enabled by default.
+  bool get isAndroidPerformanceHintsEnabled;
 
   /// Whether support for tool extensions is enabled.
   bool get isToolExtensionsEnabled;
@@ -343,6 +348,23 @@ const hcpp = Feature(
   master: FeatureChannelSetting(available: true, enabledByDefault: true),
   beta: FeatureChannelSetting(available: true, enabledByDefault: true),
   stable: FeatureChannelSetting(available: true),
+);
+
+/// Whether Android Dynamic Performance Framework (ADPF) performance hints are
+/// enabled by default on Android.
+///
+/// This is the default only: it is baked into the Android manifest of the
+/// artifact the tool builds, and an explicit
+/// `io.flutter.embedding.android.EnableAndroidPerformanceHints` entry in the
+/// app's manifest, or an explicit `--[no-]enable-android-performance-hints`,
+/// takes priority over it.
+const androidPerformanceHints = Feature.fullyEnabled(
+  name: 'Android performance hints (ADPF)',
+  extraHelpText:
+      'ADPF performance hints require Android API 35 or above. '
+      'Devices that do not support them ignore this setting.',
+  configSetting: 'enable-android-performance-hints',
+  environmentOverride: 'FLUTTER_ENABLE_ANDROID_PERFORMANCE_HINTS',
 );
 
 /// Environment variable that disables all tool extensions when set to `'1'`, `'true'`, or `'yes'`.

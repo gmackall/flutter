@@ -615,6 +615,7 @@ class EngineRenderingFlagsBundle extends OptionBundle {
     DebuggingOptionDescriptors.enableImpeller,
     DebuggingOptionDescriptors.enableFlutterGpu,
     DebuggingOptionDescriptors.enableHcpp,
+    DebuggingOptionDescriptors.enableAndroidPerformanceHints,
     if (includeVulkanAndEmbedder) ...const <OptionDescriptor<Object?>>[
       DebuggingOptionDescriptors.enableVulkanValidation,
       DebuggingOptionDescriptors.enableEmbedderApi,
@@ -698,6 +699,7 @@ class AndroidBuildOptionsBundle extends OptionBundle {
     BuildInfoOptions.trackWidgetCreation,
     BuildInfoOptions.ignoreDeprecation,
     DebuggingOptionDescriptors.enableHcpp,
+    DebuggingOptionDescriptors.enableAndroidPerformanceHints,
   ];
 }
 
@@ -838,6 +840,19 @@ abstract final class DebuggingOptionDescriptors {
         'produce, and "run", "test", and "drive" additionally apply it at launch. Without the '
         'flag, the manifest decides, and if the manifest does not set it either, the '
         'enable-hcpp feature flag does.',
+  );
+
+  static const enableAndroidPerformanceHints = NullableFlagOptionDescriptor(
+    name: 'enable-android-performance-hints',
+    verboseOnly: true,
+    help:
+        'Enable Android Dynamic Performance Framework (ADPF) performance hints on Android '
+        'API 35 and above. An explicit value takes priority over the '
+        'EnableAndroidPerformanceHints metadata in AndroidManifest.xml: build commands write '
+        'it into the manifest of the artifact they produce, and "run", "test", and "drive" '
+        'additionally apply it at launch. Without the flag, the manifest decides, and if the '
+        'manifest does not set it either, the enable-android-performance-hints feature flag '
+        'does.',
   );
 
   static const testFlag = FlagOptionDescriptor(

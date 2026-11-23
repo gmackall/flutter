@@ -97,6 +97,7 @@ class TestCommand extends FlutterCommand with DeviceBasedDevelopmentArtifacts {
       CommonOptions.machine,
       DebuggingOptionDescriptors.enableFlutterGpu,
       DebuggingOptionDescriptors.enableHcpp,
+      DebuggingOptionDescriptors.enableAndroidPerformanceHints,
       WebOptions.deprecatedJsInterop,
       CommonOptions.fatalWarnings,
       _experimentalFasterTesting,
@@ -565,6 +566,7 @@ class TestCommand extends FlutterCommand with DeviceBasedDevelopmentArtifacts {
       ),
       printDtd: getValue(CommonOptions.printDtd),
       enableHcpp: explicitEnableHcpp,
+      enableAndroidPerformanceHints: explicitEnableAndroidPerformanceHints,
       uninstallApp: getValue(_uninstall),
     );
 

@@ -305,6 +305,9 @@ class FlutterPlugin : Plugin<Project> {
         // the source of truth for HCPP; see addTasksForEnableHcppManifest for why injecting
         // into the library manifest would break host builds that explicitly opt out.
         FlutterPluginUtils.addTasksForEnableHcppManifest(projectToAddTasksTo)
+        // Same app-only rule for Android performance hints (ADPF); add-to-app host apps control
+        // EnableAndroidPerformanceHints through their own manifest.
+        FlutterPluginUtils.addTasksForEnableAndroidPerformanceHintsManifest(projectToAddTasksTo)
 
         val targetPlatforms: List<String> =
             FlutterPluginUtils.getTargetPlatforms(projectToAddTasksTo)

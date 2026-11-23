@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <android/hardware_buffer_jni.h>
@@ -25,6 +26,8 @@
 #include "shell/platform/android/image_external_texture.h"
 
 namespace flutter {
+
+class AndroidPerformanceHintManager;
 
 class AndroidSurfaceFactoryImpl : public AndroidSurfaceFactory {
  public:
@@ -132,6 +135,16 @@ class PlatformViewAndroid final : public PlatformView {
   /// @brief Whether the SurfaceControl based swapchain is enabled and active.
   bool IsSurfaceControlEnabled() const;
 
+  /// @brief Attaches the UI and raster ADPF performance hint managers to be
+  ///        forwarded to VsyncWaiterAndroid. Must be called before
+  ///        CreateVSyncWaiter().
+  void SetPerformanceHintManagers(
+      std::shared_ptr<AndroidPerformanceHintManager> ui_manager,
+      std::shared_ptr<AndroidPerformanceHintManager> raster_manager) {
+    ui_performance_hint_manager_ = std::move(ui_manager);
+    raster_performance_hint_manager_ = std::move(raster_manager);
+  }
+
   // |PlatformView|
   void SetupImpellerContext() override;
 
@@ -139,6 +152,9 @@ class PlatformViewAndroid final : public PlatformView {
   const std::shared_ptr<PlatformViewAndroidJNI> jni_facade_;
   std::shared_ptr<AndroidContext> android_context_;
   std::shared_ptr<AndroidSurfaceFactoryImpl> surface_factory_;
+  std::shared_ptr<AndroidPerformanceHintManager> ui_performance_hint_manager_;
+  std::shared_ptr<AndroidPerformanceHintManager>
+      raster_performance_hint_manager_;
 
   PlatformViewAndroidDelegate platform_view_android_delegate_;
 

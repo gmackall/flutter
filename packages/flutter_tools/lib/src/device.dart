@@ -1080,6 +1080,7 @@ class DebuggingOptions {
     this.uninstallApp = true,
     this.enableDartProfiling = true,
     this.enableHcpp,
+    this.enableAndroidPerformanceHints,
     this.profileStartup = false,
     this.enableEmbedderApi = false,
     this.usingCISystem = false,
@@ -1105,6 +1106,7 @@ class DebuggingOptions {
     this.uninstallApp = true,
     this.enableDartProfiling = true,
     this.enableHcpp,
+    this.enableAndroidPerformanceHints,
     this.profileStartup = false,
     this.enableEmbedderApi = false,
     this.usingCISystem = false,
@@ -1179,6 +1181,7 @@ class DebuggingOptions {
     required this.uninstallApp,
     required this.enableDartProfiling,
     required this.enableHcpp,
+    required this.enableAndroidPerformanceHints,
     required this.profileStartup,
     required this.enableEmbedderApi,
     required this.usingCISystem,
@@ -1234,6 +1237,15 @@ class DebuggingOptions {
   /// at launch, so the `io.flutter.embedding.android.EnableHcpp` value in the
   /// manifest of the installed artifact decides.
   final bool? enableHcpp;
+
+  /// Whether Android ADPF performance hints were explicitly enabled or disabled
+  /// with `--[no-]enable-android-performance-hints`.
+  ///
+  /// When null the flag was not passed, and no override is sent to the device
+  /// at launch, so the
+  /// `io.flutter.embedding.android.EnableAndroidPerformanceHints` value in the
+  /// manifest of the installed artifact decides.
+  final bool? enableAndroidPerformanceHints;
   final bool profileStartup;
   final bool enableEmbedderApi;
   final bool usingCISystem;
@@ -1353,6 +1365,7 @@ class DebuggingOptions {
     'uninstallApp': uninstallApp,
     'enableDartProfiling': enableDartProfiling,
     'enableHcpp': enableHcpp,
+    'enableAndroidPerformanceHints': enableAndroidPerformanceHints,
     'profileStartup': profileStartup,
     'enableEmbedderApi': enableEmbedderApi,
     'usingCISystem': usingCISystem,
@@ -1415,6 +1428,7 @@ class DebuggingOptions {
         uninstallApp: (json['uninstallApp'] as bool?) ?? true,
         enableDartProfiling: (json['enableDartProfiling'] as bool?) ?? true,
         enableHcpp: json['enableHcpp'] as bool?,
+        enableAndroidPerformanceHints: json['enableAndroidPerformanceHints'] as bool?,
         profileStartup: (json['profileStartup'] as bool?) ?? false,
         enableEmbedderApi: (json['enableEmbedderApi'] as bool?) ?? false,
         usingCISystem: (json['usingCISystem'] as bool?) ?? false,
@@ -1445,6 +1459,8 @@ class DebuggingOptions {
       if (enableFlutterGpu) AndroidEngineCliFlags.enableFlutterGpu: true,
       if (enableVulkanValidation) AndroidEngineCliFlags.enableVulkanValidation: true,
       if (enableHcpp != null) AndroidEngineCliFlags.enableHcppAndSurfaceControl: enableHcpp,
+      if (enableAndroidPerformanceHints != null)
+        AndroidEngineCliFlags.enableAndroidPerformanceHints: enableAndroidPerformanceHints,
       if (testFlag) AndroidEngineCliFlags.testFlag: true,
       if (debuggingEnabled) ...<String, Object?>{
         // TODO(camsim99): Determine if we should even forward these to the Android embedding since Android
@@ -1469,7 +1485,8 @@ class DebuggingOptions {
     for (final MapEntry<String, Object?> entry in configs.entries) {
       final Object? value = entry.value;
       if (entry.key == AndroidEngineCliFlags.enableImpeller ||
-          entry.key == AndroidEngineCliFlags.enableHcppAndSurfaceControl) {
+          entry.key == AndroidEngineCliFlags.enableHcppAndSurfaceControl ||
+          entry.key == AndroidEngineCliFlags.enableAndroidPerformanceHints) {
         args.add('--${entry.key}=$value');
       } else if (value is bool) {
         args.add(value ? '--${entry.key}' : '--${entry.key}=false');

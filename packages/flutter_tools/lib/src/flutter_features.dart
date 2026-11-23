@@ -80,6 +80,9 @@ mixin FlutterFeatureFlagsIsEnabled implements FeatureFlags {
   bool get isHcppEnabled => isEnabled(hcpp);
 
   @override
+  bool get isAndroidPerformanceHintsEnabled => isEnabled(androidPerformanceHints);
+
+  @override
   bool get isToolExtensionsEnabled => isEnabled(toolExtensionsFeature);
 }
 

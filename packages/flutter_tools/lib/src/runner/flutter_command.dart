@@ -590,6 +590,37 @@ abstract class FlutterCommand extends Command<void> {
   /// the manifest wins over it. [explicitEnableHcpp] in turn wins over both.
   bool get enableHcpp => explicitEnableHcpp ?? runner?.featureFlags.isHcppEnabled ?? false;
 
+  /// The explicit `--[no-]enable-android-performance-hints` value, or null when
+  /// the flag was not passed (or the command does not define it).
+  ///
+  /// This takes priority over the
+  /// `io.flutter.embedding.android.EnableAndroidPerformanceHints` manifest
+  /// entry: it is passed to Gradle, which writes it into the merged manifest
+  /// over any value already there. Commands that launch the app
+  /// (run/test/drive) additionally forward it to the device.
+  bool? get explicitEnableAndroidPerformanceHints {
+    if (!hasOption(DebuggingOptionDescriptors.enableAndroidPerformanceHints) ||
+        !wasParsed(DebuggingOptionDescriptors.enableAndroidPerformanceHints)) {
+      return null;
+    }
+    return getValue(DebuggingOptionDescriptors.enableAndroidPerformanceHints);
+  }
+
+  /// The Android performance hints (ADPF) value for an Android artifact when
+  /// the developer did not pass `--[no-]enable-android-performance-hints`: the
+  /// `enable-android-performance-hints` feature flag, which is on by default.
+  ///
+  /// This is only a default. Because the engine enables ADPF performance hints
+  /// by default, Gradle injects `false` when this is false and the merged
+  /// manifest does not set
+  /// `io.flutter.embedding.android.EnableAndroidPerformanceHints` at all, so an
+  /// entry in the manifest wins over it.
+  /// [explicitEnableAndroidPerformanceHints] in turn wins over both.
+  bool get enableAndroidPerformanceHints =>
+      explicitEnableAndroidPerformanceHints ??
+      runner?.featureFlags.isAndroidPerformanceHintsEnabled ??
+      true;
+
   /// Returns a [FlutterProject] view of the current directory or a ToolExit error,
   /// if `pubspec.yaml` or `example/pubspec.yaml` is invalid.
   FlutterProject get project => _projectFactory.fromDirectory(_fs.currentDirectory);
@@ -753,6 +784,8 @@ abstract class FlutterCommand extends Command<void> {
         skipBuildDependencyValidation: androidSkipBuildDependencyValidation,
         enableHcpp: enableHcpp,
         explicitEnableHcpp: explicitEnableHcpp,
+        enableAndroidPerformanceHints: enableAndroidPerformanceHints,
+        explicitEnableAndroidPerformanceHints: explicitEnableAndroidPerformanceHints,
         projectArgs: androidProjectArgs,
         projectCacheDir: androidGradleProjectCacheDir,
       ),

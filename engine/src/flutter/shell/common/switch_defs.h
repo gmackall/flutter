@@ -285,6 +285,10 @@ DEF_SWITCH(kEnableAndroidHcppAndSurfaceControl,
            "enable-hcpp-and-surface-control",
            "Enable the HCPP platform view mode and SurfaceControl backed "
            "swapchain when supported.")
+DEF_SWITCH(kEnableAndroidPerformanceHints,
+           "enable-android-performance-hints",
+           "Enable Android Dynamic Performance Framework (ADPF) performance "
+           "hint sessions when supported. Defaults to true.")
 DEF_SWITCH(kEnableFlutterGpu,
            "enable-flutter-gpu",
            "Whether Flutter GPU is enabled.")

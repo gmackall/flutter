@@ -14,6 +14,7 @@ import com.android.build.api.variant.AndroidComponentsExtension
 import com.android.build.api.variant.ApplicationVariant
 import com.flutter.gradle.plugins.PluginHandler
 import com.flutter.gradle.tasks.DeepLinkJsonFromManifestTask
+import com.flutter.gradle.tasks.EnableAndroidPerformanceHintsManifestTask
 import com.flutter.gradle.tasks.EnableHcppManifestTask
 import com.flutter.gradle.tasks.GenerateEngineFlagsManifestTask
 import com.flutter.gradle.tasks.PrintTask
@@ -44,6 +45,9 @@ object FlutterPluginUtils {
     internal const val PROP_SPLIT_PER_ABI = "split-per-abi"
     internal const val PROP_ENABLE_HCPP = "enable-hcpp"
     internal const val PROP_EXPLICIT_ENABLE_HCPP = "explicit-enable-hcpp"
+    internal const val PROP_ENABLE_ANDROID_PERFORMANCE_HINTS = "enable-android-performance-hints"
+    internal const val PROP_EXPLICIT_ENABLE_ANDROID_PERFORMANCE_HINTS =
+        "explicit-enable-android-performance-hints"
     internal const val PROP_LOCAL_ENGINE_REPO = "local-engine-repo"
     internal const val PROP_IS_VERBOSE = "verbose"
     internal const val PROP_TARGET = "target"
@@ -1251,6 +1255,69 @@ object FlutterPluginUtils {
                 .wiredWithFiles(
                     EnableHcppManifestTask::manifestFile,
                     EnableHcppManifestTask::updatedManifest
+                ).toTransform(SingleArtifact.MERGED_MANIFEST)
+        }
+    }
+
+    /**
+     * Adds tasks that manage the `io.flutter.embedding.android.EnableAndroidPerformanceHints`
+     * meta-data in the merged manifest of each variant, when the flutter tool passed
+     * `-Penable-android-performance-hints=false` or an explicit
+     * `-Pexplicit-enable-android-performance-hints=<bool>`.
+     *
+     * Because the engine enables ADPF performance hints by default, nothing needs to be injected
+     * when the feature flag is on and no explicit CLI flag was passed (any explicit `false` in the
+     * developer's manifest is preserved untouched). When disabled via the feature flag without an
+     * explicit CLI flag, `false` is only added when not already present in the merged manifest, so
+     * an explicit value in the developer's manifest always takes priority over the tool's default.
+     * An explicit `--enable-android-performance-hints`/`--no-enable-android-performance-hints`
+     * overrides the manifest in built artifacts, and on `flutter run`/`flutter test`/`flutter drive`
+     * is also passed to the engine at launch.
+     *
+     * Only applies to application projects. Injecting into a module (aar) library manifest would
+     * propagate into the host app's merged manifest, and if the host app explicitly sets the
+     * meta-data to a different value the manifest merger fails the host build with an attribute
+     * conflict instead of letting the host win. Add-to-app hosts therefore control Android
+     * performance hints exclusively through their own manifest.
+     */
+    @JvmStatic
+    @JvmName("addTasksForEnableAndroidPerformanceHintsManifest")
+    internal fun addTasksForEnableAndroidPerformanceHintsManifest(project: Project) {
+        if (!isFlutterAppProject(project)) {
+            return
+        }
+        val enableAndroidPerformanceHints: Boolean =
+            project
+                .findProperty(PROP_ENABLE_ANDROID_PERFORMANCE_HINTS)
+                ?.toString()
+                ?.toBoolean() ?: true
+        val explicitEnableAndroidPerformanceHints: Boolean? =
+            project
+                .findProperty(PROP_EXPLICIT_ENABLE_ANDROID_PERFORMANCE_HINTS)
+                ?.toString()
+                ?.toBoolean()
+        if (enableAndroidPerformanceHints && explicitEnableAndroidPerformanceHints == null) {
+            return
+        }
+        val androidComponents = project.extensions.getByType(AndroidComponentsExtension::class.java)
+        androidComponents.onVariants { variant ->
+            val performanceHintsManifestUpdater =
+                project.tasks.register(
+                    "enableAndroidPerformanceHintsInManifest${capitalize(variant.name)}",
+                    EnableAndroidPerformanceHintsManifestTask::class.java
+                ) {
+                    this.requestedEnableAndroidPerformanceHints.set(enableAndroidPerformanceHints)
+                    if (explicitEnableAndroidPerformanceHints != null) {
+                        this.explicitEnableAndroidPerformanceHints.set(
+                            explicitEnableAndroidPerformanceHints
+                        )
+                    }
+                }
+            variant.artifacts
+                .use(performanceHintsManifestUpdater)
+                .wiredWithFiles(
+                    EnableAndroidPerformanceHintsManifestTask::manifestFile,
+                    EnableAndroidPerformanceHintsManifestTask::updatedManifest
                 ).toTransform(SingleArtifact.MERGED_MANIFEST)
         }
     }

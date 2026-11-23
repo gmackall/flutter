@@ -7,6 +7,8 @@
 
 #include <jni.h>
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 
 #include "flutter/fml/macros.h"
@@ -15,18 +17,36 @@
 namespace flutter {
 
 class AndroidChoreographer;
+class AndroidPerformanceHintManager;
 
 class VsyncWaiterAndroid final : public VsyncWaiter {
  public:
   static bool Register(JNIEnv* env);
 
-  explicit VsyncWaiterAndroid(const flutter::TaskRunners& task_runners);
+  // Visible for testing. Pass a non-positive value to reset to the initial
+  // uninitialized state.
+  static void SetRefreshRateForTesting(float refresh_rate);
+
+  VsyncWaiterAndroid(const flutter::TaskRunners& task_runners,
+                     std::shared_ptr<AndroidPerformanceHintManager>
+                         ui_performance_hint_manager,
+                     std::shared_ptr<AndroidPerformanceHintManager>
+                         raster_performance_hint_manager);
 
   ~VsyncWaiterAndroid() override;
+
+  // Visible for testing. Invokes the ADPF target-duration notification
+  // performed at the start of AwaitVSync() without touching Choreographer or
+  // JNI.
+  void NotifyPerformanceHintManagersForTesting() {
+    NotifyPerformanceHintManagers();
+  }
 
  private:
   // |VsyncWaiter|
   void AwaitVSync() override;
+
+  void NotifyPerformanceHintManagers();
 
   static void OnVsyncFromNDK(int64_t frame_nanos, void* data);
 
@@ -43,6 +63,11 @@ class VsyncWaiterAndroid final : public VsyncWaiter {
   static void OnUpdateRefreshRate(JNIEnv* env,
                                   jclass jcaller,
                                   jfloat refresh_rate);
+
+  std::shared_ptr<AndroidPerformanceHintManager> ui_performance_hint_manager_;
+  std::shared_ptr<AndroidPerformanceHintManager>
+      raster_performance_hint_manager_;
+  std::atomic<uint32_t> last_notified_refresh_rate_{0};
 
   FML_DISALLOW_COPY_AND_ASSIGN(VsyncWaiterAndroid);
 };

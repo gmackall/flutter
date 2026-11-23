@@ -213,6 +213,7 @@ abstract class RunCommandBase extends FlutterCommand with DeviceBasedDevelopment
         usingCISystem: usingCISystem,
         debugLogsDirectoryPath: debugLogsDirectoryPath,
         enableHcpp: explicitEnableHcpp,
+        enableAndroidPerformanceHints: explicitEnableAndroidPerformanceHints,
         testFlag: testFlag,
         iosProfileDebugger: iosProfileDebugger,
         traceSystrace: traceSystrace,
@@ -269,6 +270,7 @@ abstract class RunCommandBase extends FlutterCommand with DeviceBasedDevelopment
         ipv6: getValue(DebuggingOptionDescriptors.ipv6),
         printDtd: getValue(CommonOptions.printDtd),
         enableHcpp: explicitEnableHcpp,
+        enableAndroidPerformanceHints: explicitEnableAndroidPerformanceHints,
         testFlag: testFlag,
         iosProfileDebugger: iosProfileDebugger,
       );

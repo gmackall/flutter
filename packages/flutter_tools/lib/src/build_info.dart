@@ -360,6 +360,8 @@ class AndroidGradleConfig {
     this.skipBuildDependencyValidation = false,
     this.enableHcpp,
     this.explicitEnableHcpp,
+    this.enableAndroidPerformanceHints,
+    this.explicitEnableAndroidPerformanceHints,
   });
 
   /// Additional key value pairs that are passed directly to the gradle project via the `-P`
@@ -406,6 +408,27 @@ class AndroidGradleConfig {
   /// already there, so it takes priority over both [enableHcpp] and the
   /// app's manifest. When null, the manifest decides.
   final bool? explicitEnableHcpp;
+
+  /// The default `enable-android-performance-hints` value, given to Gradle so
+  /// the Flutter Gradle Plugin can inject the corresponding manifest metadata
+  /// when disabled and absent from the manifest.
+  ///
+  /// The injection only happens for application projects, and only when the
+  /// merged manifest does not already contain the
+  /// `io.flutter.embedding.android.EnableAndroidPerformanceHints` metadata, so
+  /// a value in the app's manifest takes priority over this one. Module (aar)
+  /// manifests are never injected; the add-to-app host's manifest is the source
+  /// of truth. When null, no property is passed and no injection happens.
+  final bool? enableAndroidPerformanceHints;
+
+  /// The explicit `--[no-]enable-android-performance-hints` value passed by the
+  /// user on the CLI, or null if the user did not pass the flag explicitly.
+  ///
+  /// Passed to Gradle, which writes it into the merged manifest over any value
+  /// already there, so it takes priority over both
+  /// [enableAndroidPerformanceHints] and the app's manifest. When null, the
+  /// manifest decides.
+  final bool? explicitEnableAndroidPerformanceHints;
 }
 
 /// Information about an Android build to be performed or used.
@@ -466,6 +489,10 @@ class AndroidBuildInfo {
       if (gradleConfig.enableHcpp != null) '-Penable-hcpp=${gradleConfig.enableHcpp}',
       if (gradleConfig.explicitEnableHcpp != null)
         '-Pexplicit-enable-hcpp=${gradleConfig.explicitEnableHcpp}',
+      if (gradleConfig.enableAndroidPerformanceHints != null)
+        '-Penable-android-performance-hints=${gradleConfig.enableAndroidPerformanceHints}',
+      if (gradleConfig.explicitEnableAndroidPerformanceHints != null)
+        '-Pexplicit-enable-android-performance-hints=${gradleConfig.explicitEnableAndroidPerformanceHints}',
       for (final String projectArg in gradleConfig.projectArgs) '-P$projectArg',
       if (gradleConfig.projectCacheDir != null)
         '--project-cache-dir=${gradleConfig.projectCacheDir}',

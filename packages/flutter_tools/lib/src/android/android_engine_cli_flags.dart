@@ -24,6 +24,7 @@ abstract final class AndroidEngineCliFlags {
   static const String enableImpeller = 'enable-impeller';
   static const String enableVulkanValidation = 'enable-vulkan-validation';
   static const String enableFlutterGpu = 'enable-flutter-gpu';
+  static const String enableAndroidPerformanceHints = 'enable-android-performance-hints';
   static const String testFlag = 'test-flag';
   static const String startPaused = 'start-paused';
   static const String disableServiceAuthCodes = 'disable-service-auth-codes';
@@ -58,6 +59,7 @@ abstract final class AndroidEngineCliFlags {
     enableVulkanValidation,
     enableFlutterGpu,
     enableHcpp,
+    enableAndroidPerformanceHints,
     testFlag,
     startPaused,
     disableServiceAuthCodes,

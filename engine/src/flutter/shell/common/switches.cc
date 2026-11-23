@@ -527,6 +527,17 @@ Settings SettingsFromCommandLine(const fml::CommandLine& command_line,
     }
   }
 
+  {
+    std::string enable_android_performance_hints_value;
+    if (command_line.GetOptionValue(
+            FlagForSwitch(Switch::kEnableAndroidPerformanceHints),
+            &enable_android_performance_hints_value)) {
+      settings.enable_android_performance_hints =
+          enable_android_performance_hints_value.empty() ||
+          "true" == enable_android_performance_hints_value;
+    }
+  }
+
   constexpr std::string_view kMergedThreadEnabled = "enabled";
   constexpr std::string_view kMergedThreadDisabled = "disabled";
   constexpr std::string_view kMergedThreadMergeAfterLaunch = "mergeAfterLaunch";

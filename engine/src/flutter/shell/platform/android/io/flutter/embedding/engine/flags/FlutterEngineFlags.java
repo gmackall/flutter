@@ -228,6 +228,18 @@ public final class FlutterEngineFlags {
       new Flag("--enable-hcpp-and-surface-control=", "EnableHcpp", true);
 
   /**
+   * Enables or disables Android Dynamic Performance Framework (ADPF) performance hints.
+   *
+   * <p>Accepts {@code true} (the default) or {@code false}.
+   *
+   * <p>Allowed in release mode as an opt-out escape hatch for applications that need to disable
+   * ADPF performance hint reporting in production. Settable via the manifest and the command line
+   * (via --[no-]enable-android-performance-hints).
+   */
+  private static final Flag ENABLE_ANDROID_PERFORMANCE_HINTS =
+      new Flag("--enable-android-performance-hints=", "EnableAndroidPerformanceHints", true);
+
+  /**
    * Enables the Flutter GPU backend.
    *
    * <p>Allowed in release for developers to use the Flutter GPU backend in production. Settable via
@@ -493,7 +505,8 @@ public final class FlutterEngineFlags {
               IMPELLER_USE_SDFS,
               IMPELLER_OPENGL_GPU_TRACING,
               IMPELLER_VULKAN_GPU_TRACING,
-              ENABLE_HCPP));
+              ENABLE_HCPP,
+              ENABLE_ANDROID_PERFORMANCE_HINTS));
 
   // Flags that have been turned off.
   private static final List<Flag> DISABLED_FLAGS =
