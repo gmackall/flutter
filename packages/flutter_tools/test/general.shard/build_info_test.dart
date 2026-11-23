@@ -406,6 +406,8 @@ void main() {
     expect(defaultConfig.skipBuildDependencyValidation, isFalse);
     expect(defaultConfig.enableHcpp, isNull);
     expect(defaultConfig.explicitEnableHcpp, isNull);
+    expect(defaultConfig.enableAndroidPerformanceHints, isNull);
+    expect(defaultConfig.explicitEnableAndroidPerformanceHints, isNull);
 
     expect(BuildInfo.debug.androidGradleConfig.projectArgs, isEmpty);
     expect(BuildInfo.debug.androidGradleConfig.projectCacheDir, isNull);
@@ -413,6 +415,8 @@ void main() {
     expect(BuildInfo.debug.androidGradleConfig.skipBuildDependencyValidation, isFalse);
     expect(BuildInfo.debug.androidGradleConfig.enableHcpp, isNull);
     expect(BuildInfo.debug.androidGradleConfig.explicitEnableHcpp, isNull);
+    expect(BuildInfo.debug.androidGradleConfig.enableAndroidPerformanceHints, isNull);
+    expect(BuildInfo.debug.androidGradleConfig.explicitEnableAndroidPerformanceHints, isNull);
 
     const customConfig = AndroidGradleConfig(
       projectArgs: <String>['a=1', 'b=2'],
@@ -421,6 +425,8 @@ void main() {
       skipBuildDependencyValidation: true,
       enableHcpp: true,
       explicitEnableHcpp: false,
+      enableAndroidPerformanceHints: false,
+      explicitEnableAndroidPerformanceHints: true,
     );
     const customBuildInfo = BuildInfo(
       BuildMode.release,
@@ -529,6 +535,80 @@ void main() {
       reason: 'no property should be passed when unset',
     );
   });
+
+  testWithoutContext(
+    'AndroidBuildInfo.toGradleConfig encoding of enableAndroidPerformanceHints',
+    () {
+      const buildInfo = BuildInfo(
+        BuildMode.debug,
+        '',
+        treeShakeIcons: true,
+        packageConfigPath: 'foo/.dart_tool/package_config.json',
+        androidGradleConfig: AndroidGradleConfig(
+          enableAndroidPerformanceHints: true,
+          explicitEnableAndroidPerformanceHints: true,
+        ),
+      );
+      const androidBuildInfo = AndroidBuildInfo(buildInfo);
+
+      expect(
+        androidBuildInfo.toGradleConfig(),
+        contains('-Penable-android-performance-hints=true'),
+      );
+      expect(
+        androidBuildInfo.toGradleConfig(),
+        contains('-Pexplicit-enable-android-performance-hints=true'),
+      );
+      expect(
+        buildInfo.copyWith().androidGradleConfig.enableAndroidPerformanceHints,
+        isTrue,
+        reason: 'copyWith should preserve enableAndroidPerformanceHints',
+      );
+      expect(
+        buildInfo.copyWith().androidGradleConfig.explicitEnableAndroidPerformanceHints,
+        isTrue,
+        reason: 'copyWith should preserve explicitEnableAndroidPerformanceHints',
+      );
+
+      const disabledBuildInfo = BuildInfo(
+        BuildMode.debug,
+        '',
+        treeShakeIcons: true,
+        packageConfigPath: 'foo/.dart_tool/package_config.json',
+        androidGradleConfig: AndroidGradleConfig(
+          enableAndroidPerformanceHints: false,
+          explicitEnableAndroidPerformanceHints: false,
+        ),
+      );
+      const disabledAndroidBuildInfo = AndroidBuildInfo(disabledBuildInfo);
+      expect(
+        disabledAndroidBuildInfo.toGradleConfig(),
+        contains('-Penable-android-performance-hints=false'),
+      );
+      expect(
+        disabledAndroidBuildInfo.toGradleConfig(),
+        contains('-Pexplicit-enable-android-performance-hints=false'),
+      );
+
+      const unsetBuildInfo = BuildInfo(
+        BuildMode.debug,
+        '',
+        treeShakeIcons: true,
+        packageConfigPath: 'foo/.dart_tool/package_config.json',
+      );
+      const unsetAndroidBuildInfo = AndroidBuildInfo(unsetBuildInfo);
+      expect(
+        unsetAndroidBuildInfo.toGradleConfig(),
+        isNot(anyElement(contains('-Penable-android-performance-hints'))),
+        reason: 'no property should be passed when unset',
+      );
+      expect(
+        unsetAndroidBuildInfo.toGradleConfig(),
+        isNot(anyElement(contains('-Pexplicit-enable-android-performance-hints'))),
+        reason: 'no property should be passed when unset',
+      );
+    },
+  );
 
   testWithoutContext('encodeDartDefines encodes define values with base64 encoded components', () {
     expect(encodeDartDefines(<String>['"hello"']), 'ImhlbGxvIg==');

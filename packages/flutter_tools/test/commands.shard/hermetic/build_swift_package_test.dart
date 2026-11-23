@@ -3711,6 +3711,9 @@ class FakeFeatureFlags extends Fake implements FeatureFlags {
   bool get isHcppEnabled => false;
 
   @override
+  bool get isAndroidPerformanceHintsEnabled => false;
+
+  @override
   bool get isToolExtensionsEnabled => false;
 }
 

@@ -366,6 +366,48 @@ void main() {
         throwsA(isA<UsageException>()),
       );
     });
+
+    testUsingContext(
+      'pipes the enable-android-performance-hints feature flag through, but the plugin ignores it for aars',
+      () async {
+        final String projectPath = await createProject(
+          tempDir,
+          arguments: <String>['--no-pub', '--template=module'],
+        );
+        await runBuildAar(
+          projectPath,
+          arguments: <String>['--no-pub'],
+          androidBuilder: fakeAndroidBuilder,
+        );
+
+        final Invocation buildAarCall = fakeAndroidBuilder.capturedBuildAarCalls.single;
+        for (final androidBuildInfo
+            in buildAarCall.namedArguments[#androidBuildInfo] as Set<AndroidBuildInfo>) {
+          expect(
+            androidBuildInfo.buildInfo.androidGradleConfig.enableAndroidPerformanceHints,
+            isTrue,
+          );
+        }
+      },
+      overrides: <Type, Generator>{
+        FeatureFlags: () => TestFeatureFlags(isAndroidPerformanceHintsEnabled: true),
+      },
+    );
+
+    testUsingContext('does not define --enable-android-performance-hints', () async {
+      final String projectPath = await createProject(
+        tempDir,
+        arguments: <String>['--no-pub', '--template=module'],
+      );
+      await expectLater(
+        runBuildAar(
+          projectPath,
+          arguments: <String>['--no-pub', '--no-enable-android-performance-hints'],
+          androidBuilder: fakeAndroidBuilder,
+        ),
+        throwsA(isA<UsageException>()),
+      );
+    });
   });
 
   group('Gradle', () {
@@ -511,6 +553,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               ...ndkProvisioningProperties,
               '-Ptarget-platform=android-arm,android-arm64,android-x64',
               'assembleAarRelease',

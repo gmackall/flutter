@@ -602,6 +602,7 @@ class TestFeatureFlags implements FeatureFlags {
     this.isRiscv64SupportEnabled = false,
     this.isMacOSArm64OnlyEnabled = false,
     this.isHcppEnabled = false,
+    this.isAndroidPerformanceHintsEnabled = false,
     this.isToolExtensionsEnabled = false,
   });
 
@@ -666,6 +667,9 @@ class TestFeatureFlags implements FeatureFlags {
   final bool isHcppEnabled;
 
   @override
+  final bool isAndroidPerformanceHintsEnabled;
+
+  @override
   final bool isToolExtensionsEnabled;
 
   @override
@@ -690,6 +694,7 @@ class TestFeatureFlags implements FeatureFlags {
       macOSArm64Only => isMacOSArm64OnlyEnabled,
       recordUse => isRecordUseEnabled,
       hcpp => isHcppEnabled,
+      androidPerformanceHints => isAndroidPerformanceHintsEnabled,
       toolExtensionsFeature => isToolExtensionsEnabled,
       _ => false,
     };
@@ -717,6 +722,7 @@ class TestFeatureFlags implements FeatureFlags {
     riscv64,
     macOSArm64Only,
     hcpp,
+    androidPerformanceHints,
     toolExtensionsFeature,
   ];
 

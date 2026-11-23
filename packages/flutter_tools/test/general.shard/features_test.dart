@@ -489,6 +489,32 @@ void main() {
     });
   });
 
+  group('Android performance hints', () {
+    test('is available and enabled by default on all channels', () {
+      expect(
+        androidPerformanceHints,
+        allOf(<Matcher>[
+          _onChannelIs('master', available: true, enabledByDefault: true),
+          _onChannelIs('beta', available: true, enabledByDefault: true),
+          _onChannelIs('stable', available: true, enabledByDefault: true),
+        ]),
+      );
+    });
+
+    test('can be configured', () {
+      expect(androidPerformanceHints.configSetting, 'enable-android-performance-hints');
+      expect(
+        androidPerformanceHints.environmentOverride,
+        'FLUTTER_ENABLE_ANDROID_PERFORMANCE_HINTS',
+      );
+    });
+
+    test('forwards to isEnabled', () {
+      final checkFlags = _TestIsGetterForwarding(shouldInvoke: androidPerformanceHints);
+      expect(checkFlags.isAndroidPerformanceHintsEnabled, isTrue);
+    });
+  });
+
   group('Tool Extensions', () {
     test('is available only on master', () {
       expect(

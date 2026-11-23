@@ -6,6 +6,7 @@ package io.flutter.embedding.engine.flags;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -107,5 +108,17 @@ public class FlutterEngineFlagsTest {
   public void getReplacementFlagIfDeprecated_returnsNullWhenFlagIsNotDeprecated() {
     assertNull(
         FlutterEngineFlags.getReplacementFlagIfDeprecated(FlutterEngineFlags.VM_SNAPSHOT_DATA));
+  }
+
+  @Test
+  public void enableAndroidPerformanceHintsFlag_hasExpectedProperties() {
+    FlutterEngineFlags.Flag flag =
+        FlutterEngineFlags.getFlagByEngineArgument("--enable-android-performance-hints=");
+    assertNotNull(flag);
+    assertEquals(flag, FlutterEngineFlags.getFlagFromIntentKey("enable-android-performance-hints"));
+    assertEquals("--enable-android-performance-hints=", flag.engineArgument);
+    assertEquals("io.flutter.embedding.android.EnableAndroidPerformanceHints", flag.metadataKey);
+    assertTrue(flag.allowedInRelease);
+    assertTrue(flag.hasCommandLineValue());
   }
 }

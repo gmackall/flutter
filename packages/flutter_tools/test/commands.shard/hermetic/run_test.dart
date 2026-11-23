@@ -2895,6 +2895,9 @@ class FakeFeatureFlags extends Fake implements FeatureFlags {
   bool get isHcppEnabled => isEnabled(hcpp);
 
   @override
+  bool get isAndroidPerformanceHintsEnabled => isEnabled(androidPerformanceHints);
+
+  @override
   List<Feature> get allFeatures => const <Feature>[];
 }
 

@@ -882,6 +882,92 @@ void main() {
     );
 
     testUsingContext(
+      'reports an explicit --[no-]enable-android-performance-hints to gradle so it overrides the manifest',
+      () async {
+        final enabledCommand = DummyAndroidPerformanceHintsFlutterCommand();
+        await createTestCommandRunner(enabledCommand)
+            .run(<String>['dummy', '--enable-android-performance-hints']);
+        final BuildInfo enabledBuildInfo = await enabledCommand.getBuildInfo(
+          forcedBuildMode: BuildMode.debug,
+        );
+        expect(enabledBuildInfo.androidGradleConfig.explicitEnableAndroidPerformanceHints, isTrue);
+        expect(
+          AndroidBuildInfo(enabledBuildInfo).toGradleConfig(),
+          contains('-Pexplicit-enable-android-performance-hints=true'),
+        );
+
+        final disabledCommand = DummyAndroidPerformanceHintsFlutterCommand();
+        await createTestCommandRunner(disabledCommand)
+            .run(<String>['dummy', '--no-enable-android-performance-hints']);
+        final BuildInfo disabledBuildInfo = await disabledCommand.getBuildInfo(
+          forcedBuildMode: BuildMode.debug,
+        );
+        expect(
+          disabledBuildInfo.androidGradleConfig.explicitEnableAndroidPerformanceHints,
+          isFalse,
+        );
+        expect(
+          AndroidBuildInfo(disabledBuildInfo).toGradleConfig(),
+          contains('-Pexplicit-enable-android-performance-hints=false'),
+        );
+
+        final defaultCommand = DummyAndroidPerformanceHintsFlutterCommand();
+        await createTestCommandRunner(defaultCommand).run(<String>['dummy']);
+        final BuildInfo defaultBuildInfo = await defaultCommand.getBuildInfo(
+          forcedBuildMode: BuildMode.debug,
+        );
+        expect(defaultBuildInfo.androidGradleConfig.explicitEnableAndroidPerformanceHints, isNull);
+        expect(
+          AndroidBuildInfo(defaultBuildInfo).toGradleConfig(),
+          isNot(anyElement(contains('-Pexplicit-enable-android-performance-hints'))),
+        );
+      },
+      overrides: <Type, Generator>{
+        FileSystem: () => fileSystem,
+        ProcessManager: () => processManager,
+      },
+    );
+
+    testUsingContext(
+      'reports the enable-android-performance-hints feature flag to gradle as the default',
+      () async {
+        final command = DummyAndroidPerformanceHintsFlutterCommand();
+        await createTestCommandRunner(command).run(<String>['dummy']);
+        final BuildInfo buildInfo = await command.getBuildInfo(forcedBuildMode: BuildMode.debug);
+        expect(buildInfo.androidGradleConfig.enableAndroidPerformanceHints, isTrue);
+        expect(
+          AndroidBuildInfo(buildInfo).toGradleConfig(),
+          contains('-Penable-android-performance-hints=true'),
+        );
+      },
+      overrides: <Type, Generator>{
+        FeatureFlags: () => TestFeatureFlags(isAndroidPerformanceHintsEnabled: true),
+        FileSystem: () => fileSystem,
+        ProcessManager: () => processManager,
+      },
+    );
+
+    testUsingContext(
+      'an explicit --[no-]enable-android-performance-hints overrides the feature flag default',
+      () async {
+        final command = DummyAndroidPerformanceHintsFlutterCommand();
+        await createTestCommandRunner(command)
+            .run(<String>['dummy', '--no-enable-android-performance-hints']);
+        final BuildInfo buildInfo = await command.getBuildInfo(forcedBuildMode: BuildMode.debug);
+        expect(buildInfo.androidGradleConfig.enableAndroidPerformanceHints, isFalse);
+        expect(
+          AndroidBuildInfo(buildInfo).toGradleConfig(),
+          contains('-Penable-android-performance-hints=false'),
+        );
+      },
+      overrides: <Type, Generator>{
+        FeatureFlags: () => TestFeatureFlags(isAndroidPerformanceHintsEnabled: true),
+        FileSystem: () => fileSystem,
+        ProcessManager: () => processManager,
+      },
+    );
+
+    testUsingContext(
       'getBuildInfo defaults when no build options are registered on command',
       () async {
         final flutterCommand = DummyFlutterCommand();
@@ -2405,6 +2491,9 @@ class FakeFeatureFlags implements FeatureFlags {
   bool get isHcppEnabled => false;
 
   @override
+  bool get isAndroidPerformanceHintsEnabled => false;
+
+  @override
   Object? noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -2450,6 +2539,12 @@ class DummyMachineFlutterCommand extends DummyFlutterCommand {
 class DummyHcppFlutterCommand extends DummyFlutterCommand {
   DummyHcppFlutterCommand() : super(name: 'dummy') {
     DebuggingOptionDescriptors.enableHcpp.addTo(argParser);
+  }
+}
+
+class DummyAndroidPerformanceHintsFlutterCommand extends DummyFlutterCommand {
+  DummyAndroidPerformanceHintsFlutterCommand() : super(name: 'dummy') {
+    DebuggingOptionDescriptors.enableAndroidPerformanceHints.addTo(argParser);
   }
 }
 

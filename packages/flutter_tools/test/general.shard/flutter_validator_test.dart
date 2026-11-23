@@ -922,6 +922,9 @@ class FakeFlutterFeatures extends FeatureFlags {
   bool get isHcppEnabled => _enabled;
 
   @override
+  bool get isAndroidPerformanceHintsEnabled => _enabled;
+
+  @override
   bool get isToolExtensionsEnabled => _enabled;
 
   @override

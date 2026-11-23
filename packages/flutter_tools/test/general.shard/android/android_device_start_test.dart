@@ -444,6 +444,119 @@ void main() {
             false,
         isFalse,
       );
+      expect(
+        fakeAndroidBuilder.lastAndroidBuildInfo!.releaseManifestEngineShellArgs?.any(
+              (String arg) => arg.contains('enable-android-performance-hints'),
+            ) ??
+            false,
+        isFalse,
+      );
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => fileSystem,
+      ProcessManager: () => processManager,
+    },
+  );
+
+  testUsingContext(
+    'AndroidDevice.startApp forwards an explicitly disabled Android performance hints flag in release mode',
+    () async {
+      final device = AndroidDevice(
+        '1234',
+        androidBuilder: fakeAndroidBuilder,
+        applicationPackageFactory: FlutterApplicationPackageFactory(
+          androidSdkBuilder: () => androidSdk,
+          plistParserBuilder: FakePlistParser.new,
+          templatePathProvider: const TemplatePathProvider(flutterRoot: ''),
+          toolContext: DelegatingToolContext(fs: fileSystem, processManager: processManager),
+        ),
+        modelID: 'TestModel',
+        fileSystem: fileSystem,
+        processManager: processManager,
+        logger: BufferLogger.test(),
+        platform: FakePlatform(),
+        androidSdk: androidSdk,
+      );
+      final File apkFile = fileSystem.file('app-release.apk')..createSync();
+      final apk = AndroidApk(
+        id: 'FlutterApp',
+        applicationPackage: apkFile,
+        launchActivity: 'FlutterActivity',
+        versionCode: 1,
+      );
+
+      fileSystem.directory('android').createSync();
+      fileSystem.file('android/AndroidManifest.xml').writeAsStringSync('''
+      <manifest package="FlutterApp">
+        <application>
+          <activity android:name="FlutterActivity">
+            <intent-filter>
+              <action android:name="android.intent.action.MAIN"/>
+              <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+          </activity>
+        </application>
+      </manifest>
+      ''');
+
+      fileSystem.file('build/app-release.apk').createSync(recursive: true);
+
+      processManager.addCommand(kAdbVersionCommand);
+      processManager.addCommand(kStartServer);
+      processManager.addCommand(
+        const FakeCommand(
+          command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
+          stdout: '[ro.product.cpu.abi]: [arm64-v8a]',
+        ),
+      );
+      processManager.addCommand(
+        const FakeCommand(
+          command: <String>['adb', '-s', '1234', 'shell', 'am', 'force-stop', 'FlutterApp'],
+        ),
+      );
+      processManager.addCommand(
+        const FakeCommand(
+          command: <String>['adb', '-s', '1234', 'install', '-t', '-r', 'build/app-release.apk'],
+        ),
+      );
+      processManager.addCommand(kShaCommand);
+      processManager.addCommand(
+        const FakeCommand(
+          command: <String>[
+            'adb',
+            '-s',
+            '1234',
+            'shell',
+            'am',
+            'start',
+            '-a',
+            'android.intent.action.MAIN',
+            '-c',
+            'android.intent.category.LAUNCHER',
+            '-f',
+            '0x20000000',
+            'FlutterApp/FlutterActivity',
+          ],
+        ),
+      );
+
+      final LaunchResult launchResult = await device.startApp(
+        apk,
+        debuggingOptions: DebuggingOptions.disabled(
+          BuildInfo.release,
+          enableAndroidPerformanceHints: false,
+          enableDartProfiling: false,
+        ),
+        platformArgs: <String, dynamic>{},
+      );
+
+      expect(launchResult.started, true);
+      expect(processManager, hasNoRemainingExpectations);
+      expect(fakeAndroidBuilder.lastAndroidBuildInfo, isNotNull);
+      expect(
+        fakeAndroidBuilder.lastAndroidBuildInfo!.releaseManifestEngineShellArgs,
+        contains('--enable-android-performance-hints=false'),
+      );
     },
     overrides: <Type, Generator>{
       FileSystem: () => fileSystem,

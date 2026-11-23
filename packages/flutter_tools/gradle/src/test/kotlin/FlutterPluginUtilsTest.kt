@@ -18,6 +18,7 @@ import com.flutter.gradle.FlutterPluginUtils.BUILT_IN_KOTLIN_DOCS_FOR_PLUGINS
 import com.flutter.gradle.FlutterPluginUtils.BUILT_IN_KOTLIN_DOCS_TO_REPORT_UNMIGRATED_PLUGINS
 import com.flutter.gradle.FlutterPluginUtils.detectApplyingKotlinGradlePlugin
 import com.flutter.gradle.plugins.PluginHandler
+import com.flutter.gradle.tasks.EnableAndroidPerformanceHintsManifestTask
 import com.flutter.gradle.tasks.EnableHcppManifestTask
 import com.flutter.gradle.tasks.PrintTask
 import com.flutter.gradle.testing.setUpMockExternalNativeBuild
@@ -2724,5 +2725,116 @@ class FlutterPluginUtilsTest {
         // explicitly disagrees with --no-enable-hcpp.
         verify(exactly = 1) { task.requestedEnableHcpp.set(false) }
         verify(exactly = 1) { task.explicitEnableHcpp.set(false) }
+    }
+
+    // addTasksForEnableAndroidPerformanceHintsManifest
+    @Test
+    fun `addTasksForEnableAndroidPerformanceHintsManifest skips module (library) projects`() {
+        val project = mockk<Project>()
+        every { project.extensions.findByType(ApplicationExtension::class.java) } returns null
+
+        FlutterPluginUtils.addTasksForEnableAndroidPerformanceHintsManifest(project)
+
+        verify(exactly = 0) { project.findProperty(any()) }
+        verify(exactly = 0) { project.tasks }
+    }
+
+    @Test
+    fun `addTasksForEnableAndroidPerformanceHintsManifest skips app projects when property is absent and no explicit flag passed`() {
+        val project = mockk<Project>()
+        every { project.extensions.findByType(ApplicationExtension::class.java) } returns mockk<ApplicationExtension>()
+        every { project.findProperty(FlutterPluginUtils.PROP_ENABLE_ANDROID_PERFORMANCE_HINTS) } returns null
+        every { project.findProperty(FlutterPluginUtils.PROP_EXPLICIT_ENABLE_ANDROID_PERFORMANCE_HINTS) } returns null
+
+        FlutterPluginUtils.addTasksForEnableAndroidPerformanceHintsManifest(project)
+
+        verify(exactly = 0) { project.tasks }
+    }
+
+    @Test
+    fun `addTasksForEnableAndroidPerformanceHintsManifest skips app projects when enabled and no explicit flag passed`() {
+        val project = mockk<Project>()
+        every { project.extensions.findByType(ApplicationExtension::class.java) } returns mockk<ApplicationExtension>()
+        every { project.findProperty(FlutterPluginUtils.PROP_ENABLE_ANDROID_PERFORMANCE_HINTS) } returns "true"
+        every { project.findProperty(FlutterPluginUtils.PROP_EXPLICIT_ENABLE_ANDROID_PERFORMANCE_HINTS) } returns null
+
+        FlutterPluginUtils.addTasksForEnableAndroidPerformanceHintsManifest(project)
+
+        verify(exactly = 0) { project.tasks }
+    }
+
+    private fun registerAndroidPerformanceHintsTaskForDebugVariant(
+        enableProperty: String?,
+        explicitEnableProperty: String?
+    ): EnableAndroidPerformanceHintsManifestTask {
+        val project = mockk<Project>(relaxed = true)
+        val androidComponents = mockk<AndroidComponentsExtension<*, *, *>>()
+        every { project.extensions.findByType(ApplicationExtension::class.java) } returns mockk<ApplicationExtension>()
+        every { project.extensions.getByType(AndroidComponentsExtension::class.java) } returns androidComponents
+        every {
+            project.findProperty(FlutterPluginUtils.PROP_ENABLE_ANDROID_PERFORMANCE_HINTS)
+        } returns enableProperty
+        every {
+            project.findProperty(FlutterPluginUtils.PROP_EXPLICIT_ENABLE_ANDROID_PERFORMANCE_HINTS)
+        } returns explicitEnableProperty
+        every {
+            project.tasks.register(any(), eq(EnableAndroidPerformanceHintsManifestTask::class.java), any())
+        } returns mockk(relaxed = true)
+
+        every { androidComponents.selector() } returns mockk { every { all() } returns mockk() }
+        val onVariantsSlot = slot<(Variant) -> Unit>()
+        every { androidComponents.onVariants(any(), capture(onVariantsSlot)) } answers {
+            onVariantsSlot.captured.invoke(mockk<Variant>(relaxed = true) { every { name } returns "debug" })
+        }
+
+        FlutterPluginUtils.addTasksForEnableAndroidPerformanceHintsManifest(project)
+
+        val configureSlot = slot<Action<EnableAndroidPerformanceHintsManifestTask>>()
+        verify(exactly = 1) {
+            project.tasks.register(
+                "enableAndroidPerformanceHintsInManifestDebug",
+                eq(EnableAndroidPerformanceHintsManifestTask::class.java),
+                capture(configureSlot)
+            )
+        }
+        val task = mockk<EnableAndroidPerformanceHintsManifestTask>(relaxed = true)
+        configureSlot.captured.execute(task)
+        return task
+    }
+
+    @Test
+    fun `addTasksForEnableAndroidPerformanceHintsManifest registers manifest transform when disabled`() {
+        val task =
+            registerAndroidPerformanceHintsTaskForDebugVariant(
+                enableProperty = "false",
+                explicitEnableProperty = null
+            )
+
+        verify(exactly = 1) { task.requestedEnableAndroidPerformanceHints.set(false) }
+        verify(exactly = 0) { task.explicitEnableAndroidPerformanceHints.set(any<Boolean>()) }
+    }
+
+    @Test
+    fun `addTasksForEnableAndroidPerformanceHintsManifest registers manifest transform when explicit flag is true`() {
+        val task =
+            registerAndroidPerformanceHintsTaskForDebugVariant(
+                enableProperty = "true",
+                explicitEnableProperty = "true"
+            )
+
+        verify(exactly = 1) { task.requestedEnableAndroidPerformanceHints.set(true) }
+        verify(exactly = 1) { task.explicitEnableAndroidPerformanceHints.set(true) }
+    }
+
+    @Test
+    fun `addTasksForEnableAndroidPerformanceHintsManifest registers manifest transform when explicit flag is false`() {
+        val task =
+            registerAndroidPerformanceHintsTaskForDebugVariant(
+                enableProperty = "false",
+                explicitEnableProperty = "false"
+            )
+
+        verify(exactly = 1) { task.requestedEnableAndroidPerformanceHints.set(false) }
+        verify(exactly = 1) { task.explicitEnableAndroidPerformanceHints.set(false) }
     }
 }

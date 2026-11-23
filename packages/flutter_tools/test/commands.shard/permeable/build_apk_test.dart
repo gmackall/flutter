@@ -733,6 +733,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
             exitCode: 1,
@@ -790,6 +791,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
             exitCode: 1,
@@ -848,6 +850,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
             exitCode: 1,
@@ -905,6 +908,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
             exitCode: 1,
@@ -968,6 +972,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
           ),
@@ -1039,6 +1044,7 @@ void main() {
               '-Ptrack-widget-creation=true',
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
           ),
@@ -1122,6 +1128,7 @@ void main() {
               '-Ptree-shake-icons=true',
               '-Penable-hcpp=true',
               '-Pexplicit-enable-hcpp=true',
+              '-Penable-android-performance-hints=false',
               'assembleRelease',
             ],
           ),
@@ -1149,6 +1156,67 @@ void main() {
         Analytics: () => analytics,
         AndroidStudio: () => FakeAndroidStudio(),
         FeatureFlags: () => TestFeatureFlags(),
+      },
+    );
+
+    testUsingContext(
+      'passes enable-android-performance-hints and explicit flag to gradle for --no-enable-android-performance-hints',
+      () async {
+        final String projectPath = await createProject(
+          tempDir,
+          arguments: <String>['--no-pub', '--template=app', '--platform=android'],
+        );
+        processManager.addCommand(
+          FakeCommand(
+            command: <String>[
+              gradlew,
+              '-q',
+              '-Ptarget-platform=android-arm,android-arm64,android-x64',
+              '-Ptarget=${localFs.path.join(tempDir.path, 'flutter_project', 'lib', 'main.dart')}',
+              '-Pbase-application-name=android.app.Application',
+              '-Pdart-defines=${encodeDartDefinesMap(<String, String>{
+                'FLUTTER_BUILD_NAME': '1.0.0',
+                'FLUTTER_BUILD_NUMBER': '1',
+                'FLUTTER_VERSION': '0.0.0', //
+                'FLUTTER_CHANNEL': 'master',
+                'FLUTTER_GIT_URL': 'https://github.com/flutter/flutter.git',
+                'FLUTTER_FRAMEWORK_REVISION': '11111',
+                'FLUTTER_ENGINE_REVISION': 'abcde',
+                'FLUTTER_DART_VERSION': '12',
+              })}',
+              '-Pdart-obfuscation=false',
+              '-Ptrack-widget-creation=true',
+              '-Ptree-shake-icons=true',
+              '-Penable-hcpp=false',
+              '-Penable-android-performance-hints=false',
+              '-Pexplicit-enable-android-performance-hints=false',
+              'assembleRelease',
+            ],
+          ),
+        );
+
+        // The command throws a [ToolExit] because it expects an APK in the file system.
+        await expectLater(
+          () => runBuildApkCommand(
+            projectPath,
+            arguments: <String>['--no-enable-android-performance-hints'],
+            logger: logger,
+            processManager: processManager,
+            projectFactory: FakeFlutterProjectFactory(tempDir),
+          ),
+          throwsToolExit(),
+        );
+
+        expect(processManager, hasNoRemainingExpectations);
+      },
+      overrides: <Type, Generator>{
+        AndroidSdk: () => mockAndroidSdk,
+        FlutterProjectFactory: () => FakeFlutterProjectFactory(tempDir),
+        Java: () => null,
+        ProcessManager: () => processManager,
+        Analytics: () => analytics,
+        AndroidStudio: () => FakeAndroidStudio(),
+        FeatureFlags: () => TestFeatureFlags(isAndroidPerformanceHintsEnabled: true),
       },
     );
   });

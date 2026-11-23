@@ -2135,6 +2135,38 @@ dev_dependencies:
 
         await commandRunner.run(const <String>['test', '--no-pub']);
         expect(testRunner.lastDebuggingOptionsValue.enableHcpp, isNull);
+        expect(testRunner.lastDebuggingOptionsValue.enableAndroidPerformanceHints, isNull);
+      },
+      overrides: <Type, Generator>{
+        FileSystem: () => fs,
+        ProcessManager: () => FakeProcessManager.any(),
+      },
+    );
+
+    testUsingContext(
+      'forwards an explicit --[no-]enable-android-performance-hints as a launch override',
+      () async {
+        final testRunner = FakeFlutterTestRunner(0);
+
+        final testCommand = TestCommand(
+          assetBundleFactory: AssetBundleFactory.defaultInstance(
+            fileSystem: fs,
+            flutterRoot: '',
+            logger: logger,
+            platform: toolContext.platform,
+          ),
+          templateRenderer: const MustacheTemplateRenderer(),
+          toolContext: toolContext,
+          testRunner: testRunner,
+        );
+        final CommandRunner<void> commandRunner = createTestCommandRunner(testCommand);
+
+        await commandRunner.run(const <String>[
+          'test',
+          '--no-pub',
+          '--no-enable-android-performance-hints',
+        ]);
+        expect(testRunner.lastDebuggingOptionsValue.enableAndroidPerformanceHints, isFalse);
       },
       overrides: <Type, Generator>{
         FileSystem: () => fs,
@@ -2562,6 +2594,7 @@ resolution: workspace
           'machine',
           'enable-flutter-gpu',
           'enable-hcpp',
+          'enable-android-performance-hints',
           'deprecated-js-interop',
           'fatal-warnings',
           'experimental-faster-testing',

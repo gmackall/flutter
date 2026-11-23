@@ -669,6 +669,7 @@ void main() {
         enableImpeller: ImpellerStatus.enabled,
         enableFlutterGpu: true,
         enableDartProfiling: false,
+        enableAndroidPerformanceHints: false,
         enableEmbedderApi: true,
         webConfig: const WebDebugConfig(
           enableExposeUrl: true,
@@ -703,6 +704,7 @@ void main() {
       expect(deserialized.enableImpeller, original.enableImpeller);
       expect(deserialized.enableFlutterGpu, original.enableFlutterGpu);
       expect(deserialized.enableDartProfiling, original.enableDartProfiling);
+      expect(deserialized.enableAndroidPerformanceHints, original.enableAndroidPerformanceHints);
       expect(deserialized.enableEmbedderApi, original.enableEmbedderApi);
 
       expect(deserialized.webConfig.enableExposeUrl, true);
@@ -1034,6 +1036,7 @@ void main() {
           enableFlutterGpu: true,
           enableVulkanValidation: true,
           enableHcpp: true,
+          enableAndroidPerformanceHints: true,
         );
 
         final Set<String> launchArguments = original.getAndroidLaunchArguments();
@@ -1057,6 +1060,7 @@ void main() {
             '--enable-flutter-gpu',
             '--enable-vulkan-validation',
             '--enable-hcpp-and-surface-control=true',
+            '--enable-android-performance-hints=true',
           ]),
         );
       },
@@ -1108,6 +1112,8 @@ void main() {
       expect(launchArguments.contains('--test-flag'), isFalse);
       expect(launchArguments.contains('--enable-hcpp-and-surface-control=true'), isFalse);
       expect(launchArguments.contains('--enable-hcpp-and-surface-control=false'), isFalse);
+      expect(launchArguments.contains('--enable-android-performance-hints=true'), isFalse);
+      expect(launchArguments.contains('--enable-android-performance-hints=false'), isFalse);
     });
 
     testWithoutContext('Get launch arguments for manifest injection with enableHcpp: false', () {
@@ -1117,6 +1123,20 @@ void main() {
 
       expect(launchArguments, contains('--enable-hcpp-and-surface-control=false'));
     });
+
+    testWithoutContext(
+      'Get launch arguments for manifest injection with enableAndroidPerformanceHints: false',
+      () {
+        final original = DebuggingOptions.enabled(
+          BuildInfo.debug,
+          enableAndroidPerformanceHints: false,
+        );
+
+        final Set<String> launchArguments = original.getAndroidLaunchArguments();
+
+        expect(launchArguments, contains('--enable-android-performance-hints=false'));
+      },
+    );
 
     testWithoutContext('Get Intent launch arguments when debugging enabled - top level flags', () {
       final original = DebuggingOptions.enabled(
@@ -1136,6 +1156,7 @@ void main() {
         enableFlutterGpu: true,
         enableVulkanValidation: true,
         enableHcpp: true,
+        enableAndroidPerformanceHints: true,
       );
 
       final List<String> launchArguments = original.getAndroidLaunchArgumentsAsIntentExtras();
@@ -1191,6 +1212,9 @@ void main() {
           '--ez',
           'enable-hcpp-and-surface-control',
           'true',
+          '--ez',
+          'enable-android-performance-hints',
+          'true',
         ]),
       );
     });
@@ -1203,6 +1227,20 @@ void main() {
       expect(
         launchArguments,
         containsAll(<String>['--ez', 'enable-hcpp-and-surface-control', 'false']),
+      );
+    });
+
+    testWithoutContext('Get Intent launch arguments with enableAndroidPerformanceHints: false', () {
+      final original = DebuggingOptions.enabled(
+        BuildInfo.debug,
+        enableAndroidPerformanceHints: false,
+      );
+
+      final List<String> launchArguments = original.getAndroidLaunchArgumentsAsIntentExtras();
+
+      expect(
+        launchArguments,
+        containsAll(<String>['--ez', 'enable-android-performance-hints', 'false']),
       );
     });
 
@@ -1269,6 +1307,7 @@ void main() {
       expect(launchArguments.contains('verbose-logging'), isFalse);
       expect(launchArguments.contains('test-flag'), isFalse);
       expect(launchArguments.contains('enable-hcpp-and-surface-control'), isFalse);
+      expect(launchArguments.contains('enable-android-performance-hints'), isFalse);
     });
 
     testWithoutContext(
@@ -1291,6 +1330,7 @@ void main() {
           enableFlutterGpu: true,
           enableVulkanValidation: true,
           enableHcpp: true,
+          enableAndroidPerformanceHints: true,
           startPaused: true,
           disableServiceAuthCodes: true,
           disableServiceOriginCheck: true,
