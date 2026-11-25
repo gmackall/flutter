@@ -41,6 +41,7 @@ import io.flutter.view.AccessibilityStringBuilder.LocaleStringAttribute;
 import io.flutter.view.AccessibilityStringBuilder.SpellOutStringAttribute;
 import io.flutter.view.AccessibilityStringBuilder.StringAttribute;
 import io.flutter.view.AccessibilityStringBuilder.StringAttributeType;
+import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -175,6 +176,27 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   // https://api.flutter.dev/flutter/semantics/SemanticsNode-class.html
   @NonNull @VisibleForTesting
   final Map<Integer, SemanticsNode> flutterSemanticsTree = new HashMap<>();
+
+  // Tracks which AccessibilityBridge currently owns the AccessibilityDelegate and accessibility
+  // importance of each Flutter-owned platform view wrapper. Wrappers are owned by the engine and
+  // can outlive a FlutterView; tracking ownership prevents a delayed release() on an older bridge
+  // from clearing a newer bridge's delegate or importance. Stored externally because
+  // View#getAccessibilityDelegate() is API 29+ while Flutter supports API 24+. Only accessed on
+  // the UI thread.
+  @NonNull
+  private static final Map<View, WeakReference<AccessibilityBridge>> activeWrapperOwners =
+      new WeakHashMap<>();
+
+  // Maps platformViewId -> live visible non-virtual-display SemanticsNode from the latest
+  // updateSemantics() pass. Used for O(1) lookup in onPlatformViewAttached() and dynamic
+  // parent/traversal resolution in PlatformViewWrapperAccessibilityDelegate.
+  @NonNull private final Map<Integer, SemanticsNode> visiblePlatformViewNodes = new HashMap<>();
+
+  // Tracks Flutter-owned platform view wrappers (e.g., PlatformViewWrapper / FlutterMutatorView)
+  // currently attached by this AccessibilityBridge, keyed by platformViewId.
+  @NonNull
+  private final Map<Integer, AttachedPlatformViewWrapper> attachedPlatformViewWrappers =
+      new HashMap<>();
 
   // The set of all custom Flutter accessibility actions that are present in the running
   // Flutter app, stored as a Map from each action's ID to the definition of the custom
@@ -638,6 +660,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
    */
   public void release() {
     isReleased = true;
+    detachAllPlatformViewWrappers();
     platformViewsAccessibilityDelegate.detachAccessibilityBridge();
     setOnAccessibilityChangeListener(null);
     accessibilityManager.removeAccessibilityStateChangeListener(accessibilityStateChangeListener);
@@ -855,8 +878,13 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     }
 
     if (semanticsNode.previousNodeId != -1) {
-      // Requires at least android api 22.
-      result.setTraversalAfter(rootAccessibilityView, semanticsNode.previousNodeId);
+      View previousWrapper = resolveTraversalAfterWrapper(semanticsNode.previousNodeId);
+      if (previousWrapper != null) {
+        result.setTraversalAfter(previousWrapper);
+      } else {
+        // Requires at least android api 22.
+        result.setTraversalAfter(rootAccessibilityView, semanticsNode.previousNodeId);
+      }
     }
 
     Rect bounds = semanticsNode.getGlobalRect();
@@ -874,29 +902,34 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     result.setEnabled(
         !semanticsNode.hasFlag(Flag.HAS_ENABLED_STATE) || semanticsNode.hasFlag(Flag.IS_ENABLED));
 
+    boolean nodeIsHiddenOrAncestorHidden = isHiddenOrAncestorHidden(semanticsNode);
     for (SemanticsNode child : semanticsNode.childrenInTraversalOrder) {
       if (child.hasFlag(Flag.IS_HIDDEN)) {
         continue;
       }
-      if (child.platformViewId != -1) {
-        View embeddedView =
-            platformViewsAccessibilityDelegate.getPlatformViewById(child.platformViewId);
-
-        // Add the embedded view as a child of the current accessibility node if it's not
-        // using a virtual display.
+      if (!isReleased
+          && !nodeIsHiddenOrAncestorHidden
+          && child.platformViewId != -1
+          && !platformViewsAccessibilityDelegate.usesVirtualDisplay(child.platformViewId)) {
+        // Add the Flutter-owned platform view wrapper (PlatformViewWrapper / FlutterMutatorView)
+        // as a child of the current virtual node instead of linking directly to the plugin's
+        // embedded view.
         //
-        // In this case, the view is in the Activity's view hierarchy, so it doesn't need to be
-        // mirrored.
-        //
-        // See the case above for how virtual displays are handled.
-        if (!platformViewsAccessibilityDelegate.usesVirtualDisplay(child.platformViewId)) {
-          if (embeddedView != null) {
-            // The embedded view is initially marked as not important at creation in the platform
-            // view controller, so we must explicitly mark it as important here.
-            embeddedView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-            result.addChild(embeddedView);
-            continue;
-          }
+        // Android's AccessibilityNodeIdManager#findView returns null for any target View that is
+        // not important for accessibility under compressed traversal (TalkBack). Marking the
+        // Flutter-owned wrapper as IMPORTANT_FOR_ACCESSIBILITY_YES guarantees that the virtual-to-
+        // View link resolves, while leaving the plugin's embedded view completely unmodified so
+        // standard Android ViewGroup#addChildrenForAccessibility handles AUTO containers,
+        // TextViews, and plugin-specified NO / NO_HIDE_DESCENDANTS natively. Wrapper attachment
+        // and importance are managed solely by updateSemantics() and onPlatformViewAttached() so
+        // createAccessibilityNodeInfo() remains read-only.
+        AttachedPlatformViewWrapper attached =
+            attachedPlatformViewWrappers.get(child.platformViewId);
+        View wrapperView =
+            platformViewsAccessibilityDelegate.getPlatformViewWrapperById(child.platformViewId);
+        if (wrapperView != null && attached != null && attached.wrapperView == wrapperView) {
+          result.addChild(wrapperView);
+          continue;
         }
       }
       result.addChild(rootAccessibilityView, child.id);
@@ -1535,10 +1568,22 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       @NonNull String[] strings,
       @NonNull ByteBuffer[] stringAttributeArgs) {
     ArrayList<SemanticsNode> updated = new ArrayList<>();
+    Set<Integer> stalePlatformViewIds = null;
     while (buffer.hasRemaining()) {
       int id = buffer.getInt();
       SemanticsNode semanticsNode = getOrCreateSemanticsNode(id);
+      int previousPlatformViewId = semanticsNode.platformViewId;
+      boolean hadPreviousConfig = semanticsNode.hadPreviousConfig;
       semanticsNode.updateWith(buffer, strings, stringAttributeArgs);
+      if (hadPreviousConfig
+          && previousPlatformViewId != -1
+          && previousPlatformViewId != semanticsNode.platformViewId
+          && !platformViewsAccessibilityDelegate.usesVirtualDisplay(previousPlatformViewId)) {
+        if (stalePlatformViewIds == null) {
+          stalePlatformViewIds = new HashSet<>();
+        }
+        stalePlatformViewIds.add(previousPlatformViewId);
+      }
       if (semanticsNode.hasFlag(Flag.IS_HIDDEN)) {
         continue;
       }
@@ -1547,14 +1592,6 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       }
       if (semanticsNode.hadPreviousConfig) {
         updated.add(semanticsNode);
-      }
-      if (semanticsNode.platformViewId != -1
-          && !platformViewsAccessibilityDelegate.usesVirtualDisplay(semanticsNode.platformViewId)) {
-        View embeddedView =
-            platformViewsAccessibilityDelegate.getPlatformViewById(semanticsNode.platformViewId);
-        if (embeddedView != null) {
-          embeddedView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-        }
       }
     }
 
@@ -1606,10 +1643,22 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       Map.Entry<Integer, SemanticsNode> entry = it.next();
       SemanticsNode object = entry.getValue();
       if (!visitedObjects.contains(object)) {
+        if (object.platformViewId != -1
+            && !platformViewsAccessibilityDelegate.usesVirtualDisplay(object.platformViewId)) {
+          if (stalePlatformViewIds == null) {
+            stalePlatformViewIds = new HashSet<>();
+          }
+          stalePlatformViewIds.add(object.platformViewId);
+        }
         willRemoveSemanticsNode(object);
         it.remove();
       }
     }
+
+    // Reconcile platform view wrappers after both updateRecursively and stale-node removal so
+    // replacing a SemanticsNode id or moving a platformViewId between nodes in a single update
+    // never transiently detaches the live wrapper (which would clear accessibility focus).
+    reconcilePlatformViewWrappers(visitedObjects, stalePlatformViewIds);
 
     // TODO(goderbauer): Send this event only once (!) for changed subtrees,
     //     see https://github.com/flutter/flutter/issues/14534
@@ -1942,16 +1991,6 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       embeddedAccessibilityFocusedNodeId = null;
     }
 
-    if (semanticsNodeToBeRemoved.platformViewId != -1) {
-      View embeddedView =
-          platformViewsAccessibilityDelegate.getPlatformViewById(
-              semanticsNodeToBeRemoved.platformViewId);
-      if (embeddedView != null) {
-        embeddedView.setImportantForAccessibility(
-            View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-      }
-    }
-
     if (accessibilityFocusedSemanticsNode == semanticsNodeToBeRemoved) {
       sendAccessibilityEvent(
           accessibilityFocusedSemanticsNode.id,
@@ -1969,6 +2008,287 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   }
 
   /**
+   * Called by the platform views controller when a Flutter-owned wrapper view is attached to the
+   * view hierarchy. If the semantics tree already contains a visible node for {@code
+   * platformViewId}, enables accessibility on the wrapper and notifies Android to refresh the
+   * parent's subtree.
+   *
+   * <p>This member is not intended for public use.
+   */
+  public void onPlatformViewAttached(int platformViewId) {
+    if (isReleased || platformViewsAccessibilityDelegate.usesVirtualDisplay(platformViewId)) {
+      return;
+    }
+    SemanticsNode semanticsNode = visiblePlatformViewNodes.get(platformViewId);
+    if (semanticsNode == null || isHiddenOrAncestorHidden(semanticsNode)) {
+      return;
+    }
+    View wrapperView =
+        platformViewsAccessibilityDelegate.getPlatformViewWrapperById(platformViewId);
+    if (wrapperView == null) {
+      return;
+    }
+    attachPlatformViewWrapper(platformViewId, wrapperView);
+    if (rootAccessibilityView.getParent() != null) {
+      int parentId = semanticsNode.parent != null ? semanticsNode.parent.id : ROOT_NODE_ID;
+      sendWindowContentChangeEvent(parentId, AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE);
+    }
+  }
+
+  /**
+   * Called by the platform views controller when a platform view is disposed so any tracked wrapper
+   * reference and accessibility delegate are released immediately.
+   *
+   * <p>This member is not intended for public use.
+   */
+  public void onPlatformViewDetached(int platformViewId) {
+    if (isReleased || platformViewsAccessibilityDelegate.usesVirtualDisplay(platformViewId)) {
+      return;
+    }
+    visiblePlatformViewNodes.remove(platformViewId);
+    detachPlatformViewWrapper(platformViewId);
+  }
+
+  private void reconcilePlatformViewWrappers(
+      @NonNull Set<SemanticsNode> visitedObjects, @Nullable Set<Integer> stalePlatformViewIds) {
+    visiblePlatformViewNodes.clear();
+    if (isReleased) {
+      return;
+    }
+    Set<Integer> hiddenPlatformViewIds = null;
+    for (SemanticsNode semanticsNode : visitedObjects) {
+      if (semanticsNode.platformViewId == -1
+          || platformViewsAccessibilityDelegate.usesVirtualDisplay(semanticsNode.platformViewId)) {
+        continue;
+      }
+      if (isHiddenOrAncestorHidden(semanticsNode)) {
+        if (hiddenPlatformViewIds == null) {
+          hiddenPlatformViewIds = new HashSet<>();
+        }
+        hiddenPlatformViewIds.add(semanticsNode.platformViewId);
+      } else {
+        visiblePlatformViewNodes.put(semanticsNode.platformViewId, semanticsNode);
+      }
+    }
+
+    for (Map.Entry<Integer, SemanticsNode> entry : visiblePlatformViewNodes.entrySet()) {
+      int platformViewId = entry.getKey();
+      View wrapperView =
+          platformViewsAccessibilityDelegate.getPlatformViewWrapperById(platformViewId);
+      if (wrapperView != null) {
+        attachPlatformViewWrapper(platformViewId, wrapperView);
+      } else {
+        AttachedPlatformViewWrapper attached = attachedPlatformViewWrappers.remove(platformViewId);
+        if (attached != null) {
+          clearAttachedWrapper(attached);
+        }
+      }
+    }
+
+    Set<Integer> idsToDetach = null;
+    idsToDetach = addNonVisiblePlatformViewIds(idsToDetach, attachedPlatformViewWrappers.keySet());
+    idsToDetach = addNonVisiblePlatformViewIds(idsToDetach, hiddenPlatformViewIds);
+    idsToDetach = addNonVisiblePlatformViewIds(idsToDetach, stalePlatformViewIds);
+    if (idsToDetach != null) {
+      for (int id : idsToDetach) {
+        detachPlatformViewWrapper(id);
+      }
+    }
+  }
+
+  @Nullable
+  private Set<Integer> addNonVisiblePlatformViewIds(
+      @Nullable Set<Integer> target, @Nullable Set<Integer> candidates) {
+    if (candidates == null) {
+      return target;
+    }
+    for (Integer id : candidates) {
+      if (!visiblePlatformViewNodes.containsKey(id)) {
+        if (target == null) {
+          target = new HashSet<>();
+        }
+        target.add(id);
+      }
+    }
+    return target;
+  }
+
+  private boolean isHiddenOrAncestorHidden(@NonNull SemanticsNode node) {
+    SemanticsNode current = node;
+    while (current != null) {
+      if (current.hasFlag(Flag.IS_HIDDEN)) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+
+  @Nullable
+  private View resolveTraversalAfterWrapper(int previousNodeId) {
+    if (isReleased || previousNodeId == -1) {
+      return null;
+    }
+    SemanticsNode previousNode = flutterSemanticsTree.get(previousNodeId);
+    if (previousNode == null
+        || previousNode.platformViewId == -1
+        || platformViewsAccessibilityDelegate.usesVirtualDisplay(previousNode.platformViewId)
+        || isHiddenOrAncestorHidden(previousNode)) {
+      return null;
+    }
+    AttachedPlatformViewWrapper attached =
+        attachedPlatformViewWrappers.get(previousNode.platformViewId);
+    if (attached == null) {
+      return null;
+    }
+    View wrapperView =
+        platformViewsAccessibilityDelegate.getPlatformViewWrapperById(previousNode.platformViewId);
+    return wrapperView != null && attached.wrapperView == wrapperView ? wrapperView : null;
+  }
+
+  private void populatePlatformViewWrapperNodeInfo(
+      int platformViewId, @NonNull View host, @NonNull AccessibilityNodeInfo info) {
+    if (isReleased) {
+      return;
+    }
+    AttachedPlatformViewWrapper attached = attachedPlatformViewWrappers.get(platformViewId);
+    if (attached == null || attached.wrapperView != host) {
+      return;
+    }
+    SemanticsNode semanticsNode = visiblePlatformViewNodes.get(platformViewId);
+    if (semanticsNode == null) {
+      return;
+    }
+    if (semanticsNode.parent != null) {
+      info.setParent(rootAccessibilityView, semanticsNode.parent.id);
+    } else {
+      info.setParent(rootAccessibilityView);
+    }
+    if (semanticsNode.previousNodeId != -1) {
+      View previousWrapper = resolveTraversalAfterWrapper(semanticsNode.previousNodeId);
+      if (previousWrapper != null) {
+        info.setTraversalAfter(previousWrapper);
+      } else {
+        info.setTraversalAfter(rootAccessibilityView, semanticsNode.previousNodeId);
+      }
+    }
+    // Intentionally leave info.isVisibleToUser() untouched so the real wrapper View reports its
+    // true on-screen visibility: Voice Access and UIAutomator prune entire subtrees under
+    // !isVisibleToUser nodes, and in TalkBack non-actionable native descendants under focusable
+    // Flutter scrollables (which set Action.SCROLL_TO_OFFSET) or FlutterView rely on the visible
+    // wrapper to remain reachable.
+  }
+
+  private boolean isCurrentOwner(@NonNull View wrapperView) {
+    WeakReference<AccessibilityBridge> ownerRef = activeWrapperOwners.get(wrapperView);
+    return ownerRef != null && ownerRef.get() == this;
+  }
+
+  private boolean isOwnerOrUnowned(@NonNull View wrapperView) {
+    WeakReference<AccessibilityBridge> ownerRef = activeWrapperOwners.get(wrapperView);
+    if (ownerRef == null) {
+      return true;
+    }
+    AccessibilityBridge owner = ownerRef.get();
+    return owner == null || owner == this;
+  }
+
+  private void clearAttachedWrapper(@NonNull AttachedPlatformViewWrapper attached) {
+    if (!isCurrentOwner(attached.wrapperView)) {
+      return;
+    }
+    activeWrapperOwners.remove(attached.wrapperView);
+    if (attached.ownsAccessibilityDelegate) {
+      attached.wrapperView.setAccessibilityDelegate(null);
+    }
+    attached.wrapperView.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+  }
+
+  private void attachPlatformViewWrapper(int platformViewId, @NonNull View wrapperView) {
+    if (isReleased) {
+      return;
+    }
+    AttachedPlatformViewWrapper attached = attachedPlatformViewWrappers.get(platformViewId);
+    if (attached != null && (attached.wrapperView != wrapperView || !isCurrentOwner(wrapperView))) {
+      clearAttachedWrapper(attached);
+      attached = null;
+    }
+    if (attached == null) {
+      // Only install an AccessibilityDelegate on a separate Flutter-owned wrapper view. If a
+      // custom PlatformViewsAccessibilityDelegate falls back to returning the plugin's embedded
+      // view directly, preserve any plugin-installed AccessibilityDelegate.
+      boolean isSeparateWrapper =
+          wrapperView != platformViewsAccessibilityDelegate.getPlatformViewById(platformViewId);
+      if (isSeparateWrapper) {
+        wrapperView.setAccessibilityDelegate(
+            new PlatformViewWrapperAccessibilityDelegate(this, platformViewId));
+      }
+      attached = new AttachedPlatformViewWrapper(wrapperView, isSeparateWrapper);
+      attachedPlatformViewWrappers.put(platformViewId, attached);
+      activeWrapperOwners.put(wrapperView, new WeakReference<>(this));
+    }
+    wrapperView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+  }
+
+  private void detachPlatformViewWrapper(int platformViewId) {
+    AttachedPlatformViewWrapper attached = attachedPlatformViewWrappers.remove(platformViewId);
+    if (attached != null) {
+      clearAttachedWrapper(attached);
+    }
+    View wrapperView =
+        platformViewsAccessibilityDelegate.getPlatformViewWrapperById(platformViewId);
+    if (wrapperView != null
+        && (attached == null || attached.wrapperView != wrapperView)
+        && isOwnerOrUnowned(wrapperView)) {
+      wrapperView.setImportantForAccessibility(
+          View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    }
+  }
+
+  private void detachAllPlatformViewWrappers() {
+    for (AttachedPlatformViewWrapper attached : attachedPlatformViewWrappers.values()) {
+      clearAttachedWrapper(attached);
+    }
+    attachedPlatformViewWrappers.clear();
+    visiblePlatformViewNodes.clear();
+  }
+
+  private static final class AttachedPlatformViewWrapper {
+    @NonNull final View wrapperView;
+    final boolean ownsAccessibilityDelegate;
+
+    AttachedPlatformViewWrapper(@NonNull View wrapperView, boolean ownsAccessibilityDelegate) {
+      this.wrapperView = wrapperView;
+      this.ownsAccessibilityDelegate = ownsAccessibilityDelegate;
+    }
+  }
+
+  /**
+   * Installed on Flutter-owned platform view wrappers ({@code PlatformViewWrapper} / {@code
+   * FlutterMutatorView}) so their accessibility parent and traversal order dynamically link back
+   * into Flutter's virtual semantics tree without modifying the plugin's embedded view.
+   */
+  private static final class PlatformViewWrapperAccessibilityDelegate
+      extends View.AccessibilityDelegate {
+    @NonNull private final AccessibilityBridge accessibilityBridge;
+    private final int platformViewId;
+
+    PlatformViewWrapperAccessibilityDelegate(
+        @NonNull AccessibilityBridge accessibilityBridge, int platformViewId) {
+      this.accessibilityBridge = accessibilityBridge;
+      this.platformViewId = platformViewId;
+    }
+
+    @Override
+    public void onInitializeAccessibilityNodeInfo(
+        @NonNull View host, @NonNull AccessibilityNodeInfo info) {
+      super.onInitializeAccessibilityNodeInfo(host, info);
+      accessibilityBridge.populatePlatformViewWrapperNodeInfo(platformViewId, host, info);
+    }
+  }
+
+  /**
    * Resets the {@code AccessibilityBridge}:
    *
    * <ul>
@@ -1979,6 +2299,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
    * </ul>
    */
   public void reset() {
+    detachAllPlatformViewWrappers();
     flutterSemanticsTree.clear();
     if (accessibilityFocusedSemanticsNode != null) {
       sendAccessibilityEvent(
@@ -2242,7 +2563,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     int currentValueLength;
     int textSelectionBase;
     int textSelectionExtent;
-    private int platformViewId;
+    private int platformViewId = -1;
     int scrollChildren;
     private int scrollIndex;
     private int traversalParent;

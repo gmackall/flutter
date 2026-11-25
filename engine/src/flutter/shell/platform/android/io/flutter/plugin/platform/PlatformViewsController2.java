@@ -392,6 +392,12 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
     return platformView.getView();
   }
 
+  @Override
+  @Nullable
+  public View getPlatformViewWrapperById(int viewId) {
+    return platformViewParent.get(viewId);
+  }
+
   private void lockInputConnection(@NonNull VirtualDisplayController controller) {
     if (textInputPlugin == null) {
       return;
@@ -536,17 +542,18 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
 
     platformViewParent.put(viewId, parentView);
 
-    // Accessibility in the embedded view is initially disabled because if a Flutter app disabled
+    // Accessibility on the wrapper is initially disabled because if a Flutter app disabled
     // accessibility in the first frame, the embedding won't receive an update to disable
     // accessibility since the embedding never received an update to enable it.
-    // The AccessibilityBridge keeps track of the accessibility nodes, and handles the deltas when
-    // the framework sends a new a11y tree to the embedding.
-    // To prevent races, the framework populate the SemanticsNode after the platform view has been
+    // The AccessibilityBridge manages the wrapper's accessibility importance rather than mutating
+    // the embedded view itself so the plugin's own accessibility configuration is preserved.
+    // To prevent races, the framework populates the SemanticsNode after the platform view has been
     // created.
-    embeddedView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    parentView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
 
     parentView.addView(embeddedView);
     flutterView.addView(parentView);
+    accessibilityEventsDelegate.onPlatformViewAttached(viewId);
     return true;
   }
 
@@ -1115,6 +1122,10 @@ public class PlatformViewsController2 implements PlatformViewsAccessibilityDeleg
           // The platform view is displayed using a PlatformViewLayer.
           final FlutterMutatorView parentView = platformViewParent.get(viewId);
           if (parentView != null) {
+            accessibilityEventsDelegate.onPlatformViewDetached(viewId);
+            // Defensively clear any AccessibilityDelegate even if no AccessibilityBridge is
+            // currently attached while the wrapper is being destroyed.
+            parentView.setAccessibilityDelegate(null);
             parentView.removeAllViews();
             parentView.unsetOnDescendantFocusChangeListener();
 

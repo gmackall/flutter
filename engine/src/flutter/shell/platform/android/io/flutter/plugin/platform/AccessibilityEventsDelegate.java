@@ -51,6 +51,29 @@ class AccessibilityEventsDelegate {
     return accessibilityBridge.onAccessibilityHoverEvent(event, ignorePlatformViews);
   }
 
+  /**
+   * Notifies the attached {@link AccessibilityBridge} that the Flutter-owned wrapper view for
+   * {@code platformViewId} has been attached to the view hierarchy.
+   */
+  public void onPlatformViewAttached(int platformViewId) {
+    if (accessibilityBridge == null) {
+      return;
+    }
+    accessibilityBridge.onPlatformViewAttached(platformViewId);
+  }
+
+  /**
+   * Notifies the attached {@link AccessibilityBridge} that the platform view for {@code
+   * platformViewId} is being disposed so any tracked wrapper reference and accessibility delegate
+   * can be released immediately.
+   */
+  public void onPlatformViewDetached(int platformViewId) {
+    if (accessibilityBridge == null) {
+      return;
+    }
+    accessibilityBridge.onPlatformViewDetached(platformViewId);
+  }
+
   /*
    * This setter should only be used directly in PlatformViewsController when attached/detached to an accessibility
    * bridge.

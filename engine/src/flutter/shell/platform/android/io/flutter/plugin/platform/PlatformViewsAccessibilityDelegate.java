@@ -18,6 +18,28 @@ public interface PlatformViewsAccessibilityDelegate {
   @Nullable
   View getPlatformViewById(int viewId);
 
+  /**
+   * Returns the Flutter-owned container view wrapping the platform view with the requested id (such
+   * as {@link PlatformViewWrapper} or {@link
+   * io.flutter.embedding.engine.mutatorsstack.FlutterMutatorView}), or null if no wrapper view is
+   * attached.
+   *
+   * <p>For platform views that do not use a virtual display, {@link AccessibilityBridge} attaches
+   * this wrapper view to the accessibility tree and manages its accessibility importance instead of
+   * mutating the platform view returned by {@link #getPlatformViewById(int)}.
+   *
+   * <p>The default implementation falls back to {@link #getPlatformViewById(int)} for backwards
+   * compatibility; when this method returns the same view instance as {@link
+   * #getPlatformViewById(int)}, {@link AccessibilityBridge} preserves any existing {@link
+   * View.AccessibilityDelegate} on that view instead of replacing it.
+   *
+   * <p>This member is not intended for external use.
+   */
+  @Nullable
+  default View getPlatformViewWrapperById(int viewId) {
+    return getPlatformViewById(viewId);
+  }
+
   /** Returns true if the platform view uses virtual displays. */
   boolean usesVirtualDisplay(int id);
 

@@ -55,6 +55,14 @@ public class PlatformViewsControllerDelegator
         : platformViewsController.getPlatformViewById(viewId);
   }
 
+  @Nullable
+  @Override
+  public View getPlatformViewWrapperById(int viewId) {
+    return platformViewsController2.getPlatformViewById(viewId) != null
+        ? platformViewsController2.getPlatformViewWrapperById(viewId)
+        : platformViewsController.getPlatformViewWrapperById(viewId);
+  }
+
   @Override
   public boolean usesVirtualDisplay(int id) {
     return platformViewsController2.getPlatformViewById(id) != null

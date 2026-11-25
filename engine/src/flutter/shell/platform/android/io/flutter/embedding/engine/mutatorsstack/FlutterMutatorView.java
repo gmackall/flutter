@@ -180,15 +180,19 @@ public class FlutterMutatorView extends FrameLayout {
 
   @Override
   public boolean requestSendAccessibilityEvent(View child, AccessibilityEvent event) {
+    if (getImportantForAccessibility() == View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS) {
+      return false;
+    }
     final View embeddedView = getChildAt(0);
     if (embeddedView != null
         && embeddedView.getImportantForAccessibility()
             == View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS) {
       return false;
     }
-    // Forward the request only if the embedded view is in the Flutter accessibility tree.
-    // The embedded view may be ignored when the framework doesn't populate a SemanticNode
-    // for the current platform view.
+    // Forward the request only if neither the wrapper nor the embedded view has opted out via
+    // IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS. The wrapper is marked NO_HIDE_DESCENDANTS
+    // when the framework doesn't populate a SemanticsNode for the current platform view, and the
+    // embedded view may itself hide its subtree via NO_HIDE_DESCENDANTS.
     // See AccessibilityBridge for more.
     return super.requestSendAccessibilityEvent(child, event);
   }
