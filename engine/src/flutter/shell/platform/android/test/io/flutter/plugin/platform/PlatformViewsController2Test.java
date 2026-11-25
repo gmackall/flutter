@@ -46,6 +46,7 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.StandardMessageCodec;
 import io.flutter.plugin.common.StandardMethodCodec;
 import io.flutter.plugin.localization.LocalizationPlugin;
+import io.flutter.view.AccessibilityBridge;
 import io.flutter.view.TextureRegistry;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -306,6 +307,46 @@ public class PlatformViewsController2Test {
     View resultAndroidView = PlatformViewsController2.getPlatformViewById(platformViewId);
     assertNotNull(resultAndroidView);
     assertEquals(resultAndroidView, androidView);
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class, ShadowPlatformTaskQueue.class})
+  public void initializePlatformView_disablesAccessibilityOnWrapperAndNotifiesBridge() {
+    PlatformViewRegistryImpl registryImpl = new PlatformViewRegistryImpl();
+    PlatformViewsController2 controller = new PlatformViewsController2();
+    controller.setRegistry(registryImpl);
+
+    int platformViewId = 0;
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+    View androidView = mock(View.class);
+    when(platformView.getView()).thenReturn(androidView);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    controller.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    attach(jni, controller);
+
+    AccessibilityBridge mockBridge = mock(AccessibilityBridge.class);
+    controller.attachAccessibilityBridge(mockBridge);
+
+    createPlatformView(jni, controller, platformViewId, "testType");
+    assertNull(controller.getPlatformViewWrapperById(platformViewId));
+
+    assertTrue(controller.initializePlatformViewIfNeeded(platformViewId));
+    verify(androidView, never()).setImportantForAccessibility(anyInt());
+    View wrapper = controller.getPlatformViewWrapperById(platformViewId);
+    assertNotNull(wrapper);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    verify(mockBridge, times(1)).onPlatformViewAttached(platformViewId);
+
+    // Disposing notifies the bridge and clears any delegate on the wrapper.
+    wrapper.setAccessibilityDelegate(new View.AccessibilityDelegate());
+    controller.disposePlatformView(platformViewId);
+    verify(mockBridge, times(1)).onPlatformViewDetached(platformViewId);
+    assertNull(wrapper.getAccessibilityDelegate());
   }
 
   @Test

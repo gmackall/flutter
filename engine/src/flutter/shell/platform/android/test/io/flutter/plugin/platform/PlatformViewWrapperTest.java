@@ -475,6 +475,30 @@ public class PlatformViewWrapperTest {
   }
 
   @Test
+  @Config(
+      shadows = {
+        ShadowFrameLayout.class,
+        ShadowViewGroup.class,
+      })
+  public void ignoreAccessibilityEventsWhenWrapperDisabled() {
+    final PlatformViewWrapper wrapperView = new PlatformViewWrapper(ctx);
+    wrapperView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+
+    final View embeddedView = mock(View.class);
+    when(embeddedView.getImportantForAccessibility())
+        .thenReturn(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    wrapperView.addView(embeddedView);
+
+    final boolean eventSent =
+        wrapperView.requestSendAccessibilityEvent(embeddedView, mock(AccessibilityEvent.class));
+    assertFalse(eventSent);
+
+    wrapperView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    assertTrue(
+        wrapperView.requestSendAccessibilityEvent(embeddedView, mock(AccessibilityEvent.class)));
+  }
+
+  @Test
   public void onTouchEvent_delegatesToGestureTrackerAndRequestsUnbufferedOnMove() {
     final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
     final MotionEvent[] lastRequestedEvent = new MotionEvent[1];

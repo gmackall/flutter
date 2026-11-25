@@ -10,6 +10,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
@@ -27,6 +28,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.annotation.TargetApi;
+import android.app.Activity;
 import android.app.UiModeManager;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -48,12 +50,17 @@ import android.view.ViewParent;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.dart.DartExecutor;
+import io.flutter.embedding.engine.mutatorsstack.FlutterMutatorView;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.plugin.common.BasicMessageChannel;
+import io.flutter.plugin.platform.PlatformViewWrapper;
 import io.flutter.plugin.platform.PlatformViewsAccessibilityDelegate;
 import io.flutter.view.AccessibilityBridge.Action;
 import io.flutter.view.AccessibilityBridge.Flag;
@@ -68,6 +75,7 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.mockito.invocation.InvocationOnMock;
+import org.robolectric.Robolectric;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
@@ -2217,23 +2225,22 @@ public class AccessibilityBridgeTest {
     platformView.platformViewId = 1;
     root.addChild(platformView);
 
-    TestSemanticsUpdate testSemanticsRootUpdate = root.toUpdate();
-    testSemanticsRootUpdate.sendUpdateToBridge(accessibilityBridge);
-
-    TestSemanticsUpdate testSemanticsPlatformViewUpdate = platformView.toUpdate();
-    testSemanticsPlatformViewUpdate.sendUpdateToBridge(accessibilityBridge);
-
     View embeddedView = mock(View.class);
+    View wrapperView = mock(View.class);
+    // Stub getPlatformViewById to confirm the embedded view itself is never mutated.
     when(accessibilityDelegate.getPlatformViewById(1)).thenReturn(embeddedView);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapperView);
     when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
 
-    AccessibilityNodeInfo nodeInfo = mock(AccessibilityNodeInfo.class);
-    when(embeddedView.createAccessibilityNodeInfo()).thenReturn(nodeInfo);
+    TestSemanticsUpdate testSemanticsRootUpdate = root.toUpdate();
+    testSemanticsRootUpdate.sendUpdateToBridge(accessibilityBridge);
 
     AccessibilityNodeInfo result = accessibilityBridge.createAccessibilityNodeInfo(0);
     assertNotNull(result);
     assertEquals(1, result.getChildCount());
-    verify(embeddedView).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+    verify(wrapperView).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    verify(wrapperView).setAccessibilityDelegate(any(View.AccessibilityDelegate.class));
+    verify(embeddedView, never()).setImportantForAccessibility(anyInt());
     assertEquals("android.view.View", result.getClassName());
   }
 
@@ -2263,13 +2270,17 @@ public class AccessibilityBridgeTest {
     root.addChild(platformView);
 
     View embeddedView = mock(View.class);
+    View wrapperView = mock(View.class);
     when(accessibilityDelegate.getPlatformViewById(1)).thenReturn(embeddedView);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapperView);
     when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
 
     TestSemanticsUpdate testSemanticsRootUpdate = root.toUpdate();
     testSemanticsRootUpdate.sendUpdateToBridge(accessibilityBridge);
 
-    verify(embeddedView).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+    verify(wrapperView).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    verify(wrapperView).setAccessibilityDelegate(any(View.AccessibilityDelegate.class));
+    verify(embeddedView, never()).setImportantForAccessibility(anyInt());
   }
 
   @Test
@@ -2298,7 +2309,9 @@ public class AccessibilityBridgeTest {
     rootWithPlatformView.addChild(platformView);
 
     View embeddedView = mock(View.class);
+    View wrapperView = mock(View.class);
     when(accessibilityDelegate.getPlatformViewById(1)).thenReturn(embeddedView);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapperView);
     when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
 
     TestSemanticsUpdate testSemanticsRootWithPlatformViewUpdate = rootWithPlatformView.toUpdate();
@@ -2310,8 +2323,1141 @@ public class AccessibilityBridgeTest {
         rootWithoutPlatformView.toUpdate();
     testSemanticsRootWithoutPlatformViewUpdate.sendUpdateToBridge(accessibilityBridge);
 
-    verify(embeddedView)
+    verify(wrapperView)
         .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    verify(wrapperView).setAccessibilityDelegate(null);
+    verify(embeddedView, never()).setImportantForAccessibility(anyInt());
+  }
+
+  @Test
+  public void itPreservesEmbeddedPlainContainerAndExposesChildrenThroughWrapper() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+    View rootAccessibilityView = new View(activity);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        spy(
+            setUpBridge(
+                rootAccessibilityView,
+                /* accessibilityChannel= */ null,
+                /* accessibilityManager= */ null,
+                /* contentResolver= */ null,
+                accessibilityViewEmbedder,
+                accessibilityDelegate));
+
+    // Build a real FlutterMutatorView wrapping FrameLayout (AUTO) > LinearLayout (AUTO) > TextView.
+    FlutterMutatorView wrapper = new FlutterMutatorView(activity);
+    wrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    FrameLayout embeddedContainer = new FrameLayout(activity);
+    LinearLayout innerLayout = new LinearLayout(activity);
+    TextView textView = new TextView(activity);
+    textView.setText("Native text");
+    innerLayout.addView(textView);
+    embeddedContainer.addView(innerLayout);
+    wrapper.addView(embeddedContainer);
+    activity.setContentView(wrapper);
+
+    when(accessibilityDelegate.getPlatformViewById(1)).thenReturn(embeddedContainer);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    assertFalse(wrapper.isImportantForAccessibility());
+    assertFalse(textView.isImportantForAccessibility());
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode platformView = new TestSemanticsNode();
+    platformView.id = 1;
+    platformView.platformViewId = 1;
+    root.addChild(platformView);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    AccessibilityNodeInfo mockRootInfo = mock(AccessibilityNodeInfo.class);
+    when(accessibilityBridge.obtainAccessibilityNodeInfo(rootAccessibilityView, 0))
+        .thenReturn(mockRootInfo);
+    AccessibilityNodeInfo result = accessibilityBridge.createAccessibilityNodeInfo(0);
+    assertSame(mockRootInfo, result);
+    verify(mockRootInfo).addChild(wrapper);
+    verify(mockRootInfo, never()).addChild(embeddedContainer);
+
+    // Wrapper is important so Android resolves the virtual-to-View child link, while embedded
+    // views retain their original importance modes untouched.
+    assertTrue(wrapper.isImportantForAccessibility());
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_AUTO, embeddedContainer.getImportantForAccessibility());
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, textView.getImportantForAccessibility());
+    assertTrue(textView.isImportantForAccessibility());
+
+    // Real wrapper node info builds cleanly through PlatformViewWrapperAccessibilityDelegate and
+    // standard Android ViewGroup traversal flattens the AUTO containers to reach TextView.
+    AccessibilityNodeInfo realWrapperInfo = wrapper.createAccessibilityNodeInfo();
+    assertNotNull(realWrapperInfo);
+    assertTrue(realWrapperInfo.isImportantForAccessibility());
+    ArrayList<View> accessibleChildren = new ArrayList<>();
+    wrapper.addChildrenForAccessibility(accessibleChildren);
+    assertEquals(1, accessibleChildren.size());
+    assertEquals(textView, accessibleChildren.get(0));
+
+    // Wrapper's AccessibilityDelegate links its parent back to the virtual Flutter SemanticsNode.
+    AccessibilityNodeInfo mockWrapperInfo = mock(AccessibilityNodeInfo.class);
+    assertNotNull(wrapper.getAccessibilityDelegate());
+    wrapper.getAccessibilityDelegate().onInitializeAccessibilityNodeInfo(wrapper, mockWrapperInfo);
+    verify(mockWrapperInfo).setParent(rootAccessibilityView, 0);
+
+    // Removing the semantics node hides the wrapper again and clears the delegate.
+    TestSemanticsNode rootWithoutPlatformView = new TestSemanticsNode();
+    rootWithoutPlatformView.id = 0;
+    rootWithoutPlatformView.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertFalse(wrapper.isImportantForAccessibility());
+    assertFalse(textView.isImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_AUTO, embeddedContainer.getImportantForAccessibility());
+  }
+
+  @Test
+  public void itPreservesStandaloneTextViewAndRespectsPluginOptOut() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+    View rootAccessibilityView = new View(activity);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    LinearLayout host = new LinearLayout(activity);
+
+    // 1. Standalone TextView (constructor sets YES) — must remain YES and be reachable.
+    PlatformViewWrapper textWrapper = new PlatformViewWrapper(activity);
+    textWrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    TextView standaloneText = new TextView(activity);
+    standaloneText.setText("Standalone");
+    textWrapper.addView(standaloneText);
+    host.addView(textWrapper);
+
+    // 2. Decorative TextView explicitly marked NO by the plugin — must stay NO and be skipped.
+    PlatformViewWrapper optOutNoWrapper = new PlatformViewWrapper(activity);
+    optOutNoWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    TextView decorativeText = new TextView(activity);
+    decorativeText.setText("Decorative");
+    decorativeText.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    optOutNoWrapper.addView(decorativeText);
+    host.addView(optOutNoWrapper);
+
+    // 3. Container explicitly marked NO_HIDE_DESCENDANTS by the plugin — children stay hidden.
+    PlatformViewWrapper optOutHideWrapper = new PlatformViewWrapper(activity);
+    optOutHideWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    FrameLayout hiddenContainer = new FrameLayout(activity);
+    hiddenContainer.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    TextView hiddenChild = new TextView(activity);
+    hiddenChild.setText("Hidden");
+    hiddenContainer.addView(hiddenChild);
+    optOutHideWrapper.addView(hiddenContainer);
+    host.addView(optOutHideWrapper);
+
+    activity.setContentView(host);
+
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(textWrapper);
+    when(accessibilityDelegate.getPlatformViewWrapperById(2)).thenReturn(optOutNoWrapper);
+    when(accessibilityDelegate.getPlatformViewWrapperById(3)).thenReturn(optOutHideWrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(anyInt())).thenReturn(false);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    for (int i = 1; i <= 3; i++) {
+      TestSemanticsNode pvNode = new TestSemanticsNode();
+      pvNode.id = i;
+      pvNode.platformViewId = i;
+      root.addChild(pvNode);
+    }
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    // All three wrappers are enabled with delegates; plugin opt-outs are honored natively on the
+    // unmodified embedded views.
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, textWrapper.getImportantForAccessibility());
+    assertNotNull(textWrapper.getAccessibilityDelegate());
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_YES, optOutNoWrapper.getImportantForAccessibility());
+    assertNotNull(optOutNoWrapper.getAccessibilityDelegate());
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_YES, optOutHideWrapper.getImportantForAccessibility());
+    assertNotNull(optOutHideWrapper.getAccessibilityDelegate());
+
+    ArrayList<View> children1 = new ArrayList<>();
+    textWrapper.addChildrenForAccessibility(children1);
+    assertEquals(1, children1.size());
+    assertEquals(standaloneText, children1.get(0));
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_YES, standaloneText.getImportantForAccessibility());
+
+    ArrayList<View> children2 = new ArrayList<>();
+    optOutNoWrapper.addChildrenForAccessibility(children2);
+    assertTrue(children2.isEmpty());
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO, decorativeText.getImportantForAccessibility());
+
+    ArrayList<View> children3 = new ArrayList<>();
+    optOutHideWrapper.addChildrenForAccessibility(children3);
+    assertTrue(children3.isEmpty());
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        hiddenContainer.getImportantForAccessibility());
+    assertFalse(hiddenChild.isImportantForAccessibility());
+  }
+
+  @Test
+  public void itEnablesWrapperWhenPlatformViewAttachesAfterUpdateSemantics() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    AccessibilityManager accessibilityManager = mock(AccessibilityManager.class);
+    when(accessibilityManager.isEnabled()).thenReturn(true);
+
+    View rootAccessibilityView = mock(View.class);
+    ViewParent mockParent = mock(ViewParent.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    when(rootAccessibilityView.getContext()).thenReturn(context);
+    when(rootAccessibilityView.getParent()).thenReturn(mockParent);
+
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            accessibilityManager,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+    // Simulate HC/HCPP lazy attachment: wrapper does not exist yet during updateSemantics.
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(null);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode platformView = new TestSemanticsNode();
+    platformView.id = 1;
+    platformView.platformViewId = 1;
+    root.addChild(platformView);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    reset(mockParent);
+
+    // Wrapper is now created and attached by
+    // PlatformViewsController(2)#initializePlatformViewIfNeeded.
+    FlutterMutatorView wrapper = new FlutterMutatorView(context);
+    wrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper);
+
+    accessibilityBridge.onPlatformViewAttached(1);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    assertNotNull(wrapper.getAccessibilityDelegate());
+    ArgumentCaptor<AccessibilityEvent> eventCaptor =
+        ArgumentCaptor.forClass(AccessibilityEvent.class);
+    verify(mockParent)
+        .requestSendAccessibilityEvent(eq(rootAccessibilityView), eventCaptor.capture());
+    assertEquals(
+        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, eventCaptor.getValue().getEventType());
+    assertEquals(
+        AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE,
+        eventCaptor.getValue().getContentChangeTypes());
+  }
+
+  @Test
+  public void itDetachesWrapperOnHiddenResetAndRelease() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    FlutterMutatorView wrapper = new FlutterMutatorView(context);
+    wrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    // Attach normally.
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode platformView = new TestSemanticsNode();
+    platformView.id = 1;
+    platformView.platformViewId = 1;
+    root.addChild(platformView);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    assertNotNull(wrapper.getAccessibilityDelegate());
+
+    // Mark hidden -> wrapper must be disabled and delegate cleared.
+    platformView.addFlag(Flag.IS_HIDDEN);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+
+    // Unhide -> re-enabled.
+    platformView.flags = 0;
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    assertNotNull(wrapper.getAccessibilityDelegate());
+
+    // reset() -> detaches wrapper.
+    accessibilityBridge.reset();
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+
+    // Re-attach, then release() -> detaches wrapper.
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    accessibilityBridge.release();
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+  }
+
+  @Test
+  public void itSetsTraversalAfterForPlatformViewWrapperAndFollowingSibling() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        spy(
+            setUpBridge(
+                rootAccessibilityView,
+                /* accessibilityChannel= */ null,
+                /* accessibilityManager= */ null,
+                /* contentResolver= */ null,
+                accessibilityViewEmbedder,
+                accessibilityDelegate));
+
+    FlutterMutatorView wrapper = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode beforeNode = new TestSemanticsNode();
+    beforeNode.id = 1;
+    beforeNode.label = "Above";
+    TestSemanticsNode platformViewNode = new TestSemanticsNode();
+    platformViewNode.id = 2;
+    platformViewNode.platformViewId = 1;
+    TestSemanticsNode afterNode = new TestSemanticsNode();
+    afterNode.id = 3;
+    afterNode.label = "Below";
+    root.addChild(beforeNode);
+    root.addChild(platformViewNode);
+    root.addChild(afterNode);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    // Platform view wrapper traverses after virtual node 1 ("Above").
+    AccessibilityNodeInfo mockWrapperInfo = mock(AccessibilityNodeInfo.class);
+    assertNotNull(wrapper.getAccessibilityDelegate());
+    wrapper.getAccessibilityDelegate().onInitializeAccessibilityNodeInfo(wrapper, mockWrapperInfo);
+    verify(mockWrapperInfo).setParent(rootAccessibilityView, 0);
+    verify(mockWrapperInfo).setTraversalAfter(rootAccessibilityView, 1);
+
+    // Following Flutter sibling (id 3, "Below") traverses after the real wrapper view.
+    AccessibilityNodeInfo mockAfterInfo = mock(AccessibilityNodeInfo.class);
+    when(accessibilityBridge.obtainAccessibilityNodeInfo(rootAccessibilityView, 3))
+        .thenReturn(mockAfterInfo);
+    accessibilityBridge.createAccessibilityNodeInfo(3);
+    verify(mockAfterInfo).setTraversalAfter(wrapper);
+  }
+
+  @Test
+  public void itDoesNotDetachPlatformViewIdZeroWhenAddingNewSemanticsNodes() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    View wrapper0 = mock(View.class);
+    when(accessibilityDelegate.getPlatformViewWrapperById(0)).thenReturn(wrapper0);
+    when(accessibilityDelegate.usesVirtualDisplay(0)).thenReturn(false);
+
+    // First update: platform view with id 0 (the first ID allocated by PlatformViewsRegistry).
+    TestSemanticsNode root1 = new TestSemanticsNode();
+    root1.id = 0;
+    TestSemanticsNode pvNode = new TestSemanticsNode();
+    pvNode.id = 1;
+    pvNode.platformViewId = 0;
+    root1.addChild(pvNode);
+    root1.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    verify(wrapper0, times(1)).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    verify(wrapper0, times(1)).setAccessibilityDelegate(any(View.AccessibilityDelegate.class));
+
+    // Second update: add an unrelated new Flutter SemanticsNode (id 2, platformViewId = -1).
+    // Regression test: an uninitialized SemanticsNode.platformViewId (default 0) would falsely
+    // detach platform view 0 and wipe live accessibility focus.
+    TestSemanticsNode root2 = new TestSemanticsNode();
+    root2.id = 0;
+    TestSemanticsNode pvNode2 = new TestSemanticsNode();
+    pvNode2.id = 1;
+    pvNode2.platformViewId = 0;
+    TestSemanticsNode unrelatedNode = new TestSemanticsNode();
+    unrelatedNode.id = 2;
+    unrelatedNode.label = "New widget";
+    root2.addChild(pvNode2);
+    root2.addChild(unrelatedNode);
+    root2.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    verify(wrapper0, never())
+        .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    verify(wrapper0, never()).setAccessibilityDelegate(null);
+    // Delegate is preserved without reallocation.
+    verify(wrapper0, times(1)).setAccessibilityDelegate(any(View.AccessibilityDelegate.class));
+  }
+
+  @Test
+  public void itKeepsWrapperEnabledWhenSemanticsNodeIdChangesForSamePlatformView() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    FlutterMutatorView wrapper = spy(new FlutterMutatorView(context));
+    wrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    when(accessibilityDelegate.getPlatformViewWrapperById(7)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(7)).thenReturn(false);
+
+    // Update 1: root(0) -> node(1, pv=7).
+    TestSemanticsNode root1 = new TestSemanticsNode();
+    root1.id = 0;
+    TestSemanticsNode oldPvNode = new TestSemanticsNode();
+    oldPvNode.id = 1;
+    oldPvNode.platformViewId = 7;
+    root1.addChild(oldPvNode);
+    root1.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    View.AccessibilityDelegate initialDelegate = wrapper.getAccessibilityDelegate();
+    assertNotNull(initialDelegate);
+
+    // Update 2: root(0) -> container(3) -> node(2, pv=7); node(1) is removed in the same batch.
+    reset(wrapper);
+    TestSemanticsNode root2 = new TestSemanticsNode();
+    root2.id = 0;
+    TestSemanticsNode newParent = new TestSemanticsNode();
+    newParent.id = 3;
+    TestSemanticsNode newPvNode = new TestSemanticsNode();
+    newPvNode.id = 2;
+    newPvNode.platformViewId = 7;
+    newParent.addChild(newPvNode);
+    root2.addChild(newParent);
+    root2.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    // Wrapper must remain YES with zero transient NO_HIDE_DESCENDANTS transitions and updated
+    // parent linkage.
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    verify(wrapper, never())
+        .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    assertSame(initialDelegate, wrapper.getAccessibilityDelegate());
+    AccessibilityNodeInfo mockInfo = mock(AccessibilityNodeInfo.class);
+    wrapper.getAccessibilityDelegate().onInitializeAccessibilityNodeInfo(wrapper, mockInfo);
+    verify(mockInfo).setParent(rootAccessibilityView, 3);
+  }
+
+  @Test
+  public void itKeepsWrapperEnabledWhenPlatformViewIdMovesBetweenExistingNodesInOneUpdate() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    FlutterMutatorView wrapper = spy(new FlutterMutatorView(context));
+    wrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    when(accessibilityDelegate.getPlatformViewWrapperById(7)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(7)).thenReturn(false);
+
+    // Update 1: node 1 holds pv=7, node 2 is plain.
+    TestSemanticsNode root1 = new TestSemanticsNode();
+    root1.id = 0;
+    TestSemanticsNode node1 = new TestSemanticsNode();
+    node1.id = 1;
+    node1.platformViewId = 7;
+    TestSemanticsNode node2 = new TestSemanticsNode();
+    node2.id = 2;
+    root1.addChild(node1);
+    root1.addChild(node2);
+    root1.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    reset(wrapper);
+
+    // Update 2: node 1 drops pv=7 and node 2 adopts pv=7 in the same batch.
+    TestSemanticsNode root2 = new TestSemanticsNode();
+    root2.id = 0;
+    TestSemanticsNode node1Updated = new TestSemanticsNode();
+    node1Updated.id = 1;
+    node1Updated.platformViewId = -1;
+    TestSemanticsNode node2Updated = new TestSemanticsNode();
+    node2Updated.id = 2;
+    node2Updated.platformViewId = 7;
+    root2.addChild(node1Updated);
+    root2.addChild(node2Updated);
+    root2.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    verify(wrapper, never())
+        .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    verify(wrapper, never()).setAccessibilityDelegate(null);
+  }
+
+  @Test
+  public void itDetachesWrapperWhenPlatformViewIdChangesOnSameNode() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    FlutterMutatorView wrapper1 = new FlutterMutatorView(context);
+    FlutterMutatorView wrapper2 = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper1);
+    when(accessibilityDelegate.getPlatformViewWrapperById(2)).thenReturn(wrapper2);
+    when(accessibilityDelegate.usesVirtualDisplay(anyInt())).thenReturn(false);
+
+    TestSemanticsNode root1 = new TestSemanticsNode();
+    root1.id = 0;
+    TestSemanticsNode node = new TestSemanticsNode();
+    node.id = 1;
+    node.platformViewId = 1;
+    root1.addChild(node);
+    root1.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper1.getImportantForAccessibility());
+    assertNotNull(wrapper1.getAccessibilityDelegate());
+
+    // Same SemanticsNode (id=1) now references platformViewId=2.
+    TestSemanticsNode root2 = new TestSemanticsNode();
+    root2.id = 0;
+    TestSemanticsNode nodeUpdated = new TestSemanticsNode();
+    nodeUpdated.id = 1;
+    nodeUpdated.platformViewId = 2;
+    root2.addChild(nodeUpdated);
+    root2.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper1.getImportantForAccessibility());
+    assertNull(wrapper1.getAccessibilityDelegate());
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper2.getImportantForAccessibility());
+    assertNotNull(wrapper2.getAccessibilityDelegate());
+  }
+
+  @Test
+  public void itReplacesWrapperAndCleansUpPreviousInstanceForSamePlatformViewId() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    FlutterMutatorView oldWrapper = new FlutterMutatorView(context);
+    FlutterMutatorView newWrapper = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(oldWrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode pvNode = new TestSemanticsNode();
+    pvNode.id = 1;
+    pvNode.platformViewId = 1;
+    root.addChild(pvNode);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, oldWrapper.getImportantForAccessibility());
+    assertNotNull(oldWrapper.getAccessibilityDelegate());
+
+    // Controller now returns a new wrapper instance for the same platformViewId.
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(newWrapper);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        oldWrapper.getImportantForAccessibility());
+    assertNull(oldWrapper.getAccessibilityDelegate());
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, newWrapper.getImportantForAccessibility());
+    assertNotNull(newWrapper.getAccessibilityDelegate());
+  }
+
+  @Test
+  public void itPreservesWrapperVisibilityUnderScrollContainer() {
+    Context context = ApplicationProvider.getApplicationContext();
+    FrameLayout hostContainer = new FrameLayout(context);
+    View rootAccessibilityView = new View(context);
+    hostContainer.addView(rootAccessibilityView);
+
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    AccessibilityManager accessibilityManager = mock(AccessibilityManager.class);
+    when(accessibilityManager.isEnabled()).thenReturn(true);
+    when(accessibilityManager.isTouchExplorationEnabled()).thenReturn(true);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            accessibilityManager,
+            /* contentResolver= */ null,
+            mock(AccessibilityViewEmbedder.class),
+            accessibilityDelegate);
+
+    FlutterMutatorView scrollChildWrapper = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(scrollChildWrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode scrollContainer = new TestSemanticsNode();
+    scrollContainer.id = 1;
+    scrollContainer.addAction(Action.SCROLL_DOWN);
+    scrollContainer.scrollChildren = 2;
+    TestSemanticsNode scrollPv = new TestSemanticsNode();
+    scrollPv.id = 2;
+    scrollPv.platformViewId = 1;
+    scrollContainer.addChild(scrollPv);
+    root.addChild(scrollContainer);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    AccessibilityNodeInfo wrapperInfo = mock(AccessibilityNodeInfo.class);
+    scrollChildWrapper
+        .getAccessibilityDelegate()
+        .onInitializeAccessibilityNodeInfo(scrollChildWrapper, wrapperInfo);
+    verify(wrapperInfo).setParent(rootAccessibilityView, 1);
+    verify(wrapperInfo, never()).setVisibleToUser(false);
+  }
+
+  @Test
+  public void itUpdatesTraversalAfterDynamicallyAcrossOutOfOrderLazyPlatformViewAttachments() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    when(accessibilityDelegate.usesVirtualDisplay(anyInt())).thenReturn(false);
+    // Neither wrapper exists yet when updateSemantics arrives.
+    when(accessibilityDelegate.getPlatformViewWrapperById(0)).thenReturn(null);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(null);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode pv1 = new TestSemanticsNode();
+    pv1.id = 1;
+    pv1.platformViewId = 0;
+    TestSemanticsNode pv2 = new TestSemanticsNode();
+    pv2.id = 2;
+    pv2.platformViewId = 1;
+    root.addChild(pv1);
+    root.addChild(pv2);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    // Second platform view attaches BEFORE the first.
+    FlutterMutatorView wrapper2 = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper2);
+    accessibilityBridge.onPlatformViewAttached(1);
+
+    AccessibilityNodeInfo infoBeforePv1Attaches = mock(AccessibilityNodeInfo.class);
+    wrapper2
+        .getAccessibilityDelegate()
+        .onInitializeAccessibilityNodeInfo(wrapper2, infoBeforePv1Attaches);
+    verify(infoBeforePv1Attaches).setTraversalAfter(rootAccessibilityView, 1);
+
+    // First platform view now attaches lazily; without another updateSemantics, wrapper2's
+    // delegate must dynamically resolve traversalAfter to wrapper1.
+    FlutterMutatorView wrapper1 = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(0)).thenReturn(wrapper1);
+    accessibilityBridge.onPlatformViewAttached(0);
+
+    AccessibilityNodeInfo infoAfterPv1Attaches = mock(AccessibilityNodeInfo.class);
+    wrapper2
+        .getAccessibilityDelegate()
+        .onInitializeAccessibilityNodeInfo(wrapper2, infoAfterPv1Attaches);
+    verify(infoAfterPv1Attaches).setTraversalAfter(wrapper1);
+
+    // If pv1 becomes hidden, wrapper2 must not point traversalAfter at the hidden wrapper1.
+    pv1.addFlag(Flag.IS_HIDDEN);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    AccessibilityNodeInfo infoAfterPv1Hidden = mock(AccessibilityNodeInfo.class);
+    wrapper2
+        .getAccessibilityDelegate()
+        .onInitializeAccessibilityNodeInfo(wrapper2, infoAfterPv1Hidden);
+    verify(infoAfterPv1Hidden, never()).setTraversalAfter(wrapper1);
+    verify(infoAfterPv1Hidden).setTraversalAfter(rootAccessibilityView, 1);
+  }
+
+  @Test
+  public void itDetachesWrapperUnderHiddenAncestorAndKeepsCreateAccessibilityNodeInfoReadOnly() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        spy(
+            setUpBridge(
+                rootAccessibilityView,
+                /* accessibilityChannel= */ null,
+                /* accessibilityManager= */ null,
+                /* contentResolver= */ null,
+                accessibilityViewEmbedder,
+                accessibilityDelegate));
+
+    FlutterMutatorView wrapper = new FlutterMutatorView(context);
+    wrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    // Attach root(0) -> ancestor(1) -> pv(2, pvId=1).
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode ancestor = new TestSemanticsNode();
+    ancestor.id = 1;
+    TestSemanticsNode pvNode = new TestSemanticsNode();
+    pvNode.id = 2;
+    pvNode.platformViewId = 1;
+    ancestor.addChild(pvNode);
+    root.addChild(ancestor);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    assertNotNull(wrapper.getAccessibilityDelegate());
+
+    // Hiding the ancestor detaches the descendant wrapper.
+    ancestor.addFlag(Flag.IS_HIDDEN);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+
+    // Querying createAccessibilityNodeInfo on the hidden ancestor must remain read-only and must
+    // not re-enable the wrapper or attach it as a child.
+    AccessibilityNodeInfo mockAncestorInfo = mock(AccessibilityNodeInfo.class);
+    when(accessibilityBridge.obtainAccessibilityNodeInfo(rootAccessibilityView, 1))
+        .thenReturn(mockAncestorInfo);
+    accessibilityBridge.createAccessibilityNodeInfo(1);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+    verify(mockAncestorInfo, never()).addChild(wrapper);
+
+    // Unhide, then release(): createAccessibilityNodeInfo after release() must not re-attach.
+    ancestor.flags = 0;
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+
+    accessibilityBridge.release();
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+
+    AccessibilityNodeInfo mockPostReleaseInfo = mock(AccessibilityNodeInfo.class);
+    when(accessibilityBridge.obtainAccessibilityNodeInfo(rootAccessibilityView, 1))
+        .thenReturn(mockPostReleaseInfo);
+    accessibilityBridge.createAccessibilityNodeInfo(1);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+    verify(mockPostReleaseInfo, never()).addChild(wrapper);
+  }
+
+  @Test
+  public void itIgnoresOnPlatformViewAttachedWhenHiddenAbsentVirtualDisplayOrReleased() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    FlutterMutatorView hiddenNodeWrapper = new FlutterMutatorView(context);
+    hiddenNodeWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    FlutterMutatorView hiddenAncestorWrapper = new FlutterMutatorView(context);
+    hiddenAncestorWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    FlutterMutatorView absentNodeWrapper = new FlutterMutatorView(context);
+    absentNodeWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    FlutterMutatorView vdWrapper = new FlutterMutatorView(context);
+    vdWrapper.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    FlutterMutatorView visibleWrapper = new FlutterMutatorView(context);
+    visibleWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+
+    when(accessibilityDelegate.usesVirtualDisplay(anyInt())).thenReturn(false);
+    when(accessibilityDelegate.usesVirtualDisplay(4)).thenReturn(true);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+
+    TestSemanticsNode hiddenPv = new TestSemanticsNode();
+    hiddenPv.id = 1;
+    hiddenPv.platformViewId = 1;
+    hiddenPv.addFlag(Flag.IS_HIDDEN);
+    root.addChild(hiddenPv);
+
+    TestSemanticsNode hiddenAncestor = new TestSemanticsNode();
+    hiddenAncestor.id = 2;
+    hiddenAncestor.addFlag(Flag.IS_HIDDEN);
+    TestSemanticsNode childOfHiddenAncestor = new TestSemanticsNode();
+    childOfHiddenAncestor.id = 3;
+    childOfHiddenAncestor.platformViewId = 2;
+    hiddenAncestor.addChild(childOfHiddenAncestor);
+    root.addChild(hiddenAncestor);
+
+    TestSemanticsNode vdPv = new TestSemanticsNode();
+    vdPv.id = 4;
+    vdPv.platformViewId = 4;
+    root.addChild(vdPv);
+
+    TestSemanticsNode visiblePv = new TestSemanticsNode();
+    visiblePv.id = 5;
+    visiblePv.platformViewId = 5;
+    root.addChild(visiblePv);
+
+    // Semantics arrive while wrappers are still null.
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(hiddenNodeWrapper);
+    when(accessibilityDelegate.getPlatformViewWrapperById(2)).thenReturn(hiddenAncestorWrapper);
+    when(accessibilityDelegate.getPlatformViewWrapperById(3)).thenReturn(absentNodeWrapper);
+    when(accessibilityDelegate.getPlatformViewWrapperById(4)).thenReturn(vdWrapper);
+    when(accessibilityDelegate.getPlatformViewWrapperById(5)).thenReturn(visibleWrapper);
+
+    // 1. Node itself hidden.
+    accessibilityBridge.onPlatformViewAttached(1);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        hiddenNodeWrapper.getImportantForAccessibility());
+    assertNull(hiddenNodeWrapper.getAccessibilityDelegate());
+
+    // 2. Ancestor hidden.
+    accessibilityBridge.onPlatformViewAttached(2);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        hiddenAncestorWrapper.getImportantForAccessibility());
+    assertNull(hiddenAncestorWrapper.getAccessibilityDelegate());
+
+    // 3. Absent from semantics tree (e.g. ExcludeSemantics).
+    accessibilityBridge.onPlatformViewAttached(3);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        absentNodeWrapper.getImportantForAccessibility());
+    assertNull(absentNodeWrapper.getAccessibilityDelegate());
+
+    // 4. Virtual display platform view.
+    accessibilityBridge.onPlatformViewAttached(4);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        vdWrapper.getImportantForAccessibility());
+    assertNull(vdWrapper.getAccessibilityDelegate());
+
+    // 5. Bridge released before attach arrives.
+    accessibilityBridge.release();
+    accessibilityBridge.onPlatformViewAttached(5);
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        visibleWrapper.getImportantForAccessibility());
+    assertNull(visibleWrapper.getAccessibilityDelegate());
+  }
+
+  @Test
+  public void itDetachesWrapperOnPlatformViewDetached() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        spy(
+            setUpBridge(
+                rootAccessibilityView,
+                /* accessibilityChannel= */ null,
+                /* accessibilityManager= */ null,
+                /* contentResolver= */ null,
+                accessibilityViewEmbedder,
+                accessibilityDelegate));
+
+    FlutterMutatorView wrapper = new FlutterMutatorView(context);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(wrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode pvNode = new TestSemanticsNode();
+    pvNode.id = 1;
+    pvNode.platformViewId = 1;
+    root.addChild(pvNode);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, wrapper.getImportantForAccessibility());
+    assertNotNull(wrapper.getAccessibilityDelegate());
+
+    accessibilityBridge.onPlatformViewDetached(1);
+
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        wrapper.getImportantForAccessibility());
+    assertNull(wrapper.getAccessibilityDelegate());
+
+    // Detached wrapper is no longer linked as a child from createAccessibilityNodeInfo.
+    AccessibilityNodeInfo mockRootInfo = mock(AccessibilityNodeInfo.class);
+    when(accessibilityBridge.obtainAccessibilityNodeInfo(rootAccessibilityView, 0))
+        .thenReturn(mockRootInfo);
+    accessibilityBridge.createAccessibilityNodeInfo(0);
+    verify(mockRootInfo, never()).addChild(wrapper);
+  }
+
+  @Test
+  public void itDoesNotClearNewerBridgeDelegateWhenOlderBridgeReleases() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootView1 = new View(context);
+    View rootView2 = new View(context);
+
+    AccessibilityBridge bridge1 =
+        setUpBridge(
+            rootView1,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            mock(AccessibilityViewEmbedder.class),
+            accessibilityDelegate);
+    AccessibilityBridge bridge2 =
+        setUpBridge(
+            rootView2,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            mock(AccessibilityViewEmbedder.class),
+            accessibilityDelegate);
+
+    FlutterMutatorView sharedWrapper = new FlutterMutatorView(context);
+    sharedWrapper.setImportantForAccessibility(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(sharedWrapper);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode pvNode = new TestSemanticsNode();
+    pvNode.id = 1;
+    pvNode.platformViewId = 1;
+    root.addChild(pvNode);
+
+    // Bridge 1 attaches first, then Bridge 2 takes over before Bridge 1 releases.
+    root.toUpdate().sendUpdateToBridge(bridge1);
+    root.toUpdate().sendUpdateToBridge(bridge2);
+    View.AccessibilityDelegate bridge2Delegate = sharedWrapper.getAccessibilityDelegate();
+    assertNotNull(bridge2Delegate);
+
+    bridge1.release();
+
+    // Bridge 2's delegate and importance must remain untouched.
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_YES, sharedWrapper.getImportantForAccessibility());
+    assertSame(bridge2Delegate, sharedWrapper.getAccessibilityDelegate());
+
+    // Once Bridge 2 releases, cleanup proceeds normally.
+    bridge2.release();
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        sharedWrapper.getImportantForAccessibility());
+    assertNull(sharedWrapper.getAccessibilityDelegate());
+  }
+
+  @Test
+  public void itPreservesPluginDelegateWhenDefaultWrapperFallbackReturnsEmbeddedView() {
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    FrameLayout embeddedView = new FrameLayout(context);
+    View.AccessibilityDelegate pluginDelegate = new View.AccessibilityDelegate();
+    embeddedView.setAccessibilityDelegate(pluginDelegate);
+
+    // Custom implementer that relies on the interface default getPlatformViewWrapperById()
+    // returning getPlatformViewById().
+    PlatformViewsAccessibilityDelegate customDelegate =
+        new PlatformViewsAccessibilityDelegate() {
+          @Override
+          public View getPlatformViewById(int viewId) {
+            return viewId == 1 ? embeddedView : null;
+          }
+
+          @Override
+          public boolean usesVirtualDisplay(int id) {
+            return false;
+          }
+
+          @Override
+          public void attachAccessibilityBridge(AccessibilityBridge accessibilityBridge) {}
+
+          @Override
+          public void detachAccessibilityBridge() {}
+        };
+
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            mock(AccessibilityViewEmbedder.class),
+            customDelegate);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode pvNode = new TestSemanticsNode();
+    pvNode.id = 1;
+    pvNode.platformViewId = 1;
+    root.addChild(pvNode);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, embeddedView.getImportantForAccessibility());
+    assertSame(pluginDelegate, embeddedView.getAccessibilityDelegate());
+
+    // Removing the node disables importance without clobbering the plugin's delegate.
+    TestSemanticsNode emptyRoot = new TestSemanticsNode();
+    emptyRoot.id = 0;
+    emptyRoot.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    assertEquals(
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        embeddedView.getImportantForAccessibility());
+    assertSame(pluginDelegate, embeddedView.getAccessibilityDelegate());
+  }
+
+  @Test
+  public void itDoesNotMutateVirtualDisplayEmbeddedViewOnAttachOrRemoval() {
+    PlatformViewsAccessibilityDelegate accessibilityDelegate =
+        mock(PlatformViewsAccessibilityDelegate.class);
+    Context context = ApplicationProvider.getApplicationContext();
+    View rootAccessibilityView = new View(context);
+    AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            rootAccessibilityView,
+            /* accessibilityChannel= */ null,
+            /* accessibilityManager= */ null,
+            /* contentResolver= */ null,
+            accessibilityViewEmbedder,
+            accessibilityDelegate);
+
+    View vdEmbeddedView = mock(View.class);
+    when(accessibilityDelegate.getPlatformViewById(1)).thenReturn(vdEmbeddedView);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(null);
+    when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(true);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode vdNode = new TestSemanticsNode();
+    vdNode.id = 1;
+    vdNode.platformViewId = 1;
+    root.addChild(vdNode);
+    root.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    TestSemanticsNode emptyRoot = new TestSemanticsNode();
+    emptyRoot.id = 0;
+    emptyRoot.toUpdate().sendUpdateToBridge(accessibilityBridge);
+
+    accessibilityBridge.reset();
+    accessibilityBridge.release();
+
+    verify(vdEmbeddedView, never()).setImportantForAccessibility(anyInt());
+    verify(vdEmbeddedView, never()).setAccessibilityDelegate(any());
   }
 
   @Test
@@ -2366,6 +3512,7 @@ public class AccessibilityBridgeTest {
 
     when(accessibilityDelegate.usesVirtualDisplay(1)).thenReturn(false);
     when(accessibilityDelegate.getPlatformViewById(1)).thenReturn(null);
+    when(accessibilityDelegate.getPlatformViewWrapperById(1)).thenReturn(null);
 
     TestSemanticsUpdate testSemanticsUpdate = root.toUpdate();
     testSemanticsUpdate.sendUpdateToBridge(accessibilityBridge);
@@ -3594,7 +4741,7 @@ public class AccessibilityBridgeTest {
 
     TestSemanticsUpdate toUpdate() {
       ArrayList<String> strings = new ArrayList<String>();
-      ByteBuffer bytes = ByteBuffer.allocate(1000);
+      ByteBuffer bytes = ByteBuffer.allocate(4096);
       ArrayList<ByteBuffer> stringAttributeArgs = new ArrayList<ByteBuffer>();
       addToBuffer(bytes, strings, stringAttributeArgs);
       bytes.flip();

@@ -48,6 +48,40 @@ public class PlatformViewsControllerDelegatorTest {
   }
 
   @Test
+  public void getPlatformViewWrapperById_returnsFromPVC2ifPresent() {
+    PlatformViewsController platformViewsController = mock(PlatformViewsController.class);
+    PlatformViewsController2 platformViewsController2 = mock(PlatformViewsController2.class);
+    View pv2 = mock(View.class);
+    View wrapper1 = mock(View.class);
+    View wrapper2 = mock(View.class);
+    when(platformViewsController2.getPlatformViewById(0)).thenReturn(pv2);
+    when(platformViewsController.getPlatformViewWrapperById(0)).thenReturn(wrapper1);
+    when(platformViewsController2.getPlatformViewWrapperById(0)).thenReturn(wrapper2);
+
+    PlatformViewsControllerDelegator delegator =
+        new PlatformViewsControllerDelegator(platformViewsController, platformViewsController2);
+    View returnedWrapper = delegator.getPlatformViewWrapperById(0);
+
+    Assert.assertEquals(wrapper2, returnedWrapper);
+    Assert.assertNotEquals(wrapper1, returnedWrapper);
+  }
+
+  @Test
+  public void getPlatformViewWrapperById_returnsFromPVC1ifNotPresentInPVC2() {
+    PlatformViewsController platformViewsController = mock(PlatformViewsController.class);
+    PlatformViewsController2 platformViewsController2 = mock(PlatformViewsController2.class);
+    View wrapper1 = mock(View.class);
+    when(platformViewsController2.getPlatformViewById(0)).thenReturn(null);
+    when(platformViewsController.getPlatformViewWrapperById(0)).thenReturn(wrapper1);
+
+    PlatformViewsControllerDelegator delegator =
+        new PlatformViewsControllerDelegator(platformViewsController, platformViewsController2);
+    View returnedWrapper = delegator.getPlatformViewWrapperById(0);
+
+    Assert.assertEquals(wrapper1, returnedWrapper);
+  }
+
+  @Test
   public void usesVirtualDisplay_returnsFromPVC2() {
     PlatformViewsController platformViewsController = mock(PlatformViewsController.class);
     PlatformViewsController2 platformViewsController2 = mock(PlatformViewsController2.class);

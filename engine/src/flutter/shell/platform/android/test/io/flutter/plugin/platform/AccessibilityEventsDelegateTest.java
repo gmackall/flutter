@@ -80,4 +80,44 @@ public class AccessibilityEventsDelegateTest {
 
     assertFalse(handled);
   }
+
+  @Test
+  public void accessibilityEventsDelegate_forwardsOnPlatformViewAttached() {
+    final AccessibilityBridge mockAccessibilityBridge = mock(AccessibilityBridge.class);
+
+    AccessibilityEventsDelegate delegate = new AccessibilityEventsDelegate();
+    delegate.setAccessibilityBridge(mockAccessibilityBridge);
+
+    delegate.onPlatformViewAttached(42);
+
+    verify(mockAccessibilityBridge, times(1)).onPlatformViewAttached(42);
+  }
+
+  @Test
+  public void accessibilityEventsDelegate_withoutBridge_noopsOnPlatformViewAttached() {
+    AccessibilityEventsDelegate delegate = new AccessibilityEventsDelegate();
+
+    // Should not throw.
+    delegate.onPlatformViewAttached(42);
+  }
+
+  @Test
+  public void accessibilityEventsDelegate_forwardsOnPlatformViewDetached() {
+    final AccessibilityBridge mockAccessibilityBridge = mock(AccessibilityBridge.class);
+
+    AccessibilityEventsDelegate delegate = new AccessibilityEventsDelegate();
+    delegate.setAccessibilityBridge(mockAccessibilityBridge);
+
+    delegate.onPlatformViewDetached(42);
+
+    verify(mockAccessibilityBridge, times(1)).onPlatformViewDetached(42);
+  }
+
+  @Test
+  public void accessibilityEventsDelegate_withoutBridge_noopsOnPlatformViewDetached() {
+    AccessibilityEventsDelegate delegate = new AccessibilityEventsDelegate();
+
+    // Should not throw.
+    delegate.onPlatformViewDetached(42);
+  }
 }

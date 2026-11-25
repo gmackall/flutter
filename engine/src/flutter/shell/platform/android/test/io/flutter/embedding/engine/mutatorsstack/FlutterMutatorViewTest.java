@@ -239,6 +239,30 @@ public class FlutterMutatorViewTest {
   }
 
   @Test
+  @Config(
+      shadows = {
+        ShadowFrameLayout.class,
+        ShadowViewGroup.class,
+      })
+  public void ignoreAccessibilityEventsWhenWrapperDisabled() {
+    final FlutterMutatorView wrapperView = new FlutterMutatorView(ctx);
+    wrapperView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+
+    final View embeddedView = mock(View.class);
+    when(embeddedView.getImportantForAccessibility())
+        .thenReturn(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    wrapperView.addView(embeddedView);
+
+    final boolean eventSent =
+        wrapperView.requestSendAccessibilityEvent(embeddedView, mock(AccessibilityEvent.class));
+    assertFalse(eventSent);
+
+    wrapperView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    assertTrue(
+        wrapperView.requestSendAccessibilityEvent(embeddedView, mock(AccessibilityEvent.class)));
+  }
+
+  @Test
   public void onTouchEvent_delegatesToGestureTrackerAndRequestsUnbufferedOnMove() {
     final AndroidTouchProcessor touchProcessor = mock(AndroidTouchProcessor.class);
     final MotionEvent[] lastRequestedEvent = new MotionEvent[1];
@@ -279,6 +303,5 @@ public class FlutterMutatorViewTest {
   }
 
   @Implements(FrameLayout.class)
-  public static class ShadowFrameLayout
-      extends io.flutter.plugin.platform.PlatformViewWrapperTest.ShadowViewGroup {}
+  public static class ShadowFrameLayout extends ShadowViewGroup {}
 }
